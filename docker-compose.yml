@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  opa:
+    image: openpolicyagent/opa:latest
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "--bundle"
+      - "/policies"
+    volumes:
+      - ./policies:/policies:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8181/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  gateway:
+    build:
+      context: ./gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - OPA_URL=http://opa:8181
+      - DB_PATH=/data/audit.db
+    volumes:
+      - audit-data:/data
+    depends_on:
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  audit-data:
