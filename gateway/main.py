@@ -30,6 +30,10 @@ app = FastAPI(title="Vargate Gateway", version="0.1.0")
 
 # ── Request / Response models ────────────────────────────────────────────────
 
+class ContextOverride(BaseModel):
+    is_business_hours: Optional[bool] = None
+
+
 class ToolCallRequest(BaseModel):
     agent_id: str
     agent_type: str = "unknown"
@@ -37,6 +41,7 @@ class ToolCallRequest(BaseModel):
     tool: str
     method: str
     params: dict[str, Any] = {}
+    context_override: Optional[ContextOverride] = None
 
 
 class AllowedResponse(BaseModel):
@@ -237,6 +242,10 @@ def build_opa_input(req: ToolCallRequest, action_id: str) -> dict:
     hour = now.hour
     weekday = now.weekday()  # 0=Monday ... 6=Sunday
     is_business_hours = (0 <= weekday <= 4) and (9 <= hour < 18)
+
+    # Allow test/demo overrides for deterministic results
+    if req.context_override and req.context_override.is_business_hours is not None:
+        is_business_hours = req.context_override.is_business_hours
 
     return {
         "agent": {

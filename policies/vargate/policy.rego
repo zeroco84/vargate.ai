@@ -60,28 +60,33 @@ violations contains msg if {
     msg := "high_value_out_of_hours"
 }
 
-# ── Severity derivation ──────────────────────────────────────────────────────
+# ── Severity derivation (else chain to avoid recursion) ──────────────────────
 
-default severity := "none"
-severity := "critical" if { "competitor_contact_attempt" in violations }
-severity := "critical" if { "gdpr_pii_residency_violation" in violations }
-severity := "high"     if {
+is_critical if { "competitor_contact_attempt" in violations }
+is_critical if { "gdpr_pii_residency_violation" in violations }
+
+is_high if {
     "high_value_transaction_unapproved" in violations
-    not "competitor_contact_attempt" in violations
-    not "gdpr_pii_residency_violation" in violations
+    not is_critical
 }
-severity := "medium"   if {
+
+severity := "critical" if {
+    is_critical
+} else := "high" if {
+    is_high
+} else := "medium" if {
     count(violations) > 0
-    not severity == "critical"
-    not severity == "high"
-}
+} else := "none"
 
 # ── Alert routing ────────────────────────────────────────────────────────────
 
-default alert_tier := "none"
-alert_tier := "soc_page"    if { severity == "critical" }
-alert_tier := "soc_ticket"  if { severity == "high"     }
-alert_tier := "slack_alert" if { severity == "medium"   }
+alert_tier := "soc_page" if {
+    severity == "critical"
+} else := "soc_ticket" if {
+    severity == "high"
+} else := "slack_alert" if {
+    severity == "medium"
+} else := "none"
 
 # ── Human approval requirement ───────────────────────────────────────────────
 

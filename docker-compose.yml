@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   opa:
     image: openpolicyagent/opa:latest
@@ -15,11 +13,11 @@ services:
     ports:
       - "8181:8181"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8181/health"]
-      interval: 5s
+      test: ["CMD", "/opa", "eval", "true"]
+      interval: 3s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 3s
 
   gateway:
     build:
