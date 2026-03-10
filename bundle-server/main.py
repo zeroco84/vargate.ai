@@ -59,12 +59,32 @@ decision := {{
     "severity":        severity,
     "requires_human":  requires_human_approval,
     "alert_tier":      alert_tier,
+    "evaluation_mode": evaluation_mode,
+    "risk_indicators": risk_indicators,
 }}
 
 default allow := false
 allow if {{ count(violations) == 0 }}
 
 default requires_human_approval := false
+
+# ── Evaluation mode (two-pass support) ───────────────────────────────────────
+
+default evaluation_mode := "fast"
+evaluation_mode := "needs_enrichment" if {{ count(risk_indicators) > 0 }}
+
+risk_indicators contains "elevated_action_type" if {{
+    high_risk_tools := {{"stripe", "wire_transfer", "payroll"}}
+    input.action.tool in high_risk_tools
+}}
+
+risk_indicators contains "large_params" if {{
+    input.action.params.amount >= 1000
+}}
+
+risk_indicators contains "off_hours" if {{
+    input.context.is_business_hours == false
+}}
 
 # ── Violation rules ──────────────────────────────────────────────────────────
 
@@ -108,6 +128,19 @@ violations contains msg if {{
     msg := "high_value_out_of_hours"
 }}
 
+# Block agents with repeated violations today (Pass 2 — enriched history)
+violations contains msg if {{
+    input.history.last_24h.policy_violations >= 3
+    msg := "repeated_violations_today"
+}}
+
+# Block agents hammering high-value actions (Pass 2 — enriched history)
+violations contains msg if {{
+    input.history.last_24h.high_value_transactions >= 5
+    input.action.params.amount >= 1000
+    msg := "high_value_frequency_limit_exceeded"
+}}
+
 # ── Severity derivation (else chain to avoid recursion) ──────────────────────
 
 is_critical if {{ "competitor_contact_attempt" in violations }}
@@ -115,6 +148,10 @@ is_critical if {{ "gdpr_pii_residency_violation" in violations }}
 
 is_high if {{
     "high_value_transaction_unapproved" in violations
+    not is_critical
+}}
+is_high if {{
+    "repeated_violations_today" in violations
     not is_critical
 }}
 
@@ -139,6 +176,10 @@ alert_tier := "soc_page" if {{
 # ── Human approval requirement ───────────────────────────────────────────────
 
 requires_human_approval if {{ input.action.params.amount >= {self.high_value_threshold} }}
+requires_human_approval if {{
+    input.history.last_10min.denied_count >= 2
+    input.action.params.amount >= 500
+}}
 '''
 
     def _generate_manifest(self) -> str:
@@ -187,7 +228,7 @@ requires_human_approval if {{ input.action.params.amount >= {self.high_value_thr
 
     @property
     def rule_count(self) -> int:
-        return 5   # 5 violation rules
+        return 8   # 7 violation rules + 1 behavioral
 
 
 # Global bundle state
