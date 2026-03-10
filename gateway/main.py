@@ -21,7 +21,7 @@ from pydantic import BaseModel
 OPA_URL = os.getenv("OPA_URL", "http://opa:8181")
 OPA_DECISION_PATH = "/v1/data/vargate/policy/decision"
 DB_PATH = os.getenv("DB_PATH", "/data/audit.db")
-BUNDLE_REVISION = "v1.0.0-prototype"
+DEFAULT_BUNDLE_REVISION = "v1.0.0-prototype"
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -146,6 +146,7 @@ def write_audit_record(
     violations: list[str],
     severity: str,
     alert_tier: str,
+    bundle_revision: str = DEFAULT_BUNDLE_REVISION,
 ):
     """Write a hash-chained audit record to SQLite."""
     params_str = json.dumps(params, separators=(",", ":"))
@@ -162,7 +163,7 @@ def write_audit_record(
         decision=decision,
         violations=violations_str,
         severity=severity,
-        bundle_revision=BUNDLE_REVISION,
+        bundle_revision=bundle_revision,
         prev_hash=prev_hash,
     )
 
@@ -178,7 +179,7 @@ def write_audit_record(
         """,
         (
             action_id, agent_id, tool, method, params_str, requested_at,
-            decision, violations_str, severity, alert_tier, BUNDLE_REVISION,
+            decision, violations_str, severity, alert_tier, bundle_revision,
             prev_hash, record_hash, now,
         ),
     )
@@ -297,6 +298,24 @@ def build_opa_input(req: ToolCallRequest, action_id: str) -> dict:
 
 # ── Startup ──────────────────────────────────────────────────────────────────
 
+BUNDLE_SERVER_URL = os.getenv("BUNDLE_SERVER_URL", "http://bundle-server:8080")
+
+
+async def get_bundle_revision() -> str:
+    """Fetch the current bundle revision from the bundle server."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{BUNDLE_SERVER_URL}/bundles/vargate/status")
+            if resp.status_code == 200:
+                data = resp.json()
+                revision = data.get("revision", "")
+                if revision:
+                    return revision
+    except Exception:
+        pass
+    return DEFAULT_BUNDLE_REVISION
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -310,6 +329,9 @@ async def tool_call(req: ToolCallRequest):
     action_id = str(uuid.uuid4())
     opa_input = build_opa_input(req, action_id)
     requested_at = opa_input["action"]["requested_at"]
+
+    # Fetch current bundle revision from OPA
+    bundle_revision = await get_bundle_revision()
 
     # Query OPA
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -337,14 +359,16 @@ async def tool_call(req: ToolCallRequest):
     if allowed:
         print(
             f"[ALLOW] action_id={action_id} agent={req.agent_id} "
-            f"tool={req.tool} method={req.method}",
+            f"tool={req.tool} method={req.method} "
+            f"bundle={bundle_revision}",
             flush=True,
         )
     else:
         print(
             f"[BLOCK] action_id={action_id} agent={req.agent_id} "
             f"tool={req.tool} method={req.method} "
-            f"violations={json.dumps(sorted(violations))} severity={severity}",
+            f"violations={json.dumps(sorted(violations))} severity={severity} "
+            f"bundle={bundle_revision}",
             flush=True,
         )
 
@@ -363,6 +387,7 @@ async def tool_call(req: ToolCallRequest):
             violations=sorted(violations),
             severity=severity,
             alert_tier=alert_tier,
+            bundle_revision=bundle_revision,
         )
     finally:
         conn.close()

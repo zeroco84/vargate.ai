@@ -1,0 +1,14 @@
+bundles:
+  vargate:
+    resource: /bundles/vargate
+    service: bundle_server
+    polling:
+      min_delay_seconds: 5
+      max_delay_seconds: 10
+
+services:
+  bundle_server:
+    url: http://bundle-server:8080
+
+decision_logs:
+  console: true

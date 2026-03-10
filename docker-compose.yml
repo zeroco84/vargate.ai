@@ -1,4 +1,16 @@
 services:
+  bundle-server:
+    build:
+      context: ./bundle-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/bundles/vargate/status')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
   opa:
     image: openpolicyagent/opa:latest
     command:
@@ -6,18 +18,20 @@ services:
       - "--server"
       - "--addr=0.0.0.0:8181"
       - "--log-level=info"
-      - "--bundle"
-      - "/policies"
+      - "--config-file=/config/opa-config.yaml"
     volumes:
-      - ./policies:/policies:ro
+      - ./config:/config:ro
     ports:
       - "8181:8181"
+    depends_on:
+      bundle-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/opa", "eval", "true"]
       interval: 3s
       timeout: 3s
       retries: 10
-      start_period: 3s
+      start_period: 5s
 
   gateway:
     build:
