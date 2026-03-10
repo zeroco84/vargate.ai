@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Vargate Audit Dashboard — Real-time AI agent supervision and cryptographic audit trail" />
+    <title>Vargate · Audit Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'system-ui', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+            colors: {
+              navy: { 50: '#f0f3f9', 100: '#d9e0f0', 200: '#b3c1e1', 400: '#6684c1', 600: '#2d4a8a', 800: '#1a2d54', 900: '#0f1b33', 950: '#0a1122' },
+              vargate: { DEFAULT: '#3b82f6', light: '#60a5fa', dark: '#1d4ed8' },
+            },
+            keyframes: {
+              'fade-in': { '0%': { opacity: '0', transform: 'translateY(-4px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },
+              'pulse-red': { '0%, 100%': { backgroundColor: 'rgba(239,68,68,0.08)' }, '50%': { backgroundColor: 'rgba(239,68,68,0.2)' } },
+              'slide-down': { '0%': { opacity: '0', maxHeight: '0' }, '100%': { opacity: '1', maxHeight: '600px' } },
+            },
+            animation: {
+              'fade-in': 'fade-in 0.3s ease-out',
+              'pulse-red': 'pulse-red 1.5s ease-in-out 1',
+              'slide-down': 'slide-down 0.3s ease-out',
+            },
+          },
+        },
+      }
+    </script>
+    <style>
+      body { background: #0a1122; }
+      .chain-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: #0f1b33; }
+      ::-webkit-scrollbar-thumb { background: #2d4a8a; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

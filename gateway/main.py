@@ -8,6 +8,7 @@ Implements two-pass evaluation with Redis behavioral history.
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import time
 import uuid
@@ -17,6 +18,7 @@ from typing import Any, Optional
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -30,7 +32,18 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Vargate Gateway", version="0.3.0")
+app = FastAPI(title="Vargate Gateway", version="0.4.0")
+
+# DEMO ONLY — remove in production
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# DEMO ONLY — stores original hashes during tamper simulation
+_tamper_store: dict[int, str] = {}
 
 # ── Redis connection pool ────────────────────────────────────────────────────
 
@@ -520,6 +533,19 @@ async def get_bundle_revision() -> str:
     return DEFAULT_BUNDLE_REVISION
 
 
+@app.get("/bundles/vargate/status")
+async def bundle_status_proxy():
+    """Proxy bundle status from the bundle server so the UI can fetch it via /api/."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{BUNDLE_SERVER_URL}/bundles/vargate/status")
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {"revision": DEFAULT_BUNDLE_REVISION, "etag": "unknown"}
+
+
 # ── Startup / Shutdown ──────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -711,10 +737,14 @@ async def audit_log(
                 "SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
                 (agent_id, limit),
             ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE agent_id = ?", (agent_id,)
+            ).fetchone()[0]
         else:
             rows = conn.execute(
                 "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
     finally:
         conn.close()
 
@@ -741,7 +771,78 @@ async def audit_log(
         }
         records.append(rec)
 
-    return {"records": records, "count": len(records)}
+    return {"records": records, "count": len(records), "total": total}
+
+
+# ── Tamper simulation endpoints (DEMO ONLY) ─────────────────────────────────
+
+class TamperRequest(BaseModel):
+    record_number: int
+
+
+@app.post("/audit/tamper-simulate")  # DEMO ONLY
+async def tamper_simulate(req: TamperRequest):
+    """Simulate an insider modifying an audit record hash."""
+    conn = get_db()
+    try:
+        # Get record by sequential position (1-indexed, ordered by id ASC)
+        row = conn.execute(
+            "SELECT id, action_id, record_hash FROM audit_log ORDER BY id ASC LIMIT 1 OFFSET ?",
+            (req.record_number - 1,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, f"Record #{req.record_number} not found")
+
+        record_id = row["id"]
+        original_hash = row["record_hash"]
+
+        # Store original hash for restoration
+        _tamper_store[record_id] = original_hash
+
+        # Corrupt the hash
+        fake_hash = secrets.token_hex(32)
+        conn.execute(
+            "UPDATE audit_log SET record_hash = ? WHERE id = ?",
+            (fake_hash, record_id),
+        )
+        conn.commit()
+
+        # Count affected records (this record + all after it)
+        total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        affected = total - req.record_number + 1
+
+        return {
+            "tampered_record_number": req.record_number,
+            "tampered_action_id": row["action_id"],
+            "records_affected": affected,
+            "message": f"Record corrupted. Chain broken from record {req.record_number} onward.",
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/audit/tamper-restore")  # DEMO ONLY
+async def tamper_restore():
+    """Restore all tampered records to their original hashes."""
+    conn = get_db()
+    try:
+        for record_id, original_hash in _tamper_store.items():
+            conn.execute(
+                "UPDATE audit_log SET record_hash = ? WHERE id = ?",
+                (original_hash, record_id),
+            )
+        conn.commit()
+        _tamper_store.clear()
+
+        result = verify_chain_integrity(conn)
+        return {
+            "restored": True,
+            "chain_valid": result.get("valid", False),
+            "record_count": result.get("record_count", 0),
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/health")
