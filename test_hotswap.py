@@ -6,13 +6,14 @@ Designed to be run in front of an audience.
 """
 
 import json
+import os
 import sys
 import time
 
 import requests
 
-GATEWAY_URL = "http://localhost:8000"
-BUNDLE_SERVER_URL = "http://localhost:8080"
+GATEWAY_URL = os.environ.get("VARGATE_URL", "http://localhost:8000")
+BUNDLE_SERVER_URL = os.environ.get("BUNDLE_URL", "http://localhost:8080")
 TOOL_CALL_URL = f"{GATEWAY_URL}/mcp/tools/call"
 VERIFY_URL = f"{GATEWAY_URL}/audit/verify"
 AUDIT_LOG_URL = f"{GATEWAY_URL}/audit/log"

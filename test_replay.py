@@ -13,13 +13,14 @@ Vargate — Policy Replay Demo (Session 5)
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
 
 import requests
 
-GW = "http://localhost:8000"
+GW = os.environ.get("VARGATE_URL", "http://localhost:8000")
 SEP = "─" * 60
 HEADER = "=" * 70
 

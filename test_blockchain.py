@@ -5,13 +5,14 @@ Demonstrates three-layer tamper evidence: hash chain + policy replay + blockchai
 """
 
 import json
+import os
 import sys
 import time
 import uuid
 
 import requests
 
-GATEWAY_URL = "http://localhost:8000"
+GATEWAY_URL = os.environ.get("VARGATE_URL", "http://localhost:8000")
 TOOL_CALL_URL = f"{GATEWAY_URL}/mcp/tools/call"
 VERIFY_URL = f"{GATEWAY_URL}/audit/verify"
 AUDIT_LOG_URL = f"{GATEWAY_URL}/audit/log"
