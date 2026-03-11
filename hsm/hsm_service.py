@@ -2,6 +2,7 @@
 Vargate HSM Service — REST API over SoftHSM2 (PKCS#11)
 
 Manages per-subject AES-256 encryption keys for crypto-shredding.
+Manages tool credential secrets for agent-blind brokered execution.
 Keys never leave the HSM boundary.
 """
 
@@ -10,6 +11,7 @@ import hashlib
 import os
 import secrets
 import struct
+import sqlite3
 from datetime import datetime, timezone
 
 import pkcs11
@@ -24,8 +26,9 @@ import uvicorn
 PKCS11_LIB = os.environ.get("PKCS11_LIB", "/usr/lib/softhsm/libsofthsm2.so")
 TOKEN_LABEL = os.environ.get("HSM_TOKEN_LABEL", "vargate-prototype")
 TOKEN_PIN = os.environ.get("HSM_TOKEN_PIN", "1234")
+CRED_DB_PATH = os.environ.get("CRED_DB_PATH", "/data/credentials.db")
 
-app = FastAPI(title="Vargate HSM Service", version="1.0.0")
+app = FastAPI(title="Vargate HSM Service", version="2.0.0")
 
 # ── Track key metadata and erasures in memory ───────────────────────────────
 
@@ -105,7 +108,101 @@ class DecryptRequest(BaseModel):
     ciphertext_b64: str
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────────
+class StoreCredentialRequest(BaseModel):
+    tool_id: str
+    name: str
+    value: str  # SECURITY: value is encrypted immediately, never logged
+
+
+# ── Credential SQLite setup ─────────────────────────────────────────────────
+
+def _get_cred_db() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(CRED_DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(CRED_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init_cred_db():
+    conn = _get_cred_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS credentials (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id     TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            encrypted   TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            UNIQUE(tool_id, name)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS credential_access_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id     TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            action_id   TEXT NOT NULL,
+            agent_id    TEXT NOT NULL,
+            accessed_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+# ── Credential master key ───────────────────────────────────────────────────
+
+CRED_MASTER_LABEL = "cred-master"
+
+
+def _ensure_cred_master_key(session):
+    """Ensure the credential master AES-256 key exists in the HSM."""
+    existing = _find_key(session, CRED_MASTER_LABEL)
+    if existing:
+        return existing
+    key = session.generate_key(
+        KeyType.AES,
+        256,
+        label=CRED_MASTER_LABEL,
+        store=True,
+        template={
+            Attribute.ENCRYPT: True,
+            Attribute.DECRYPT: True,
+            Attribute.EXTRACTABLE: False,
+            Attribute.SENSITIVE: True,
+            Attribute.TOKEN: True,
+        },
+    )
+    print(f"[HSM] Generated credential master key: {CRED_MASTER_LABEL}", flush=True)
+    return key
+
+
+def _encrypt_credential(value: str) -> str:
+    """Encrypt a credential value using the master key. Returns base64."""
+    # SECURITY: credential value is encrypted here and never logged
+    with get_session() as session:
+        key = _ensure_cred_master_key(session)
+        iv = secrets.token_bytes(16)
+        plaintext_padded = _pkcs7_pad(value.encode("utf-8"))
+        ciphertext = key.encrypt(plaintext_padded, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        combined = iv + ciphertext
+        return base64.b64encode(combined).decode("ascii")
+
+
+def _decrypt_credential(encrypted_b64: str) -> str:
+    """Decrypt a credential value using the master key. Returns plaintext string."""
+    # SECURITY: returned value must only be used for tool execution, never logged
+    with get_session() as session:
+        key = _ensure_cred_master_key(session)
+        combined = base64.b64decode(encrypted_b64)
+        iv = combined[:16]
+        ciphertext = combined[16:]
+        plaintext_padded = key.decrypt(ciphertext, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        plaintext_bytes = _pkcs7_unpad(plaintext_padded)
+        return plaintext_bytes.decode("utf-8")
+
+
+# ── PII Key Endpoints (existing) ────────────────────────────────────────────
 
 @app.post("/keys")
 async def create_key(req: CreateKeyRequest):
@@ -296,6 +393,149 @@ async def list_keys():
     return {"subjects": subjects}
 
 
+# ── Credential Vault Endpoints (Stage 8) ────────────────────────────────────
+
+@app.post("/credentials")
+async def store_credential(req: StoreCredentialRequest):
+    """Store a tool credential. Value is encrypted immediately, never logged."""
+    # SECURITY: req.value must not be logged or stored in plaintext anywhere
+    encrypted = _encrypt_credential(req.value)
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = _get_cred_db()
+    try:
+        # Upsert: replace if exists
+        conn.execute(
+            "INSERT OR REPLACE INTO credentials (tool_id, name, encrypted, created_at) VALUES (?, ?, ?, ?)",
+            (req.tool_id, req.name, encrypted, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # SECURITY: log the registration event but NOT the credential value
+    print(f"[HSM] Credential stored: {req.tool_id}/{req.name}", flush=True)
+    return {"tool_id": req.tool_id, "name": req.name, "registered": True}
+
+
+@app.get("/credentials")
+async def list_credentials():
+    """List registered tools and credential names. Values never returned."""
+    conn = _get_cred_db()
+    try:
+        rows = conn.execute("SELECT tool_id, name, created_at FROM credentials ORDER BY tool_id, name").fetchall()
+    finally:
+        conn.close()
+
+    credentials = [{"tool_id": r["tool_id"], "name": r["name"], "created_at": r["created_at"]} for r in rows]
+    return {"credentials": credentials}
+
+
+@app.delete("/credentials/{tool_id}/{name}")
+async def delete_credential(tool_id: str, name: str):
+    """Delete a stored credential."""
+    conn = _get_cred_db()
+    try:
+        result = conn.execute("DELETE FROM credentials WHERE tool_id = ? AND name = ?", (tool_id, name))
+        conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(404, f"No credential found for {tool_id}/{name}")
+    finally:
+        conn.close()
+
+    print(f"[HSM] Credential deleted: {tool_id}/{name}", flush=True)
+    return {"tool_id": tool_id, "name": name, "deleted": True}
+
+
+@app.get("/credentials/{tool_id}/status")
+async def credential_status(tool_id: str):
+    """Check whether credentials exist for a tool."""
+    conn = _get_cred_db()
+    try:
+        rows = conn.execute("SELECT name, created_at FROM credentials WHERE tool_id = ?", (tool_id,)).fetchall()
+    finally:
+        conn.close()
+
+    names = [{"name": r["name"], "created_at": r["created_at"]} for r in rows]
+    return {"tool_id": tool_id, "registered": len(names) > 0, "credentials": names}
+
+
+@app.get("/credentials/access-log")
+async def credential_access_log():
+    """Return the credential access log. Values never included."""
+    conn = _get_cred_db()
+    try:
+        rows = conn.execute(
+            "SELECT tool_id, name, action_id, agent_id, accessed_at FROM credential_access_log ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    entries = [dict(r) for r in rows]
+    return {"entries": entries}
+
+
+class FetchCredentialRequest(BaseModel):
+    tool_id: str
+    name: str
+    action_id: str
+    agent_id: str
+
+
+@app.post("/credentials/fetch-for-execution")
+async def http_fetch_credential_for_execution(req: FetchCredentialRequest):
+    """
+    HTTP endpoint for gateway to fetch a credential for brokered execution.
+    SECURITY: Returns the credential value ONLY to be used as a Bearer token.
+    The value is NOT logged by this endpoint.
+    """
+    credential = await fetch_credential_for_execution(
+        tool_id=req.tool_id,
+        name=req.name,
+        action_id=req.action_id,
+        agent_id=req.agent_id,
+    )
+    # SECURITY: credential returned here is used by gateway for execution only
+    return {"credential": credential}
+
+
+async def fetch_credential_for_execution(
+    tool_id: str, name: str, action_id: str, agent_id: str
+) -> str:
+    """
+    Decrypt and return a credential value for use in an approved execution.
+    Logs the access event (tool, name, action_id, agent_id, timestamp).
+    SECURITY: Does NOT log the credential value. Returns plaintext string.
+    Raises HTTPException(404) if no credential is registered for tool_id/name.
+    """
+    conn = _get_cred_db()
+    try:
+        row = conn.execute(
+            "SELECT encrypted FROM credentials WHERE tool_id = ? AND name = ?",
+            (tool_id, name),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, f"No credential registered for {tool_id}/{name}")
+
+        # Log the access event — SECURITY: no credential value in the log
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO credential_access_log (tool_id, name, action_id, agent_id, accessed_at) VALUES (?, ?, ?, ?, ?)",
+            (tool_id, name, action_id, agent_id, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # SECURITY: decrypt and return — value used only for execution, never logged
+    plaintext = _decrypt_credential(row["encrypted"])
+    print(f"[HSM] Credential accessed: {tool_id}/{name} for action={action_id} agent={agent_id}", flush=True)
+    return plaintext
+
+
+# ── Health ───────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 async def health():
     try:
@@ -305,8 +545,20 @@ async def health():
         return {"status": "degraded", "service": "vargate-hsm", "error": str(e)}
 
 
+# ── Startup ──────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup():
+    _init_cred_db()
+    # Pre-create the credential master key
+    with get_session() as session:
+        _ensure_cred_master_key(session)
+    print("[HSM] Credential vault initialized.", flush=True)
+
+
 if __name__ == "__main__":
     print("[HSM] Starting Vargate HSM Service on port 8300", flush=True)
     print(f"[HSM] PKCS#11 lib: {PKCS11_LIB}", flush=True)
     print(f"[HSM] Token label: {TOKEN_LABEL}", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8300, log_level="info")
+

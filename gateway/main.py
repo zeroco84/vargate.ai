@@ -4,6 +4,7 @@ Intercepts AI agent tool calls, evaluates them against OPA policy,
 and logs every decision to a hash-chained SQLite audit log.
 Implements two-pass evaluation with Redis behavioral history.
 Blockchain anchoring via Hardhat local Ethereum network.
+Stage 8: Credential Enclave — agent-blind brokered execution.
 """
 
 import asyncio
@@ -27,6 +28,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import execution_engine
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 OPA_URL = os.getenv("OPA_URL", "http://opa:8181")
@@ -36,6 +39,7 @@ DEFAULT_BUNDLE_REVISION = "v1.0.0-prototype"
 BUNDLE_SERVER_URL = os.getenv("BUNDLE_SERVER_URL", "http://bundle-server:8080")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 HSM_URL = os.getenv("HSM_URL", "http://hsm:8300")
+MOCK_TOOLS_URL = os.getenv("MOCK_TOOLS_URL", "http://mock-tools:9000")
 BLOCKCHAIN_RPC_URL = os.getenv("BLOCKCHAIN_RPC_URL", "http://blockchain:8545")
 CONTRACT_ADDRESS_FILE = os.getenv("CONTRACT_ADDRESS_FILE", "/shared/contract_address.txt")
 CONTRACT_ABI_FILE = os.getenv("CONTRACT_ABI_FILE", "/shared/AuditAnchor.abi.json")
@@ -135,7 +139,11 @@ def init_db():
             contains_pii          INTEGER DEFAULT 0,
             pii_subject_id        TEXT,
             pii_fields            TEXT,
-            erasure_status        TEXT DEFAULT 'active'
+            erasure_status        TEXT DEFAULT 'active',
+            execution_mode        TEXT DEFAULT 'agent_direct',
+            execution_result      TEXT,
+            execution_latency_ms  INTEGER,
+            credential_accessed   TEXT
         )
     """)
     # Add columns if upgrading from earlier schemas
@@ -147,6 +155,10 @@ def init_db():
         "ALTER TABLE audit_log ADD COLUMN pii_subject_id TEXT",
         "ALTER TABLE audit_log ADD COLUMN pii_fields TEXT",
         "ALTER TABLE audit_log ADD COLUMN erasure_status TEXT DEFAULT 'active'",
+        "ALTER TABLE audit_log ADD COLUMN execution_mode TEXT DEFAULT 'agent_direct'",
+        "ALTER TABLE audit_log ADD COLUMN execution_result TEXT",
+        "ALTER TABLE audit_log ADD COLUMN execution_latency_ms INTEGER",
+        "ALTER TABLE audit_log ADD COLUMN credential_accessed TEXT",
     ]:
         try:
             conn.execute(col_sql)
@@ -232,12 +244,17 @@ def write_audit_record(
     contains_pii: int = 0,
     pii_subject_id: Optional[str] = None,
     pii_fields: Optional[list[str]] = None,
+    execution_mode: str = "agent_direct",
+    execution_result: Optional[dict] = None,
+    execution_latency_ms: Optional[int] = None,
+    credential_accessed: Optional[str] = None,
 ):
     """Write a hash-chained audit record to SQLite."""
     params_str = json.dumps(params, separators=(",", ":"))
     violations_str = json.dumps(violations, separators=(",", ":"))
     opa_input_str = json.dumps(opa_input, separators=(",", ":")) if opa_input else None
     pii_fields_str = json.dumps(pii_fields) if pii_fields else None
+    execution_result_str = json.dumps(execution_result, separators=(",", ":")) if execution_result else None
     prev_hash = get_prev_hash(conn)
 
     record_hash = compute_record_hash(
@@ -263,8 +280,9 @@ def write_audit_record(
              decision, violations, severity, alert_tier, bundle_revision,
              prev_hash, record_hash, created_at,
              evaluation_pass, anomaly_score_at_eval, opa_input,
-             contains_pii, pii_subject_id, pii_fields, erasure_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             contains_pii, pii_subject_id, pii_fields, erasure_status,
+             execution_mode, execution_result, execution_latency_ms, credential_accessed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             action_id, agent_id, tool, method, params_str, requested_at,
@@ -272,6 +290,7 @@ def write_audit_record(
             prev_hash, record_hash, now,
             evaluation_pass, anomaly_score_at_eval, opa_input_str,
             contains_pii, pii_subject_id, pii_fields_str, "active",
+            execution_mode, execution_result_str, execution_latency_ms, credential_accessed,
         ),
     )
     conn.commit()
@@ -330,6 +349,7 @@ def build_opa_input(
     req: ToolCallRequest,
     action_id: str,
     history: Optional[dict] = None,
+    credentials_registered: Optional[list[str]] = None,
 ) -> dict:
     """Assemble the OPA input document from the incoming request."""
     now = datetime.now(timezone.utc)
@@ -393,6 +413,10 @@ def build_opa_input(
             },
         },
         "history": history,
+        "vault": {
+            "credentials_registered": credentials_registered or [],
+            "brokered_execution": True,
+        },
     }
 
 
@@ -712,6 +736,27 @@ async def startup():
         _anchor_task = asyncio.create_task(_anchor_loop())
         print(f"[VARGATE] Anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
 
+    # Initialize execution engine
+    execution_engine.init(MOCK_TOOLS_URL)
+    print(f"[VARGATE] Execution engine initialized (mock-tools: {MOCK_TOOLS_URL}).", flush=True)
+
+    # Register mock tokens with the mock tool server for validation
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for tool_id, token in [
+                ("gmail", "mock-gmail-key-001"),
+                ("salesforce", "mock-salesforce-key-001"),
+                ("stripe", "mock-stripe-key-001"),
+                ("slack", "mock-slack-key-001"),
+            ]:
+                await client.post(
+                    f"{MOCK_TOOLS_URL}/admin/register-token",
+                    json={"tool_id": tool_id, "token": token},
+                )
+        print("[VARGATE] Mock tool tokens registered.", flush=True)
+    except Exception as e:
+        print(f"[VARGATE] Could not register mock tokens: {e}", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
 
 
@@ -726,12 +771,27 @@ async def shutdown():
 
 @app.post("/mcp/tools/call")
 async def tool_call(req: ToolCallRequest):
+    total_start = time.monotonic()
     action_id = str(uuid.uuid4())
     bundle_revision = await get_bundle_revision()
     amount = req.params.get("amount")
 
-    # ── Pass 1: Fast path (no Redis) ─────────────────────────────────
-    opa_input_p1 = build_opa_input(req, action_id, history=None)
+    # ── Fetch registered credentials for OPA vault input ─────────
+    credentials_registered = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            cred_resp = await client.get(f"{HSM_URL}/credentials")
+            if cred_resp.status_code == 200:
+                cred_data = cred_resp.json()
+                credentials_registered = list(set(
+                    c["tool_id"] for c in cred_data.get("credentials", [])
+                ))
+    except Exception as e:
+        print(f"[VARGATE] Failed to fetch credential list: {e}", flush=True)
+
+    # ── Pass 1: Fast path (no Redis) ─────────────────────────────
+    opa_start = time.monotonic()
+    opa_input_p1 = build_opa_input(req, action_id, history=None, credentials_registered=credentials_registered)
     requested_at = opa_input_p1["action"]["requested_at"]
     result_p1 = await query_opa(opa_input_p1)
 
@@ -753,13 +813,15 @@ async def tool_call(req: ToolCallRequest):
         evaluation_pass = 2
         history = await fetch_behavioral_history(req.agent_id)
         anomaly_score = history.get("anomaly_score", 0.0)
-        opa_input_p2 = build_opa_input(req, action_id, history=history)
+        opa_input_p2 = build_opa_input(req, action_id, history=history, credentials_registered=credentials_registered)
         # Preserve the same requested_at from Pass 1
         opa_input_p2["action"]["requested_at"] = requested_at
         final_result = await query_opa(opa_input_p2)
     # If allowed and fast mode with clean history — forward immediately
     else:
         final_result = result_p1
+
+    opa_elapsed_ms = int((time.monotonic() - opa_start) * 1000)
 
     # Extract final decision
     allowed = final_result.get("allow", False)
@@ -768,13 +830,86 @@ async def tool_call(req: ToolCallRequest):
     alert_tier = final_result.get("alert_tier", "none")
     decision_str = "allow" if allowed else "deny"
 
+    # Determine the final opa_input used for the decision
+    if evaluation_pass == 2:
+        final_opa_input = opa_input_p2
+    else:
+        final_opa_input = opa_input_p1
+
+    # ── Brokered execution (Stage 8) ─────────────────────────────
+    execution_mode = "agent_direct"
+    execution_result = None
+    execution_latency_ms = None
+    credential_accessed = None
+    hsm_fetch_ms = 0
+    exec_ms = 0
+
+    if allowed:
+        # Attempt brokered execution
+        cred_name = "api_key"  # Default credential name
+        try:
+            # Fetch credential from HSM vault
+            hsm_start = time.monotonic()
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                fetch_resp = await client.get(
+                    f"{HSM_URL}/credentials/{req.tool}/status"
+                )
+                if fetch_resp.status_code == 200 and fetch_resp.json().get("registered"):
+                    # Credential exists — do brokered execution
+                    # SECURITY: fetch via HSM HTTP endpoint, logs access but never the value
+                    cred_fetch_resp = await client.post(
+                        f"{HSM_URL}/credentials/fetch-for-execution",
+                        json={
+                            "tool_id": req.tool,
+                            "name": cred_name,
+                            "action_id": action_id,
+                            "agent_id": req.agent_id,
+                        },
+                    )
+                    hsm_fetch_ms = int((time.monotonic() - hsm_start) * 1000)
+
+                    if cred_fetch_resp.status_code == 200:
+                        cred_data = cred_fetch_resp.json()
+                        credential_value = cred_data.get("credential")
+                        # SECURITY: credential_value used only for execution, never logged
+
+                        # Execute the tool call
+                        exec_result = await execution_engine.execute_tool_call(
+                            tool=req.tool,
+                            method=req.method,
+                            params=req.params,
+                            credential=credential_value,
+                        )
+
+                        execution_mode = "vargate_brokered"
+                        execution_result = exec_result.get("result", {})
+                        exec_ms = exec_result.get("execution_ms", 0)
+                        execution_latency_ms = hsm_fetch_ms + exec_ms
+                        credential_accessed = f"{req.tool}:{cred_name}"
+                    else:
+                        hsm_fetch_ms = int((time.monotonic() - hsm_start) * 1000)
+                else:
+                    hsm_fetch_ms = int((time.monotonic() - hsm_start) * 1000)
+        except Exception as e:
+            print(f"[VARGATE] Brokered execution error: {e}", flush=True)
+
     # Log to stdout
     pass_label = f"P{evaluation_pass}"
+    total_ms = int((time.monotonic() - total_start) * 1000)
+    latency_breakdown = {
+        "opa_eval_ms": opa_elapsed_ms,
+        "hsm_fetch_ms": hsm_fetch_ms,
+        "execution_ms": exec_ms,
+        "total_ms": total_ms,
+    }
+
     if allowed:
+        mode_label = "BROKERED" if execution_mode == "vargate_brokered" else "DIRECT"
         print(
             f"[ALLOW] action_id={action_id} agent={req.agent_id} "
             f"tool={req.tool} method={req.method} "
-            f"pass={pass_label} bundle={bundle_revision}",
+            f"mode={mode_label} pass={pass_label} bundle={bundle_revision} "
+            f"latency={json.dumps(latency_breakdown)}",
             flush=True,
         )
     else:
@@ -785,12 +920,6 @@ async def tool_call(req: ToolCallRequest):
             f"pass={pass_label} bundle={bundle_revision}",
             flush=True,
         )
-
-    # Determine the final opa_input used for the decision
-    if evaluation_pass == 2:
-        final_opa_input = opa_input_p2
-    else:
-        final_opa_input = opa_input_p1
 
     # ── PII detection and encryption ─────────────────────────────────
     pii_fields = detect_pii_fields(req.params)
@@ -837,6 +966,10 @@ async def tool_call(req: ToolCallRequest):
             contains_pii=contains_pii,
             pii_subject_id=pii_subject_id,
             pii_fields=pii_fields if pii_fields else None,
+            execution_mode=execution_mode,
+            execution_result=execution_result,
+            execution_latency_ms=execution_latency_ms,
+            credential_accessed=credential_accessed,
         )
     finally:
         conn.close()
@@ -851,7 +984,12 @@ async def tool_call(req: ToolCallRequest):
 
     # Return response
     if allowed:
-        return AllowedResponse(action_id=action_id)
+        response = {"status": "allowed", "action_id": action_id}
+        if execution_mode == "vargate_brokered":
+            response["execution_mode"] = "vargate_brokered"
+            response["execution_result"] = execution_result
+            response["latency"] = latency_breakdown
+        return response
     else:
         raise HTTPException(
             status_code=403,
@@ -955,6 +1093,10 @@ async def audit_log(
             "pii_subject_id": row["pii_subject_id"] if "pii_subject_id" in row.keys() else None,
             "pii_fields": json.loads(row["pii_fields"]) if ("pii_fields" in row.keys() and row["pii_fields"]) else None,
             "erasure_status": row["erasure_status"] if "erasure_status" in row.keys() else "active",
+            "execution_mode": row["execution_mode"] if "execution_mode" in row.keys() else "agent_direct",
+            "execution_result": json.loads(row["execution_result"]) if ("execution_result" in row.keys() and row["execution_result"]) else None,
+            "execution_latency_ms": row["execution_latency_ms"] if "execution_latency_ms" in row.keys() else None,
+            "credential_accessed": row["credential_accessed"] if "credential_accessed" in row.keys() else None,
         }
         records.append(rec)
 
@@ -1202,6 +1344,60 @@ async def proxy_hsm_delete_key(subject_id: str):
         resp = await client.delete(f"{HSM_URL}/keys/{subject_id}")
         if resp.status_code == 404:
             raise HTTPException(404, f"No key found for subject {subject_id}")
+        return resp.json()
+
+
+# ── Credential vault proxy endpoints (Stage 8) ──────────────────────────────
+
+class RegisterCredentialRequest(BaseModel):
+    tool_id: str
+    name: str
+    value: str  # SECURITY: passes through to HSM, never stored in gateway
+
+
+@app.post("/credentials/register")
+async def register_credential(req: RegisterCredentialRequest):
+    """Register a tool credential in the HSM vault."""
+    # SECURITY: value passes through to HSM immediately, never logged by gateway
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{HSM_URL}/credentials",
+            json={"tool_id": req.tool_id, "name": req.name, "value": req.value},
+        )
+        return resp.json()
+
+
+@app.get("/credentials")
+async def list_credentials():
+    """List registered tool credentials (no values returned)."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{HSM_URL}/credentials")
+        return resp.json()
+
+
+@app.delete("/credentials/{tool_id}/{name}")
+async def delete_credential(tool_id: str, name: str):
+    """Delete a tool credential from the vault."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.delete(f"{HSM_URL}/credentials/{tool_id}/{name}")
+        if resp.status_code == 404:
+            raise HTTPException(404, f"No credential found for {tool_id}/{name}")
+        return resp.json()
+
+
+@app.get("/credentials/{tool_id}/status")
+async def credential_status(tool_id: str):
+    """Check credential registration status for a tool."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{HSM_URL}/credentials/{tool_id}/status")
+        return resp.json()
+
+
+@app.get("/credentials/access-log")
+async def credential_access_log():
+    """Get the credential access log (no values ever returned)."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{HSM_URL}/credentials/access-log")
         return resp.json()
 
 

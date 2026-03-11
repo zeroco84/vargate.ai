@@ -30,6 +30,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - hsm-tokens:/var/lib/softhsm/tokens
+      - cred-data:/data
     ports:
       - "8300:8300"
     healthcheck:
@@ -38,6 +39,18 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+
+  mock-tools:
+    build:
+      context: ./mock-tools
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
 
   blockchain:
     build:
@@ -87,6 +100,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - BUNDLE_SERVER_URL=http://bundle-server:8080
       - HSM_URL=http://hsm:8300
+      - MOCK_TOOLS_URL=http://mock-tools:9000
       - BLOCKCHAIN_RPC_URL=http://blockchain:8545
       - CONTRACT_ADDRESS_FILE=/shared/contract_address.txt
       - CONTRACT_ABI_FILE=/shared/AuditAnchor.abi.json
@@ -100,6 +114,8 @@ services:
       redis:
         condition: service_healthy
       hsm:
+        condition: service_healthy
+      mock-tools:
         condition: service_healthy
       blockchain:
         condition: service_healthy
@@ -124,4 +140,5 @@ volumes:
   audit-data:
   bundle-archive:
   hsm-tokens:
+  cred-data:
   shared-data:

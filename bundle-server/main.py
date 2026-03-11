@@ -143,6 +143,13 @@ violations contains msg if {{
     msg := "high_value_frequency_limit_exceeded"
 }}
 
+# Block tool calls with no credential registered in vault (Stage 8)
+violations contains msg if {{
+    input.vault.brokered_execution == true
+    not input.action.tool in {{t | t := input.vault.credentials_registered[_]}}
+    msg := "no_credential_registered_for_tool"
+}}
+
 # ── Severity derivation (else chain to avoid recursion) ──────────────────────
 
 is_critical if {{ "competitor_contact_attempt" in violations }}
@@ -154,6 +161,10 @@ is_high if {{
 }}
 is_high if {{
     "repeated_violations_today" in violations
+    not is_critical
+}}
+is_high if {{
+    "no_credential_registered_for_tool" in violations
     not is_critical
 }}
 

@@ -155,6 +155,40 @@ function ChainIcon({ valid }) {
 
 // ── Expanded Row Detail Panel ───────────────────────────────────────────────
 
+function ExecutionModePill({ mode }) {
+  if (mode === 'vargate_brokered') {
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">🔒 BROKERED</span>;
+  }
+  return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-navy-700/30 text-navy-400 border border-navy-600/30">DIRECT</span>;
+}
+
+function ExecutionTimeline({ rec }) {
+  if (rec.execution_mode !== 'vargate_brokered' || !rec.execution_latency_ms) return null;
+  const opaMs = rec.opa_input ? '~' : '?';
+  const totalMs = rec.execution_latency_ms;
+  const credential = rec.credential_accessed || '—';
+  return (
+    <div className="mt-3 pt-3 border-t border-navy-800/40">
+      <div className="text-navy-400 text-xs font-semibold uppercase tracking-wider mb-2">Execution Timeline</div>
+      <div className="flex items-center gap-1 flex-wrap">
+        <span className="inline-flex items-center px-2 py-1 bg-blue-500/10 text-blue-300 text-[10px] font-mono rounded border border-blue-500/20">OPA Eval</span>
+        <span className="text-navy-600">→</span>
+        <span className="inline-flex items-center px-2 py-1 bg-purple-500/10 text-purple-300 text-[10px] font-mono rounded border border-purple-500/20">HSM Fetch</span>
+        <span className="text-navy-600">→</span>
+        <span className="inline-flex items-center px-2 py-1 bg-emerald-500/10 text-emerald-300 text-[10px] font-mono rounded border border-emerald-500/20">Tool Execute {totalMs}ms</span>
+        <span className="text-navy-600">→</span>
+        <span className="inline-flex items-center px-2 py-1 bg-navy-700/30 text-navy-300 text-[10px] font-mono rounded border border-navy-600/30">Result</span>
+      </div>
+      <div className="mt-2 text-[10px] text-navy-500">Credential: <code className="text-navy-400">{credential}</code></div>
+      {rec.execution_result && (
+        <pre className="mt-2 p-2 bg-navy-950/80 rounded text-[10px] text-emerald-200 font-mono overflow-x-auto border border-navy-800/50 max-h-32">
+          {JSON.stringify(rec.execution_result, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function RecordDetail({ rec, chainValid, onReplay }) {
   return (
     <tr>
@@ -208,6 +242,7 @@ function RecordDetail({ rec, chainValid, onReplay }) {
                   🔁 Replay Decision
                 </button>
               )}
+              <ExecutionTimeline rec={rec} />
             </div>
           </div>
         </div>
@@ -258,6 +293,7 @@ function AuditTable({ records, chain, newIds, onReplay }) {
               <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Agent</th>
               <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Tool</th>
               <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Decision</th>
+              <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Mode</th>
               <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Violations</th>
               <th className="text-center px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Pass</th>
               <th className="text-left px-4 py-3 text-navy-500 text-xs font-semibold uppercase tracking-wider">Severity</th>
@@ -296,6 +332,7 @@ function AuditTable({ records, chain, newIds, onReplay }) {
                     </td>
                     <td className="px-4 py-2.5 text-navy-200 text-xs">{rec.tool}</td>
                     <td className="px-4 py-2.5"><DecisionPill decision={rec.decision} /></td>
+                    <td className="px-4 py-2.5"><ExecutionModePill mode={rec.execution_mode} /></td>
                     <td className="px-4 py-2.5 text-navy-400 text-xs" title={rec.violations?.join(', ')}>
                       {rec.violations?.length ? truncate(rec.violations[0], 32) : <span className="text-navy-600">—</span>}
                     </td>
@@ -924,6 +961,206 @@ function ErasurePanel({ onErasureComplete }) {
   );
 }
 
+// ── Credential Vault Panel (Stage 8) ────────────────────────────────────────
+
+function VaultPanel() {
+  const [credentials, setCredentials] = useState([]);
+  const [accessLog, setAccessLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toolId, setToolId] = useState('');
+  const [credName, setCredName] = useState('api_key');
+  const [credValue, setCredValue] = useState('');
+  const [status, setStatus] = useState(null);
+  const [showLog, setShowLog] = useState(false);
+
+  const fetchVault = async () => {
+    try {
+      const [credResp, logResp] = await Promise.all([
+        fetch(`${API}/credentials`),
+        fetch(`${API}/credentials/access-log`),
+      ]);
+      const credData = await credResp.json();
+      const logData = await logResp.json();
+      setCredentials(credData.credentials || []);
+      setAccessLog(logData.entries || []);
+    } catch (e) {
+      console.error('Failed to fetch vault data:', e);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchVault(); const i = setInterval(fetchVault, 5000); return () => clearInterval(i); }, []);
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    if (!toolId || !credValue) return;
+    setStatus(null);
+    try {
+      const resp = await fetch(`${API}/credentials/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_id: toolId, name: credName, value: credValue }),
+      });
+      const data = await resp.json();
+      setStatus({ type: 'ok', message: `✓ Credential registered for ${toolId}/${credName}` });
+      setToolId('');
+      setCredValue('');
+      fetchVault();
+    } catch (e) {
+      setStatus({ type: 'error', message: `Error: ${e.message}` });
+    }
+  };
+
+  const handleDelete = async (tid, name) => {
+    try {
+      await fetch(`${API}/credentials/${tid}/${name}`, { method: 'DELETE' });
+      fetchVault();
+    } catch (e) {
+      console.error('Delete failed:', e);
+    }
+  };
+
+  const toolColors = {
+    gmail: 'from-red-500/20 to-red-600/10 border-red-500/30 text-red-300',
+    salesforce: 'from-blue-500/20 to-blue-600/10 border-blue-500/30 text-blue-300',
+    stripe: 'from-purple-500/20 to-purple-600/10 border-purple-500/30 text-purple-300',
+    slack: 'from-amber-500/20 to-amber-600/10 border-amber-500/30 text-amber-300',
+  };
+
+  return (
+    <div className="bg-navy-900/40 rounded-xl border border-navy-800/40 overflow-hidden">
+      <div className="px-5 py-4 border-b border-navy-800/40 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-lg">🔐</span>
+          <span className="text-white text-sm font-semibold">Credential Vault</span>
+          <span className="text-navy-500 text-xs ml-1">— HSM-Encrypted Tool Credentials</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-emerald-400 text-xs font-mono">{credentials.length} registered</span>
+          <button
+            onClick={() => setShowLog(!showLog)}
+            className="px-2 py-1 text-[10px] font-semibold text-navy-400 hover:text-navy-200 bg-navy-800/30 rounded border border-navy-700/30 transition-colors"
+          >
+            {showLog ? 'Hide Log' : 'Access Log'}
+          </button>
+        </div>
+      </div>
+
+      <div className="p-5 space-y-4">
+        {/* Registered credentials grid */}
+        {credentials.length > 0 ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {credentials.map((c, i) => (
+              <div key={i} className={`relative p-3 rounded-lg bg-gradient-to-br border ${toolColors[c.tool_id] || 'from-navy-700/20 to-navy-800/10 border-navy-600/30 text-navy-300'}`}>
+                <div className="text-xs font-bold uppercase tracking-wider">{c.tool_id}</div>
+                <div className="text-[10px] opacity-70 font-mono mt-0.5">{c.name}</div>
+                <div className="text-[9px] opacity-50 mt-1">{formatTime(c.created_at)}</div>
+                <button
+                  onClick={() => handleDelete(c.tool_id, c.name)}
+                  className="absolute top-2 right-2 text-[10px] opacity-40 hover:opacity-100 transition-opacity"
+                  title="Delete credential"
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-4 text-navy-500 text-xs">
+            No credentials registered. Register tool credentials below.
+          </div>
+        )}
+
+        {/* Registration form */}
+        <form onSubmit={handleRegister} className="flex items-end gap-3 flex-wrap">
+          <div>
+            <label className="text-navy-500 text-[10px] font-semibold uppercase tracking-wider block mb-1">Tool ID</label>
+            <select
+              value={toolId}
+              onChange={e => setToolId(e.target.value)}
+              className="bg-navy-950 border border-navy-700 text-navy-200 text-xs rounded-lg px-3 py-1.5 focus:border-vargate focus:ring-1 focus:ring-vargate/30 outline-none"
+            >
+              <option value="">Select tool...</option>
+              <option value="gmail">Gmail</option>
+              <option value="salesforce">Salesforce</option>
+              <option value="stripe">Stripe</option>
+              <option value="slack">Slack</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-navy-500 text-[10px] font-semibold uppercase tracking-wider block mb-1">Name</label>
+            <input
+              type="text"
+              value={credName}
+              onChange={e => setCredName(e.target.value)}
+              className="bg-navy-950 border border-navy-700 text-navy-200 text-xs rounded-lg px-3 py-1.5 w-28 focus:border-vargate focus:ring-1 focus:ring-vargate/30 outline-none"
+            />
+          </div>
+          <div>
+            <label className="text-navy-500 text-[10px] font-semibold uppercase tracking-wider block mb-1">Secret Value</label>
+            <input
+              type="password"
+              value={credValue}
+              onChange={e => setCredValue(e.target.value)}
+              placeholder="••••••••"
+              className="bg-navy-950 border border-navy-700 text-navy-200 text-xs rounded-lg px-3 py-1.5 w-40 focus:border-vargate focus:ring-1 focus:ring-vargate/30 outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!toolId || !credValue}
+            className="px-4 py-1.5 bg-emerald-600/80 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Register
+          </button>
+        </form>
+
+        {status && (
+          <div className={`text-xs font-medium px-3 py-2 rounded-lg ${
+            status.type === 'ok' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' :
+            'bg-red-500/10 text-red-300 border border-red-500/20'
+          }`}>
+            {status.message}
+          </div>
+        )}
+
+        {/* Access log */}
+        {showLog && (
+          <div className="mt-2">
+            <div className="text-navy-400 text-xs font-semibold uppercase tracking-wider mb-2">Credential Access Log</div>
+            {accessLog.length > 0 ? (
+              <div className="max-h-40 overflow-y-auto">
+                <table className="w-full text-[10px]">
+                  <thead>
+                    <tr className="border-b border-navy-800/30">
+                      <th className="text-left px-2 py-1 text-navy-500">Time</th>
+                      <th className="text-left px-2 py-1 text-navy-500">Tool</th>
+                      <th className="text-left px-2 py-1 text-navy-500">Name</th>
+                      <th className="text-left px-2 py-1 text-navy-500">Agent</th>
+                      <th className="text-left px-2 py-1 text-navy-500">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accessLog.map((entry, i) => (
+                      <tr key={i} className="border-b border-navy-800/20">
+                        <td className="px-2 py-1 text-navy-400 font-mono">{formatTime(entry.accessed_at)}</td>
+                        <td className="px-2 py-1 text-navy-200">{entry.tool_id}</td>
+                        <td className="px-2 py-1 text-navy-300 font-mono">{entry.name}</td>
+                        <td className="px-2 py-1 text-navy-400" title={entry.agent_id}>{truncate(entry.agent_id, 20)}</td>
+                        <td className="px-2 py-1 text-navy-400 font-mono" title={entry.action_id}>{entry.action_id?.slice(0, 8)}…</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-navy-600 text-xs py-2">No access events recorded yet.</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Blockchain Anchors Panel ────────────────────────────────────────────────
 
 function BlockchainAnchorsPanel() {
@@ -1102,6 +1339,7 @@ export default function App() {
       <main className="pt-20 pb-12 px-6 max-w-[1600px] mx-auto space-y-6">
         <StatsRow records={records} policy={policy} />
         <AuditTable records={records} chain={chain} newIds={newIds} onReplay={handleReplayFromRow} />
+        <VaultPanel />
         <TamperPanel records={records} chain={chain} onRefresh={fetchData} />
         <div id="replay-panel">
           <ReplayPanel replayActionId={replayActionId} setReplayActionId={setReplayActionId} />

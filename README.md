@@ -5,7 +5,7 @@ Vargate sits in the execution path of autonomous AI agents and intercepts every 
 ## Quick Start (Local Dev)
 
 ```bash
-# Start all 7 services
+# Start all 8 services
 docker-compose up --build
 
 # In another terminal, run the test scripts
@@ -16,6 +16,7 @@ python test_behavioral.py        # Session 3 — behavioral history demo
 python test_replay.py            # Session 5 — policy replay verification
 python test_crypto_shredding.py  # Session 6 — GDPR crypto-shredding
 python test_blockchain.py        # Session 7 — blockchain anchoring
+python test_credential_enclave.py # Session 8 — credential vault & brokered execution
 
 # Open the audit dashboard
 open http://localhost:3000
@@ -438,6 +439,55 @@ The gateway includes a `BlockchainClient` class that uses `web3.py` to interact 
 | `bundle-archive` | Archived policy bundles by revision |
 | `hsm-tokens` | SoftHSM2 PKCS#11 token storage |
 | `shared-data` | Contract address + ABI shared between blockchain and gateway |
+| `cred-data` | HSM credential vault database |
+
+## Stage 8 — Credential Enclave & Agent-Blind Execution
+
+### Problem
+
+In Stages 1–7, agents hold their own credentials. A compromised or prompt-injected agent can exfiltrate API keys it already has. Vargate could intercept the call — but the credential was already exposed.
+
+### Solution
+
+Agents hold **no credentials**. Vargate stores all tool credentials encrypted in the HSM vault. On an approved tool call, Vargate fetches the credential from the HSM, executes the call on behalf of the agent, and returns only the result. The agent never sees the key.
+
+```
+Old: Agent (has key) → Vargate evaluates → Agent executes
+New: Agent (no key)  → Vargate evaluates → Vargate fetches key → Vargate executes → Result to agent
+```
+
+### New Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/credentials/register` | POST | Store a tool credential in the HSM vault |
+| `/credentials` | GET | List registered tools (no values returned) |
+| `/credentials/{tool_id}/{name}` | DELETE | Remove a credential |
+| `/credentials/{tool_id}/status` | GET | Check if credentials exist for a tool |
+| `/credentials/access-log` | GET | Credential access audit trail |
+
+### New Audit Columns
+
+| Column | Values |
+|--------|--------|
+| `execution_mode` | `agent_direct` or `vargate_brokered` |
+| `execution_result` | JSON result from tool execution |
+| `execution_latency_ms` | HSM fetch + tool execution time |
+| `credential_accessed` | `tool:name` (e.g., `gmail:api_key`) |
+
+### New OPA Violation
+
+`no_credential_registered_for_tool` — blocks tool calls when no credential is registered for the requested tool, ensuring the vault is the gatekeeper.
+
+### Mock Tool Server
+
+A FastAPI service on port 9000 simulates external APIs (Gmail, Salesforce, Stripe, Slack). Validates Bearer tokens. All responses include `simulated: true`.
+
+### Dashboard
+
+- **Vault Panel** — register credentials, view access log, manage tool keys
+- **Execution Mode** column — `🔒 BROKERED` / `DIRECT` pill in audit table
+- **Execution Timeline** — `[OPA Eval] → [HSM Fetch] → [Tool Execute] → [Result]` in expanded rows
 
 ## Build Sessions Summary
 
@@ -450,6 +500,7 @@ The gateway includes a `BlockchainClient` class that uses `web3.py` to interact 
 | 5 | Policy replay, bundle archival, replay UI panel, `replay.py` CLI, `test_replay.py` |
 | 6 | Crypto-shredding via SoftHSM2, PII detection, GDPR erasure, `test_crypto_shredding.py` |
 | 7 | Blockchain anchoring via Hardhat, AuditAnchor smart contract, `test_blockchain.py` |
+| 8 | Credential enclave, agent-blind brokered execution, mock tool server, vault dashboard, `test_credential_enclave.py` |
 
 ## License
 
