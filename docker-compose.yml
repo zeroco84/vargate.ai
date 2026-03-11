@@ -24,6 +24,21 @@ services:
       retries: 5
       start_period: 2s
 
+  hsm:
+    build:
+      context: ./hsm
+      dockerfile: Dockerfile
+    volumes:
+      - hsm-tokens:/var/lib/softhsm/tokens
+    ports:
+      - "8300:8300"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8300/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   opa:
     image: openpolicyagent/opa:latest
     command:
@@ -56,12 +71,15 @@ services:
       - DB_PATH=/data/audit.db
       - REDIS_URL=redis://redis:6379/0
       - BUNDLE_SERVER_URL=http://bundle-server:8080
+      - HSM_URL=http://hsm:8300
     volumes:
       - audit-data:/data
     depends_on:
       opa:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      hsm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -83,3 +101,4 @@ services:
 volumes:
   audit-data:
   bundle-archive:
+  hsm-tokens:

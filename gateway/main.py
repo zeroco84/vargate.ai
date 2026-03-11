@@ -8,6 +8,7 @@ Implements two-pass evaluation with Redis behavioral history.
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -32,6 +33,13 @@ DB_PATH = os.getenv("DB_PATH", "/data/audit.db")
 DEFAULT_BUNDLE_REVISION = "v1.0.0-prototype"
 BUNDLE_SERVER_URL = os.getenv("BUNDLE_SERVER_URL", "http://bundle-server:8080")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+HSM_URL = os.getenv("HSM_URL", "http://hsm:8300")
+
+# PII detection patterns
+_PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_PII_SORT_CODE_RE = re.compile(r"\d{2}-\d{2}-\d{2}")
+_PII_NI_NUMBER_RE = re.compile(r"[A-Z]{2}\d{6}[A-Z]")
+_PII_NAME_FIELDS = {"name", "customer_name", "full_name", "first_name", "last_name"}
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -112,7 +120,11 @@ def init_db():
             created_at            TEXT NOT NULL,
             evaluation_pass       INTEGER DEFAULT 1,
             anomaly_score_at_eval REAL DEFAULT 0.0,
-            opa_input             TEXT
+            opa_input             TEXT,
+            contains_pii          INTEGER DEFAULT 0,
+            pii_subject_id        TEXT,
+            pii_fields            TEXT,
+            erasure_status        TEXT DEFAULT 'active'
         )
     """)
     # Add columns if upgrading from earlier schemas
@@ -120,6 +132,10 @@ def init_db():
         "ALTER TABLE audit_log ADD COLUMN evaluation_pass INTEGER DEFAULT 1",
         "ALTER TABLE audit_log ADD COLUMN anomaly_score_at_eval REAL DEFAULT 0.0",
         "ALTER TABLE audit_log ADD COLUMN opa_input TEXT",
+        "ALTER TABLE audit_log ADD COLUMN contains_pii INTEGER DEFAULT 0",
+        "ALTER TABLE audit_log ADD COLUMN pii_subject_id TEXT",
+        "ALTER TABLE audit_log ADD COLUMN pii_fields TEXT",
+        "ALTER TABLE audit_log ADD COLUMN erasure_status TEXT DEFAULT 'active'",
     ]:
         try:
             conn.execute(col_sql)
@@ -190,11 +206,15 @@ def write_audit_record(
     evaluation_pass: int = 1,
     anomaly_score_at_eval: float = 0.0,
     opa_input: Optional[dict] = None,
+    contains_pii: int = 0,
+    pii_subject_id: Optional[str] = None,
+    pii_fields: Optional[list[str]] = None,
 ):
     """Write a hash-chained audit record to SQLite."""
     params_str = json.dumps(params, separators=(",", ":"))
     violations_str = json.dumps(violations, separators=(",", ":"))
     opa_input_str = json.dumps(opa_input, separators=(",", ":")) if opa_input else None
+    pii_fields_str = json.dumps(pii_fields) if pii_fields else None
     prev_hash = get_prev_hash(conn)
 
     record_hash = compute_record_hash(
@@ -219,14 +239,16 @@ def write_audit_record(
             (action_id, agent_id, tool, method, params, requested_at,
              decision, violations, severity, alert_tier, bundle_revision,
              prev_hash, record_hash, created_at,
-             evaluation_pass, anomaly_score_at_eval, opa_input)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             evaluation_pass, anomaly_score_at_eval, opa_input,
+             contains_pii, pii_subject_id, pii_fields, erasure_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             action_id, agent_id, tool, method, params_str, requested_at,
             decision, violations_str, severity, alert_tier, bundle_revision,
             prev_hash, record_hash, now,
             evaluation_pass, anomaly_score_at_eval, opa_input_str,
+            contains_pii, pii_subject_id, pii_fields_str, "active",
         ),
     )
     conn.commit()
@@ -553,6 +575,97 @@ async def bundle_status_proxy():
     return {"revision": DEFAULT_BUNDLE_REVISION, "etag": "unknown"}
 
 
+# ── PII detection and HSM encryption ────────────────────────────────────────
+
+def detect_pii_fields(params: dict) -> list[str]:
+    """Scan params for fields containing PII. Returns list of field names."""
+    pii_fields = []
+    for key, value in params.items():
+        if not isinstance(value, str):
+            continue
+        # Check name fields
+        if key.lower() in _PII_NAME_FIELDS:
+            pii_fields.append(key)
+            continue
+        # Check email
+        if _PII_EMAIL_RE.search(value):
+            pii_fields.append(key)
+            continue
+        # Check sort code
+        if _PII_SORT_CODE_RE.fullmatch(value):
+            pii_fields.append(key)
+            continue
+        # Check NI number
+        if _PII_NI_NUMBER_RE.fullmatch(value.upper()):
+            pii_fields.append(key)
+            continue
+    return pii_fields
+
+
+def extract_subject_id(params: dict, agent_id: str) -> str:
+    """Extract data subject ID from params, falling back to agent_id."""
+    for key in ("customer_id", "subject_id", "user_id"):
+        if key in params and isinstance(params[key], str):
+            return params[key]
+    return agent_id
+
+
+async def encrypt_pii_in_params(
+    params: dict, pii_fields: list[str], subject_id: str
+) -> dict:
+    """Encrypt PII fields in params via the HSM service. Returns modified params."""
+    # Ensure key exists for this subject
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        await client.post(f"{HSM_URL}/keys", json={"subject_id": subject_id})
+
+        encrypted_params = dict(params)
+        for field in pii_fields:
+            plaintext = str(params[field])
+            resp = await client.post(
+                f"{HSM_URL}/encrypt",
+                json={"subject_id": subject_id, "plaintext": plaintext},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                encrypted_params[field] = (
+                    f"[ENCRYPTED:{data['key_id']}:{data['ciphertext_b64']}]"
+                )
+            else:
+                print(f"[VARGATE] HSM encrypt failed for {field}: {resp.text}", flush=True)
+
+    return encrypted_params
+
+
+async def decrypt_field_value(value: str) -> dict:
+    """Attempt to decrypt an [ENCRYPTED:key_id:ciphertext] value."""
+    if not isinstance(value, str) or not value.startswith("[ENCRYPTED:"):
+        return {"plaintext": value, "encrypted": False}
+
+    # Parse [ENCRYPTED:key_id:ciphertext_b64]
+    inner = value[len("[ENCRYPTED:"):-1]
+    parts = inner.split(":", 1)
+    if len(parts) != 2:
+        return {"error": "malformed_encrypted_field"}
+
+    key_id = parts[0]
+    ciphertext_b64 = parts[1]
+
+    # Extract subject_id from key_id (key-{subject_id}-v1)
+    subject_id = key_id.replace("key-", "").replace("-v1", "")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{HSM_URL}/decrypt",
+            json={"subject_id": subject_id, "ciphertext_b64": ciphertext_b64},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if "error" in data:
+                return data
+            return {"plaintext": data["plaintext"], "encrypted": True, "decrypted": True}
+        return {"error": f"HSM returned {resp.status_code}", "encrypted": True}
+
+
 # ── Startup / Shutdown ──────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -650,6 +763,29 @@ async def tool_call(req: ToolCallRequest):
     else:
         final_opa_input = opa_input_p1
 
+    # ── PII detection and encryption ─────────────────────────────────
+    pii_fields = detect_pii_fields(req.params)
+    contains_pii = 1 if pii_fields else 0
+    pii_subject_id = None
+    params_for_audit = req.params
+
+    if pii_fields:
+        pii_subject_id = extract_subject_id(req.params, req.agent_id)
+        try:
+            params_for_audit = await encrypt_pii_in_params(
+                req.params, pii_fields, pii_subject_id
+            )
+            print(
+                f"[PII] Encrypted {len(pii_fields)} field(s) for subject "
+                f"{pii_subject_id}: {pii_fields}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[PII] HSM encryption failed: {e}. Storing plaintext.", flush=True)
+            params_for_audit = req.params
+            contains_pii = 0
+            pii_fields = []
+
     # Write audit record
     conn = get_db()
     try:
@@ -659,7 +795,7 @@ async def tool_call(req: ToolCallRequest):
             agent_id=req.agent_id,
             tool=req.tool,
             method=req.method,
-            params=req.params,
+            params=params_for_audit,
             requested_at=requested_at,
             decision=decision_str,
             violations=sorted(violations),
@@ -669,6 +805,9 @@ async def tool_call(req: ToolCallRequest):
             evaluation_pass=evaluation_pass,
             anomaly_score_at_eval=anomaly_score,
             opa_input=final_opa_input,
+            contains_pii=contains_pii,
+            pii_subject_id=pii_subject_id,
+            pii_fields=pii_fields if pii_fields else None,
         )
     finally:
         conn.close()
@@ -783,6 +922,10 @@ async def audit_log(
             "evaluation_pass": row["evaluation_pass"] if "evaluation_pass" in row.keys() else 1,
             "anomaly_score_at_eval": row["anomaly_score_at_eval"] if "anomaly_score_at_eval" in row.keys() else 0.0,
             "opa_input": json.loads(row["opa_input"]) if ("opa_input" in row.keys() and row["opa_input"]) else None,
+            "contains_pii": row["contains_pii"] if "contains_pii" in row.keys() else 0,
+            "pii_subject_id": row["pii_subject_id"] if "pii_subject_id" in row.keys() else None,
+            "pii_fields": json.loads(row["pii_fields"]) if ("pii_fields" in row.keys() and row["pii_fields"]) else None,
+            "erasure_status": row["erasure_status"] if "erasure_status" in row.keys() else "active",
         }
         records.append(rec)
 
@@ -858,6 +1001,179 @@ async def tamper_restore():
         }
     finally:
         conn.close()
+
+
+# ── Crypto-shredding / Erasure endpoints ────────────────────────────────────
+
+@app.post("/audit/erase/{subject_id}")
+async def erase_subject(subject_id: str):
+    """GDPR right-to-erasure: delete the subject's HSM key and mark records."""
+    # 1. Delete the key in HSM
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.delete(f"{HSM_URL}/keys/{subject_id}")
+        if resp.status_code == 404:
+            raise HTTPException(404, f"No key found for subject {subject_id}")
+        hsm_result = resp.json()
+
+    erasure_certificate = hsm_result.get("erasure_certificate", "")
+    erased_at = hsm_result.get("erased_at", datetime.now(timezone.utc).isoformat())
+
+    # 2. Mark all audit records for this subject as erased
+    conn = get_db()
+    try:
+        cursor = conn.execute(
+            "UPDATE audit_log SET erasure_status = 'erased' WHERE pii_subject_id = ?",
+            (subject_id,),
+        )
+        records_affected = cursor.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(
+        f"[ERASURE] Subject {subject_id}: key deleted, "
+        f"{records_affected} records marked erased. "
+        f"Certificate: {erasure_certificate[:16]}...",
+        flush=True,
+    )
+
+    return {
+        "subject_id": subject_id,
+        "records_affected": records_affected,
+        "erasure_certificate": erasure_certificate,
+        "erased_at": erased_at,
+        "interpretation": (
+            f"Key deleted. {records_affected} audit records contain encrypted PII "
+            f"for this subject. The ciphertext fields are now irrecoverable. "
+            f"Record count and hash chain integrity are preserved."
+        ),
+    }
+
+
+@app.get("/audit/erase/{subject_id}/verify")
+async def verify_erasure(subject_id: str):
+    """Attempt to decrypt PII after erasure — should fail."""
+    # Get the first encrypted record for this subject
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT params, pii_fields FROM audit_log WHERE pii_subject_id = ? LIMIT 1",
+            (subject_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise HTTPException(404, f"No records found for subject {subject_id}")
+
+    params = json.loads(row["params"])
+    pii_fields = json.loads(row["pii_fields"]) if row["pii_fields"] else []
+
+    # Attempt to decrypt the first PII field
+    if not pii_fields:
+        return {
+            "subject_id": subject_id,
+            "decryption_attempted": False,
+            "interpretation": "No PII fields found in record.",
+        }
+
+    first_field = pii_fields[0]
+    encrypted_value = params.get(first_field, "")
+
+    result = await decrypt_field_value(encrypted_value)
+
+    if "error" in result:
+        return {
+            "subject_id": subject_id,
+            "decryption_attempted": True,
+            "decryption_result": "failed",
+            "error": result["error"],
+            "erased": result.get("erased", False),
+            "interpretation": "PII is irrecoverable. Erasure is complete and verifiable.",
+        }
+
+    return {
+        "subject_id": subject_id,
+        "decryption_attempted": True,
+        "decryption_result": "success",
+        "plaintext": result.get("plaintext"),
+        "interpretation": "Key still exists. PII is still accessible.",
+    }
+
+
+@app.get("/audit/subjects")
+async def list_subjects():
+    """List all subjects with encrypted PII in the audit log."""
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT pii_subject_id, COUNT(*) as record_count,
+                   MAX(erasure_status) as erasure_status,
+                   MAX(created_at) as last_seen
+            FROM audit_log
+            WHERE pii_subject_id IS NOT NULL
+            GROUP BY pii_subject_id
+            ORDER BY last_seen DESC
+        """).fetchall()
+    finally:
+        conn.close()
+
+    subjects = []
+    for row in rows:
+        subjects.append({
+            "subject_id": row["pii_subject_id"],
+            "record_count": row["record_count"],
+            "erasure_status": row["erasure_status"],
+            "last_seen": row["last_seen"],
+        })
+
+    return {"subjects": subjects}
+
+
+# ── HSM proxy endpoints (for UI and test scripts) ───────────────────────────
+
+@app.post("/hsm/keys")
+async def proxy_hsm_create_key(req: dict):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"{HSM_URL}/keys", json=req)
+        return resp.json()
+
+
+@app.post("/hsm/encrypt")
+async def proxy_hsm_encrypt(req: dict):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"{HSM_URL}/encrypt", json=req)
+        return resp.json()
+
+
+@app.post("/hsm/decrypt")
+async def proxy_hsm_decrypt(req: dict):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"{HSM_URL}/decrypt", json=req)
+        return resp.json()
+
+
+@app.get("/hsm/keys/{subject_id}/status")
+async def proxy_hsm_key_status(subject_id: str):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{HSM_URL}/keys/{subject_id}/status")
+        return resp.json()
+
+
+@app.get("/hsm/keys")
+async def proxy_hsm_list_keys():
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(f"{HSM_URL}/keys")
+        return resp.json()
+
+
+@app.delete("/hsm/keys/{subject_id}")
+async def proxy_hsm_delete_key(subject_id: str):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.delete(f"{HSM_URL}/keys/{subject_id}")
+        if resp.status_code == 404:
+            raise HTTPException(404, f"No key found for subject {subject_id}")
+        return resp.json()
 
 
 # ── Policy replay endpoints ──────────────────────────────────────────────────

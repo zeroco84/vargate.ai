@@ -261,6 +261,8 @@ function AuditTable({ records, chain, newIds, onReplay }) {
               const isExpanded = expandedId === rec.id;
               const chainOk = chainMap[rec.id] ?? true;
               const wasJustBroken = !chainOk && chainMap[rec.id] === false;
+              const hasPii = rec.contains_pii === 1;
+              const isErased = rec.erasure_status === 'erased';
 
               return (
                 <React.Fragment key={rec.id}>
@@ -272,12 +274,16 @@ function AuditTable({ records, chain, newIds, onReplay }) {
                       ${wasJustBroken ? 'animate-pulse-red' : ''}
                       ${isBlock && chainOk ? 'bg-red-950/20 border-l-[3px] border-l-red-500/60' : ''}
                       ${!chainOk ? 'bg-red-950/15' : ''}
+                      ${isErased ? 'opacity-60' : ''}
                       ${isExpanded ? 'bg-navy-800/30' : 'hover:bg-navy-800/20'}
                     `}
                   >
                     <td className="px-4 py-2.5 text-navy-500 font-mono text-xs">{rec.id}</td>
                     <td className="px-4 py-2.5 text-navy-300 font-mono text-xs">{formatTime(rec.created_at)}</td>
-                    <td className="px-4 py-2.5 text-navy-200 text-xs" title={rec.agent_id}>{truncate(rec.agent_id, 28)}</td>
+                    <td className="px-4 py-2.5 text-navy-200 text-xs" title={rec.agent_id}>
+                      {hasPii && <span title={isErased ? `Erased: ${rec.pii_subject_id}` : `PII: ${rec.pii_subject_id}`} className="mr-1">{isErased ? '🔓' : '🔒'}</span>}
+                      {truncate(rec.agent_id, 26)}
+                    </td>
                     <td className="px-4 py-2.5 text-navy-200 text-xs">{rec.tool}</td>
                     <td className="px-4 py-2.5"><DecisionPill decision={rec.decision} /></td>
                     <td className="px-4 py-2.5 text-navy-400 text-xs" title={rec.violations?.join(', ')}>
@@ -734,6 +740,180 @@ function ReplayPanel({ replayActionId, setReplayActionId }) {
   );
 }
 
+// ── Erasure Panel ───────────────────────────────────────────────────────────
+
+function ErasurePanel({ onErasureComplete }) {
+  const [subjects, setSubjects] = useState([]);
+  const [subjectInput, setSubjectInput] = useState('');
+  const [statusResult, setStatusResult] = useState(null);
+  const [eraseResult, setEraseResult] = useState(null);
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchSubjects = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/audit/subjects`);
+      const data = await r.json();
+      setSubjects(data.subjects || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchSubjects(); }, [fetchSubjects]);
+
+  const checkStatus = async () => {
+    if (!subjectInput.trim()) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/hsm/keys/${subjectInput}/status`);
+      const data = await r.json();
+      setStatusResult(data);
+      setEraseResult(null);
+      setVerifyResult(null);
+    } catch (e) { setStatusResult({ error: e.message }); }
+    setLoading(false);
+  };
+
+  const executeErasure = async (subjectId) => {
+    const id = subjectId || subjectInput.trim();
+    if (!id || !window.confirm(`Execute GDPR erasure for "${id}"?\n\nThis will PERMANENTLY delete the encryption key.\nPII in ${subjects.find(s => s.subject_id === id)?.record_count || '?'} records will become irrecoverable.\n\nThis cannot be undone.`)) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/audit/erase/${id}`, { method: 'POST' });
+      const data = await r.json();
+      setEraseResult(data);
+      setStatusResult(null);
+      setVerifyResult(null);
+      fetchSubjects();
+      if (onErasureComplete) onErasureComplete();
+    } catch (e) { setEraseResult({ error: e.message }); }
+    setLoading(false);
+  };
+
+  const verifyErasure = async (subjectId) => {
+    const id = subjectId || subjectInput.trim();
+    if (!id) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/audit/erase/${id}/verify`);
+      const data = await r.json();
+      setVerifyResult(data);
+    } catch (e) { setVerifyResult({ error: e.message }); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-navy-900/50 rounded-2xl border border-navy-800/50 p-6">
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-xl">🗑</span>
+        <h2 className="text-white font-bold text-base">Erasure Management</h2>
+        <span className="text-navy-500 text-xs">— GDPR Right to Erasure</span>
+      </div>
+      <p className="text-navy-500 text-xs mb-4">
+        Delete a subject's HSM encryption key to render their PII irrecoverable. Audit records and hash chain integrity are preserved.
+      </p>
+
+      {/* Subject input */}
+      <div className="flex items-center gap-2 mb-4">
+        <label className="text-navy-400 text-xs">Subject ID:</label>
+        <input
+          type="text"
+          value={subjectInput}
+          onChange={e => setSubjectInput(e.target.value)}
+          placeholder="user-eu-demo-001"
+          className="flex-1 bg-navy-950 border border-navy-700 text-white rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-vargate"
+        />
+        <button
+          onClick={checkStatus}
+          disabled={loading || !subjectInput.trim()}
+          className="px-3 py-2 bg-navy-800 text-navy-300 rounded-lg text-xs font-medium border border-navy-700 hover:bg-navy-700 disabled:opacity-50 transition-colors"
+        >Check Status</button>
+        <button
+          onClick={() => executeErasure()}
+          disabled={loading || !subjectInput.trim()}
+          className="px-3 py-2 bg-red-900/80 text-red-200 rounded-lg text-xs font-semibold border border-red-700/60 hover:bg-red-800 disabled:opacity-50 transition-colors"
+        >🗑 Execute Erasure</button>
+      </div>
+
+      {/* Subject list */}
+      {subjects.length > 0 && (
+        <div className="space-y-1 mb-4">
+          <div className="text-navy-500 text-xs font-semibold uppercase tracking-wider mb-2">Subjects with encrypted PII</div>
+          {subjects.map(s => (
+            <div key={s.subject_id} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs ${s.erasure_status === 'erased' ? 'bg-navy-950/50 opacity-60' : 'bg-navy-800/30'}`}>
+              <span>{s.erasure_status === 'erased' ? '🔓' : '🔒'}</span>
+              <span className="text-white font-mono flex-1">{s.subject_id}</span>
+              <span className="text-navy-400">{s.record_count} record{s.record_count !== 1 ? 's' : ''}</span>
+              {s.erasure_status === 'erased' ? (
+                <span className="flex items-center gap-1">
+                  <span className="text-navy-500">Erased ✓</span>
+                  <button
+                    onClick={() => verifyErasure(s.subject_id)}
+                    className="px-2 py-1 bg-navy-700/50 text-navy-400 rounded text-[10px] hover:bg-navy-700 transition-colors"
+                  >Verify</button>
+                </span>
+              ) : (
+                <button
+                  onClick={() => executeErasure(s.subject_id)}
+                  disabled={loading}
+                  className="px-2 py-1 bg-red-900/60 text-red-300 rounded text-[10px] font-medium hover:bg-red-800 disabled:opacity-50 transition-colors"
+                >Erase</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Status result */}
+      {statusResult && (
+        <div className="bg-navy-950/60 rounded-lg p-3 text-xs mb-3 border border-navy-800/40">
+          <div className="text-navy-400 font-semibold mb-1">Key Status</div>
+          <div className="text-white font-mono">
+            {statusResult.key_exists ? (
+              <span className="text-emerald-400">🔒 Key active — {statusResult.key_id}</span>
+            ) : statusResult.erased_at ? (
+              <span className="text-red-400">🔓 Key erased at {formatTime(statusResult.erased_at)}</span>
+            ) : (
+              <span className="text-navy-500">No key found</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Erasure result */}
+      {eraseResult && !eraseResult.error && (
+        <div className="bg-red-950/30 rounded-lg p-4 text-xs border border-red-800/40">
+          <div className="text-red-300 font-bold mb-2">✓ Erasure Complete</div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+            <span className="text-navy-500">Subject</span>
+            <span className="text-white font-mono">{eraseResult.subject_id}</span>
+            <span className="text-navy-500">Records</span>
+            <span className="text-white">{eraseResult.records_affected} marked erased</span>
+            <span className="text-navy-500">Certificate</span>
+            <span className="text-amber-400 font-mono break-all">{eraseResult.erasure_certificate}</span>
+            <span className="text-navy-500">Erased at</span>
+            <span className="text-white">{eraseResult.erased_at}</span>
+          </div>
+          <p className="text-navy-400 mt-2 text-[11px]">{eraseResult.interpretation}</p>
+        </div>
+      )}
+
+      {/* Verify result */}
+      {verifyResult && (
+        <div className={`rounded-lg p-3 text-xs border mt-3 ${verifyResult.decryption_result === 'failed'
+          ? 'bg-emerald-950/30 border-emerald-800/40'
+          : 'bg-amber-950/30 border-amber-800/40'
+        }`}>
+          <div className={`font-bold mb-1 ${verifyResult.decryption_result === 'failed' ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {verifyResult.decryption_result === 'failed' ? '✅ Erasure Verified' : '⚠️ Key Still Active'}
+          </div>
+          <p className="text-navy-400">{verifyResult.interpretation}</p>
+          {verifyResult.error && <p className="text-navy-500 mt-1 font-mono">Error: {verifyResult.error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -810,6 +990,7 @@ export default function App() {
         <div id="replay-panel">
           <ReplayPanel replayActionId={replayActionId} setReplayActionId={setReplayActionId} />
         </div>
+        <ErasurePanel onErasureComplete={fetchData} />
         <PolicyTimeline records={records} />
       </main>
     </div>

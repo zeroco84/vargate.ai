@@ -62,6 +62,14 @@ Agent ─► POST /mcp/tools/call ─► Vargate Gateway ──► OPA Policy Ch
 | POST   | `/audit/tamper-restore`     | DEMO: restore corrupted hashes                   |
 | POST   | `/audit/replay`             | Replay a policy decision from archived input/bundle |
 | POST   | `/audit/replay-bulk`        | Bulk replay the last N records                   |
+| POST   | `/audit/erase/{subject_id}` | GDPR erasure: delete HSM key, mark records       |
+| GET    | `/audit/erase/{subject_id}/verify` | Verify erasure is irrecoverable           |
+| GET    | `/audit/subjects`           | List all subjects with encrypted PII             |
+| POST   | `/hsm/keys`                 | Generate AES-256 key for a data subject          |
+| POST   | `/hsm/encrypt`              | Encrypt plaintext with subject's key             |
+| POST   | `/hsm/decrypt`              | Decrypt ciphertext (fails after erasure)         |
+| DELETE | `/hsm/keys/{subject_id}`    | Delete subject's key (erasure event)             |
+| GET    | `/hsm/keys/{subject_id}/status` | Check key status                             |
 | GET    | `/bundles/vargate/status`   | Current policy revision, ETag, rule count        |
 | POST   | `/bundles/vargate/update`   | Live policy update (add/remove domains, etc.)    |
 | GET    | `/bundles/vargate/archive/list` | List all archived bundle revisions            |
@@ -173,6 +181,19 @@ python replay.py --record 7
 3. The replay endpoint fetches the archived bundle, spins up an ephemeral OPA instance, evaluates the stored input, and compares the result to what was recorded
 4. If decision, violations, and severity all match → **VERIFIED**
 
+## Crypto-Shredding (GDPR Erasure)
+
+Audit records must be kept for compliance, but GDPR requires that personal data be erasable. These requirements conflict. Crypto-shredding resolves the conflict: PII is encrypted at rest with a per-subject AES-256 key managed by SoftHSM2 (PKCS#11). Deleting the key makes the ciphertext irrecoverable while preserving the audit record and hash chain.
+
+**PII detection:** The gateway scans `params` for emails, names, sort codes, and NI numbers. Detected fields are encrypted via the HSM before being stored in the audit log.
+
+**Erasure workflow:**
+1. `POST /audit/erase/{subject_id}` — deletes the HSM key, marks records as erased, returns erasure certificate
+2. `GET /audit/erase/{subject_id}/verify` — attempts decryption to prove irrecoverability
+3. Chain integrity is preserved — only the key is deleted, not the records
+
+**Audit columns:** `contains_pii`, `pii_subject_id`, `pii_fields`, `erasure_status`
+
 ## Build Sessions
 
 | Session | What was built |
@@ -182,6 +203,7 @@ python replay.py --record 7
 | 3 | Redis behavioral history, two-pass evaluation, anomaly scoring, `test_behavioral.py` |
 | 4 | React audit dashboard, tamper simulation, policy timeline |
 | 5 | Policy replay, bundle archival, replay UI panel, `replay.py` CLI, `test_replay.py` |
+| 6 | Crypto-shredding via SoftHSM2, PII detection, GDPR erasure, `test_crypto_shredding.py` |
 
 ## License
 
