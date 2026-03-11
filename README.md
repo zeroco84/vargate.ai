@@ -74,6 +74,10 @@ Agent ─► POST /mcp/tools/call ─► Vargate Gateway ──► OPA Policy Ch
 | POST   | `/bundles/vargate/update`   | Live policy update (add/remove domains, etc.)    |
 | GET    | `/bundles/vargate/archive/list` | List all archived bundle revisions            |
 | GET    | `/bundles/vargate/archive/{revision}` | Retrieve an archived bundle by revision |
+| POST   | `/anchor/trigger`           | Trigger an immediate blockchain anchor           |
+| GET    | `/anchor/log`               | Return all anchor records                        |
+| GET    | `/anchor/verify`            | Verify chain tip against latest on-chain anchor  |
+| GET    | `/anchor/status`            | Blockchain connection and anchor status          |
 
 ## Policy Rules
 
@@ -194,6 +198,19 @@ Audit records must be kept for compliance, but GDPR requires that personal data 
 
 **Audit columns:** `contains_pii`, `pii_subject_id`, `pii_fields`, `erasure_status`
 
+## Blockchain Anchoring
+
+The hash chain in SQLite is tamper-evident but mutable: an attacker with database access could corrupt and recompute the entire chain. A periodic anchor to an external, immutable ledger makes this attack infeasible.
+
+Every 60 seconds (configurable), the gateway computes the chain tip hash and record count, then submits a transaction to the `AuditAnchor` smart contract on a local Hardhat Ethereum network. The contract stores the chain state immutably on-chain.
+
+**Three-layer tamper evidence:**
+1. **Layer 1: Hash chain (SQLite)** — detects any record modification
+2. **Layer 2: Policy replay (OPA)** — verifies decision correctness
+3. **Layer 3: Blockchain anchor** — proves chain state to external parties
+
+**Anchor table columns:** `anchor_index`, `chain_tip_hash`, `record_count`, `tx_hash`, `block_number`, `anchored_at`
+
 ## Build Sessions
 
 | Session | What was built |
@@ -204,6 +221,7 @@ Audit records must be kept for compliance, but GDPR requires that personal data 
 | 4 | React audit dashboard, tamper simulation, policy timeline |
 | 5 | Policy replay, bundle archival, replay UI panel, `replay.py` CLI, `test_replay.py` |
 | 6 | Crypto-shredding via SoftHSM2, PII detection, GDPR erasure, `test_crypto_shredding.py` |
+| 7 | Blockchain anchoring via Hardhat, AuditAnchor smart contract, `test_blockchain.py` |
 
 ## License
 

@@ -3,8 +3,10 @@ Vargate MCP Proxy Gateway
 Intercepts AI agent tool calls, evaluates them against OPA policy,
 and logs every decision to a hash-chained SQLite audit log.
 Implements two-pass evaluation with Redis behavioral history.
+Blockchain anchoring via Hardhat local Ethereum network.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -34,6 +36,10 @@ DEFAULT_BUNDLE_REVISION = "v1.0.0-prototype"
 BUNDLE_SERVER_URL = os.getenv("BUNDLE_SERVER_URL", "http://bundle-server:8080")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 HSM_URL = os.getenv("HSM_URL", "http://hsm:8300")
+BLOCKCHAIN_RPC_URL = os.getenv("BLOCKCHAIN_RPC_URL", "http://blockchain:8545")
+CONTRACT_ADDRESS_FILE = os.getenv("CONTRACT_ADDRESS_FILE", "/shared/contract_address.txt")
+CONTRACT_ABI_FILE = os.getenv("CONTRACT_ABI_FILE", "/shared/AuditAnchor.abi.json")
+ANCHOR_INTERVAL_SECONDS = int(os.getenv("ANCHOR_INTERVAL_SECONDS", "60"))
 
 # PII detection patterns
 _PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -43,7 +49,7 @@ _PII_NAME_FIELDS = {"name", "customer_name", "full_name", "first_name", "last_na
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Vargate Gateway", version="0.4.0")
+app = FastAPI(title="Vargate Gateway", version="0.5.0")
 
 # DEMO ONLY — remove in production
 app.add_middleware(
@@ -59,6 +65,11 @@ _tamper_store: dict[int, str] = {}
 # ── Redis connection pool ────────────────────────────────────────────────────
 
 redis_pool: Optional[aioredis.Redis] = None
+
+# ── Blockchain client ────────────────────────────────────────────────────────
+
+blockchain_client = None
+_anchor_task = None
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -141,6 +152,18 @@ def init_db():
             conn.execute(col_sql)
         except sqlite3.OperationalError:
             pass  # Column already exists
+    # Anchor log table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS anchor_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            anchor_index    INTEGER NOT NULL,
+            chain_tip_hash  TEXT NOT NULL,
+            record_count    INTEGER NOT NULL,
+            tx_hash         TEXT NOT NULL,
+            block_number    INTEGER NOT NULL,
+            anchored_at     TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -670,7 +693,7 @@ async def decrypt_field_value(value: str) -> dict:
 
 @app.on_event("startup")
 async def startup():
-    global redis_pool
+    global redis_pool, _anchor_task
     init_db()
     try:
         redis_pool = aioredis.from_url(
@@ -683,6 +706,12 @@ async def startup():
     except Exception as e:
         print(f"[VARGATE] Redis not available ({e}), running without history.", flush=True)
         redis_pool = None
+
+    # Initialize blockchain anchoring
+    if _init_blockchain():
+        _anchor_task = asyncio.create_task(_anchor_loop())
+        print(f"[VARGATE] Anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
 
 
@@ -1407,6 +1436,300 @@ async def audit_replay_bulk(req: BulkReplayRequest):
     }
 
 
+# ── Blockchain Anchoring ─────────────────────────────────────────────────────
+
+class BlockchainClient:
+    """Interacts with the AuditAnchor smart contract on Hardhat local chain."""
+
+    def __init__(self, rpc_url: str, contract_address: str, abi: list):
+        from web3 import Web3
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+        self.contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(contract_address),
+            abi=abi,
+        )
+        self.account = self.w3.eth.accounts[0]  # Hardhat default funded account
+        self.contract_address = contract_address
+
+    def submit_anchor(
+        self, chain_tip_hash: str, record_count: int, system_id: str
+    ) -> dict:
+        # Pad/truncate to bytes32
+        hash_bytes = bytes.fromhex(chain_tip_hash)
+        if len(hash_bytes) < 32:
+            hash_bytes = hash_bytes.ljust(32, b'\x00')
+        elif len(hash_bytes) > 32:
+            hash_bytes = hash_bytes[:32]
+
+        tx_hash = self.contract.functions.submitAnchor(
+            hash_bytes, record_count, system_id
+        ).transact({"from": self.account})
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        # Extract anchor index from event logs
+        anchor_index = 0
+        try:
+            logs = self.contract.events.AnchorSubmitted().process_receipt(receipt)
+            if logs:
+                anchor_index = logs[0]["args"]["anchorIndex"]
+        except Exception:
+            pass
+
+        return {
+            "tx_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "anchor_index": anchor_index,
+        }
+
+    def get_anchor(self, index: int) -> dict:
+        anchor = self.contract.functions.getAnchor(index).call()
+        return {
+            "block_number": anchor[0],
+            "timestamp": anchor[1],
+            "chain_tip_hash": anchor[2].hex(),
+            "record_count": anchor[3],
+            "system_id": anchor[4],
+        }
+
+    def get_latest_anchor(self) -> Optional[dict]:
+        try:
+            anchor, index = self.contract.functions.getLatestAnchor().call()
+            return {
+                "index": index,
+                "block_number": anchor[0],
+                "timestamp": anchor[1],
+                "chain_tip_hash": anchor[2].hex(),
+                "record_count": anchor[3],
+                "system_id": anchor[4],
+            }
+        except Exception:
+            return None
+
+    def get_anchor_count(self) -> int:
+        try:
+            return self.contract.functions.getAnchorCount().call()
+        except Exception:
+            return 0
+
+
+def _get_chain_tip() -> dict:
+    """Get the current chain tip hash and record count from SQLite."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT record_hash, id FROM audit_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    count = conn.execute("SELECT COUNT(*) as c FROM audit_log").fetchone()["c"]
+    conn.close()
+    if row:
+        return {"record_hash": row["record_hash"], "record_count": count}
+    return {"record_hash": "GENESIS", "record_count": 0}
+
+
+async def submit_anchor():
+    """Submit current chain state to the blockchain."""
+    global blockchain_client
+    if not blockchain_client:
+        return None
+
+    tip = _get_chain_tip()
+    if tip["record_count"] == 0:
+        return None
+
+    try:
+        result = blockchain_client.submit_anchor(
+            chain_tip_hash=tip["record_hash"],
+            record_count=tip["record_count"],
+            system_id="vargate-prototype-v1",
+        )
+
+        # Write to anchor_log
+        anchored_at = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO anchor_log
+               (anchor_index, chain_tip_hash, record_count, tx_hash, block_number, anchored_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                result["anchor_index"],
+                tip["record_hash"],
+                tip["record_count"],
+                result["tx_hash"],
+                result["block_number"],
+                anchored_at,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        print(
+            f"[ANCHOR] chain_tip={tip['record_hash'][:16]}... "
+            f"records={tip['record_count']} "
+            f"tx={result['tx_hash'][:16]}... "
+            f"block={result['block_number']}",
+            flush=True,
+        )
+
+        return {
+            "chain_tip_hash": tip["record_hash"],
+            "record_count": tip["record_count"],
+            "tx_hash": result["tx_hash"],
+            "block_number": result["block_number"],
+            "anchor_index": result["anchor_index"],
+            "anchored_at": anchored_at,
+        }
+    except Exception as e:
+        print(f"[ANCHOR] Error: {e}", flush=True)
+        return None
+
+
+async def _anchor_loop():
+    """Background task that anchors the chain every ANCHOR_INTERVAL_SECONDS."""
+    await asyncio.sleep(10)  # Initial delay to let things settle
+    while True:
+        try:
+            await submit_anchor()
+        except Exception as e:
+            print(f"[ANCHOR] Background error: {e}", flush=True)
+        await asyncio.sleep(ANCHOR_INTERVAL_SECONDS)
+
+
+def _init_blockchain():
+    """Initialize blockchain client from shared volume files."""
+    global blockchain_client
+
+    try:
+        if not os.path.exists(CONTRACT_ADDRESS_FILE):
+            print(f"[ANCHOR] Contract address file not found: {CONTRACT_ADDRESS_FILE}", flush=True)
+            return False
+
+        with open(CONTRACT_ADDRESS_FILE) as f:
+            contract_address = f.read().strip()
+
+        if not os.path.exists(CONTRACT_ABI_FILE):
+            print(f"[ANCHOR] Contract ABI file not found: {CONTRACT_ABI_FILE}", flush=True)
+            return False
+
+        with open(CONTRACT_ABI_FILE) as f:
+            abi = json.load(f)
+
+        blockchain_client = BlockchainClient(BLOCKCHAIN_RPC_URL, contract_address, abi)
+        print(
+            f"[ANCHOR] Blockchain connected. Contract: {contract_address}",
+            flush=True,
+        )
+        return True
+    except Exception as e:
+        print(f"[ANCHOR] Failed to init blockchain: {e}", flush=True)
+        return False
+
+
+# ── Anchor Endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/anchor/trigger")
+async def trigger_anchor():
+    """Trigger an immediate blockchain anchor."""
+    if not blockchain_client:
+        raise HTTPException(503, "Blockchain not connected")
+    result = await submit_anchor()
+    if not result:
+        raise HTTPException(500, "Anchor submission failed")
+    return result
+
+
+@app.get("/anchor/log")
+async def get_anchor_log():
+    """Return all anchor records."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM anchor_log ORDER BY id DESC"
+    ).fetchall()
+    conn.close()
+    return {
+        "anchors": [dict(r) for r in rows],
+        "count": len(rows),
+    }
+
+
+@app.get("/anchor/verify")
+async def verify_anchor():
+    """Verify current chain tip against latest on-chain anchor."""
+    tip = _get_chain_tip()
+
+    if not blockchain_client:
+        return {
+            "current_chain_tip": tip["record_hash"],
+            "current_record_count": tip["record_count"],
+            "latest_anchor": None,
+            "match": False,
+            "blockchain_connected": False,
+            "interpretation": "Blockchain not connected. Cannot verify anchor.",
+        }
+
+    latest = blockchain_client.get_latest_anchor()
+
+    if not latest:
+        return {
+            "current_chain_tip": tip["record_hash"],
+            "current_record_count": tip["record_count"],
+            "latest_anchor": None,
+            "match": False,
+            "blockchain_connected": True,
+            "interpretation": "No anchors submitted yet. Trigger an anchor first.",
+        }
+
+    # Compare chain tip hashes
+    anchor_hash = latest["chain_tip_hash"]
+    # The on-chain hash may have 0x prefix or be zero-padded
+    anchor_hash_clean = anchor_hash.lstrip("0") or "0"
+    tip_hash_clean = tip["record_hash"].lstrip("0") or "0"
+    match = anchor_hash_clean == tip_hash_clean
+
+    if match:
+        interpretation = (
+            f"Chain tip matches on-chain anchor at block {latest['block_number']}. "
+            f"All {tip['record_count']} records covered."
+        )
+    else:
+        new_records = tip["record_count"] - latest["record_count"]
+        interpretation = (
+            f"{new_records} records have been written since the last anchor at "
+            f"block {latest['block_number']}. This is expected — the anchor "
+            f"captures the chain state at the time of submission."
+        )
+
+    return {
+        "current_chain_tip": tip["record_hash"],
+        "current_record_count": tip["record_count"],
+        "latest_anchor": {
+            "chain_tip_hash": anchor_hash,
+            "record_count": latest["record_count"],
+            "block_number": latest["block_number"],
+            "anchor_index": latest["index"],
+        },
+        "match": match,
+        "blockchain_connected": True,
+        "interpretation": interpretation,
+    }
+
+
+@app.get("/anchor/status")
+async def anchor_status():
+    """Quick status of the blockchain anchoring system."""
+    connected = blockchain_client is not None
+    contract_addr = blockchain_client.contract_address if blockchain_client else None
+    anchor_count = blockchain_client.get_anchor_count() if blockchain_client else 0
+    latest = blockchain_client.get_latest_anchor() if blockchain_client else None
+
+    return {
+        "blockchain_connected": connected,
+        "contract_address": contract_addr,
+        "network": "Hardhat (local)" if connected else None,
+        "anchor_count": anchor_count,
+        "latest_block": latest["block_number"] if latest else None,
+        "anchor_interval_seconds": ANCHOR_INTERVAL_SECONDS,
+    }
+
+
 @app.get("/health")
 async def health():
     redis_ok = False
@@ -1416,4 +1739,10 @@ async def health():
             redis_ok = True
         except Exception:
             pass
-    return {"status": "ok", "service": "vargate-gateway", "redis": redis_ok}
+    blockchain_ok = blockchain_client is not None
+    return {
+        "status": "ok",
+        "service": "vargate-gateway",
+        "redis": redis_ok,
+        "blockchain": blockchain_ok,
+    }

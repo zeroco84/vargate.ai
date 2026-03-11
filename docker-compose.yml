@@ -39,6 +39,21 @@ services:
       retries: 10
       start_period: 5s
 
+  blockchain:
+    build:
+      context: ./blockchain
+      dockerfile: Dockerfile
+    ports:
+      - "8545:8545"
+    volumes:
+      - shared-data:/shared
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-X", "POST", "-H", "Content-Type: application/json", "-d", "{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}", "http://localhost:8545"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
   opa:
     image: openpolicyagent/opa:latest
     command:
@@ -72,14 +87,21 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - BUNDLE_SERVER_URL=http://bundle-server:8080
       - HSM_URL=http://hsm:8300
+      - BLOCKCHAIN_RPC_URL=http://blockchain:8545
+      - CONTRACT_ADDRESS_FILE=/shared/contract_address.txt
+      - CONTRACT_ABI_FILE=/shared/AuditAnchor.abi.json
+      - ANCHOR_INTERVAL_SECONDS=60
     volumes:
       - audit-data:/data
+      - shared-data:/shared:ro
     depends_on:
       opa:
         condition: service_healthy
       redis:
         condition: service_healthy
       hsm:
+        condition: service_healthy
+      blockchain:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -102,3 +124,4 @@ volumes:
   audit-data:
   bundle-archive:
   hsm-tokens:
+  shared-data:

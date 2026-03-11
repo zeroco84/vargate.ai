@@ -19,10 +19,12 @@ function truncate(s, n) {
 
 // ── Top Bar ─────────────────────────────────────────────────────────────────
 
-function TopBar({ chain, liveMode, setLiveMode }) {
+function TopBar({ chain, liveMode, setLiveMode, anchorStatus }) {
   const valid = chain?.valid;
   const count = chain?.record_count ?? 0;
   const failedId = chain?.failed_at_action_id;
+  const latestBlock = anchorStatus?.latest_block;
+  const anchorConnected = anchorStatus?.blockchain_connected;
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-navy-950/90 backdrop-blur-xl border-b border-navy-800/60 flex items-center justify-between px-6">
@@ -44,6 +46,14 @@ function TopBar({ chain, liveMode, setLiveMode }) {
             <span className="text-red-400 text-sm font-semibold">BROKEN — tampered at record #{failedId ? failedId.slice(0, 8) : '?'}</span>
           )}
         </div>
+        {anchorConnected && (
+          <div className="flex items-center gap-1.5 text-sm">
+            <span className="text-amber-400">⛓</span>
+            <span className="text-amber-300 font-medium">
+              {latestBlock != null ? `Anchored: block #${latestBlock}` : 'No anchors'}
+            </span>
+          </div>
+        )}
         <button
           onClick={() => setLiveMode(m => !m)}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-300 ${
@@ -914,6 +924,109 @@ function ErasurePanel({ onErasureComplete }) {
   );
 }
 
+// ── Blockchain Anchors Panel ────────────────────────────────────────────────
+
+function BlockchainAnchorsPanel() {
+  const [anchorLog, setAnchorLog] = useState([]);
+  const [anchorVerify, setAnchorVerify] = useState(null);
+  const [anchorStatus, setAnchorStatusLocal] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [logR, verifyR, statusR] = await Promise.all([
+        fetch(`${API}/anchor/log`),
+        fetch(`${API}/anchor/verify`),
+        fetch(`${API}/anchor/status`),
+      ]);
+      setAnchorLog((await logR.json()).anchors || []);
+      setAnchorVerify(await verifyR.json());
+      setAnchorStatusLocal(await statusR.json());
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchData(); const i = setInterval(fetchData, 15000); return () => clearInterval(i); }, [fetchData]);
+
+  const triggerAnchor = async () => {
+    setLoading(true);
+    try {
+      await fetch(`${API}/anchor/trigger`, { method: 'POST' });
+      await fetchData();
+    } catch {}
+    setLoading(false);
+  };
+
+  const connected = anchorStatus?.blockchain_connected;
+  const match = anchorVerify?.match;
+
+  return (
+    <div className="bg-navy-900/50 rounded-2xl border border-navy-800/50 p-6">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-3">
+          <span className="text-xl">⛓</span>
+          <h2 className="text-white font-bold text-base">Blockchain Anchors</h2>
+        </div>
+        <button
+          onClick={triggerAnchor}
+          disabled={loading || !connected}
+          className="px-4 py-2 bg-amber-900/60 text-amber-200 rounded-lg text-xs font-semibold border border-amber-700/50 hover:bg-amber-800 disabled:opacity-50 transition-colors"
+        >⛓ Anchor Now</button>
+      </div>
+      <div className="flex items-center gap-4 text-xs text-navy-400 mb-4">
+        {anchorStatus?.contract_address && (
+          <span>Contract: <span className="text-navy-300 font-mono">{anchorStatus.contract_address.slice(0, 10)}...{anchorStatus.contract_address.slice(-4)}</span></span>
+        )}
+        {anchorStatus?.network && <span>• {anchorStatus.network}</span>}
+        {anchorStatus?.anchor_count != null && <span>• {anchorStatus.anchor_count} anchors</span>}
+      </div>
+
+      {/* Anchor table */}
+      {anchorLog.length > 0 && (
+        <div className="overflow-x-auto mb-4">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-navy-800/40">
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">#</th>
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">Block</th>
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">Records</th>
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">Chain Tip</th>
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">Timestamp</th>
+                <th className="text-left px-3 py-2 text-navy-500 font-semibold">Tx Hash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {anchorLog.slice(0, 10).reverse().map(a => (
+                <tr key={a.id} className="border-b border-navy-800/20 hover:bg-navy-800/20">
+                  <td className="px-3 py-2 text-navy-400">{a.anchor_index}</td>
+                  <td className="px-3 py-2 text-amber-300 font-mono">#{a.block_number}</td>
+                  <td className="px-3 py-2 text-white">{a.record_count}</td>
+                  <td className="px-3 py-2 text-navy-300 font-mono">{a.chain_tip_hash?.slice(0, 16)}...</td>
+                  <td className="px-3 py-2 text-navy-400">{formatTime(a.anchored_at)}</td>
+                  <td className="px-3 py-2 text-navy-300 font-mono">0x{a.tx_hash?.slice(0, 16)}...</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Status */}
+      {anchorVerify && (
+        <div className={`rounded-lg px-4 py-2 text-xs ${
+          match
+            ? 'bg-emerald-950/30 border border-emerald-800/40 text-emerald-400'
+            : anchorVerify.latest_anchor
+              ? 'bg-amber-950/30 border border-amber-800/40 text-amber-400'
+              : 'bg-navy-950/50 border border-navy-800/40 text-navy-400'
+        }`}>
+          {match ? '✓ ' : anchorVerify.latest_anchor ? '⏳ ' : '— '}
+          {anchorVerify.interpretation}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -923,19 +1036,22 @@ export default function App() {
   const [liveMode, setLiveMode] = useState(false);
   const [newIds, setNewIds] = useState(new Set());
   const [replayActionId, setReplayActionId] = useState('');
+  const [anchorStatus, setAnchorStatus] = useState(null);
   const knownIds = useRef(new Set());
 
   const fetchData = useCallback(async () => {
     try {
-      const [logResp, verifyResp, policyResp] = await Promise.all([
+      const [logResp, verifyResp, policyResp, anchorResp] = await Promise.all([
         fetch(`${API}/audit/log?limit=200`),
         fetch(`${API}/audit/verify`),
         fetch(`${API}/bundles/vargate/status`),
+        fetch(`${API}/anchor/status`).catch(() => null),
       ]);
 
       const logData = await logResp.json();
       const verifyData = await verifyResp.json();
       const policyData = await policyResp.json();
+      if (anchorResp?.ok) setAnchorStatus(await anchorResp.json());
 
       // Track new records for fade-in animation
       const incoming = logData.records || [];
@@ -981,7 +1097,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-navy-950 text-white font-sans">
-      <TopBar chain={chain} liveMode={liveMode} setLiveMode={setLiveMode} />
+      <TopBar chain={chain} liveMode={liveMode} setLiveMode={setLiveMode} anchorStatus={anchorStatus} />
 
       <main className="pt-20 pb-12 px-6 max-w-[1600px] mx-auto space-y-6">
         <StatsRow records={records} policy={policy} />
@@ -991,6 +1107,7 @@ export default function App() {
           <ReplayPanel replayActionId={replayActionId} setReplayActionId={setReplayActionId} />
         </div>
         <ErasurePanel onErasureComplete={fetchData} />
+        <BlockchainAnchorsPanel />
         <PolicyTimeline records={records} />
       </main>
     </div>
