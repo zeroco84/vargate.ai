@@ -104,6 +104,9 @@ def main():
     old_revision = None
     new_revision = None
 
+    # Clean up behavioral history from previous runs
+    requests.delete(f"{GATEWAY_URL}/agents/agent-sales-eu-007/history", timeout=5)
+
     # ── STEP 1: Baseline test ────────────────────────────────────────────
 
     print_step(1, "Baseline test")
@@ -160,13 +163,15 @@ def main():
 
     print_step(3, "Poll until hot-swap confirmed")
     swap_start = time.time()
-    max_wait = 30  # seconds
+    max_wait = 30  # 3 full OPA poll cycles of headroom (interval is 5-10s)
     swapped = False
 
     while time.time() - swap_start < max_wait:
-        # Test by sending the same request — when it's blocked, we know OPA swapped
-        code, body = send_tool_call(PARTNER_EMAIL_PAYLOAD)
         elapsed = time.time() - swap_start
+
+        # Send the test request — when OPA loads the new policy, this will
+        # be blocked with competitor_contact_attempt
+        code, body = send_tool_call(PARTNER_EMAIL_PAYLOAD)
 
         if code == 403:
             detail = body.get("detail", {})
@@ -180,7 +185,15 @@ def main():
                 passed_steps += 1  # Step 4 (re-test succeeded)
                 break
 
-        print(f"  {DIM}  [{elapsed:.0f}s] Still on old policy... polling{RESET}")
+        # Show the revision from the latest audit record for diagnostics
+        try:
+            latest = requests.get(f"{AUDIT_LOG_URL}?limit=1", timeout=3).json()
+            latest_rev = latest["records"][0]["bundle_revision"] if latest.get("records") else "?"
+        except Exception:
+            latest_rev = "?"
+
+        print(f"  {DIM}  [{elapsed:.0f}s] Latest recorded revision: {latest_rev} "
+              f"(waiting for {new_revision})... polling{RESET}")
         time.sleep(2)
 
     if not swapped:
@@ -201,20 +214,13 @@ def main():
 
     print_step(5, "Verify audit trail captures both policy versions")
 
-    resp = requests.get(f"{AUDIT_LOG_URL}?limit=50", timeout=10)
+    resp = requests.get(f"{AUDIT_LOG_URL}?limit=200", timeout=10)
     all_records = resp.json().get("records", [])
 
-    # Find the partner.com records
-    partner_records = [
-        r for r in all_records
-        if r["tool"] == "gmail"
-        and r["method"] == "send_email"
-        and r.get("params", {}).get("to") == "contact@partner.com"
-    ]
-
-    # Find the baseline (allowed) and retest (denied) records
-    allow_rec = next((r for r in partner_records if r["action_id"] == baseline_action_id), None)
-    deny_rec = next((r for r in partner_records if r["action_id"] == retest_action_id), None)
+    # Find the baseline and retest records by action_id
+    # (params.to is now encrypted so we can't filter by it)
+    allow_rec = next((r for r in all_records if r["action_id"] == baseline_action_id), None)
+    deny_rec = next((r for r in all_records if r["action_id"] == retest_action_id), None)
 
     if allow_rec and deny_rec:
         print(f"  {DIM}Record 1: decision={allow_rec['decision']}, "
@@ -273,19 +279,37 @@ def main():
     restore_result = resp.json()
     restored_revision = restore_result.get("new_revision", "?")
 
+    # Clear behavioral history — the Step 3 polling blocked requests
+    # will have inflated the anomaly score
+    requests.delete(f"{GATEWAY_URL}/agents/agent-sales-eu-007/history", timeout=5)
+
     # Wait for OPA to pick up the restored policy
     print(f"  {YELLOW}→ Waiting for OPA to hot-swap back...{RESET}")
     swap_start = time.time()
     restored = False
 
     while time.time() - swap_start < 30:
+        elapsed = time.time() - swap_start
+
+        # Send the test request — when OPA loads the restored policy,
+        # the request will be allowed again
         code, body = send_tool_call(PARTNER_EMAIL_PAYLOAD)
         if code == 200:
-            print(f"  {GREEN}→ Policy restored ({restored_revision}). "
-                  f"System ready for next demo.{RESET}")
+            print(f"  {GREEN}→ Policy restored ({restored_revision}) "
+                  f"in {elapsed:.1f}s. System ready for next demo.{RESET}")
             restored = True
             passed_steps += 1
             break
+
+        # Show the revision from the latest audit record for diagnostics
+        try:
+            latest = requests.get(f"{AUDIT_LOG_URL}?limit=1", timeout=3).json()
+            latest_rev = latest["records"][0]["bundle_revision"] if latest.get("records") else "?"
+        except Exception:
+            latest_rev = "?"
+
+        print(f"  {DIM}  [{elapsed:.0f}s] Latest recorded revision: {latest_rev} "
+              f"(waiting for {restored_revision})... polling{RESET}")
         time.sleep(2)
 
     if not restored:
