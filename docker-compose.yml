@@ -4,6 +4,8 @@ services:
       context: ./bundle-server
     ports:
       - "8080:8080"
+    volumes:
+      - bundle-archive:/data/archive
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/bundles/vargate/status')"]
       interval: 3s
@@ -80,3 +82,4 @@ services:
 
 volumes:
   audit-data:
+  bundle-archive:

@@ -39,6 +39,8 @@ class BundleState:
         self.etag: str = ""
         self.last_updated: str = datetime.now(timezone.utc).isoformat()
         self.bundle_bytes: bytes = b""
+        self.archive_dir: str = os.environ.get("BUNDLE_ARCHIVE_DIR", "/data/archive")
+        os.makedirs(self.archive_dir, exist_ok=True)
         self._rebuild()
 
     def _generate_rego(self) -> str:
@@ -214,10 +216,16 @@ requires_human_approval if {{
         self.etag = hashlib.sha256(self.bundle_bytes).hexdigest()[:16]
         self.last_updated = datetime.now(timezone.utc).isoformat()
 
+        # Archive the bundle by revision
+        archive_path = os.path.join(self.archive_dir, f"{self.revision}.tar.gz")
+        with open(archive_path, "wb") as f:
+            f.write(self.bundle_bytes)
+
         print(
             f"[BUNDLE] Rebuilt bundle: revision={self.revision} "
             f"etag={self.etag} domains={self.competitor_domains} "
-            f"threshold={self.high_value_threshold}",
+            f"threshold={self.high_value_threshold} "
+            f"archived={archive_path}",
             flush=True,
         )
 
@@ -341,6 +349,31 @@ async def update_bundle(req: UpdateRequest):
 
     else:
         raise HTTPException(400, f"Unknown operation: {req.operation}")
+
+
+@app.get("/bundles/vargate/archive/list")
+async def archive_list():
+    """List all archived bundle revisions."""
+    revisions = []
+    for fname in sorted(os.listdir(bundle.archive_dir)):
+        if fname.endswith(".tar.gz"):
+            revisions.append(fname.replace(".tar.gz", ""))
+    return {"revisions": revisions, "count": len(revisions)}
+
+
+@app.get("/bundles/vargate/archive/{revision}")
+async def archive_get(revision: str):
+    """Retrieve an archived bundle by revision string."""
+    archive_path = os.path.join(bundle.archive_dir, f"{revision}.tar.gz")
+    if not os.path.exists(archive_path):
+        raise HTTPException(404, f"Bundle revision {revision} not found in archive")
+    with open(archive_path, "rb") as f:
+        content = f.read()
+    return Response(
+        content=content,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename={revision}.tar.gz"},
+    )
 
 
 @app.get("/health")

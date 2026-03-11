@@ -145,7 +145,7 @@ function ChainIcon({ valid }) {
 
 // ── Expanded Row Detail Panel ───────────────────────────────────────────────
 
-function RecordDetail({ rec, chainValid }) {
+function RecordDetail({ rec, chainValid, onReplay }) {
   return (
     <tr>
       <td colSpan={9} className="p-0">
@@ -190,6 +190,14 @@ function RecordDetail({ rec, chainValid }) {
                   </div>
                 </div>
               </div>
+              {rec.opa_input && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onReplay?.(rec.action_id); }}
+                  className="mt-3 px-3 py-1.5 bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 text-xs font-semibold rounded-lg border border-blue-500/30 transition-all flex items-center gap-1.5"
+                >
+                  🔁 Replay Decision
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -209,7 +217,7 @@ function DetailRow({ label, value, mono }) {
 
 // ── Audit Log Table ─────────────────────────────────────────────────────────
 
-function AuditTable({ records, chain, newIds }) {
+function AuditTable({ records, chain, newIds, onReplay }) {
   const [expandedId, setExpandedId] = useState(null);
 
   // Build chain validity map: recompute from verify result
@@ -279,7 +287,7 @@ function AuditTable({ records, chain, newIds }) {
                     <td className="px-4 py-2.5"><SeverityBadge severity={rec.severity} /></td>
                     <td className="px-4 py-2.5 text-center"><ChainIcon valid={chainOk} /></td>
                   </tr>
-                  {isExpanded && <RecordDetail rec={rec} chainValid={chainOk} />}
+                  {isExpanded && <RecordDetail rec={rec} chainValid={chainOk} onReplay={onReplay} />}
                 </React.Fragment>
               );
             })}
@@ -466,6 +474,266 @@ function PolicyTimeline({ records }) {
   );
 }
 
+// ── Policy Replay Panel ────────────────────────────────────────────────────
+
+function ReplayPanel({ replayActionId, setReplayActionId }) {
+  const [actionId, setActionId] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [bulkResult, setBulkResult] = useState(null);
+
+  // Auto-trigger when action ID is set from expanded row
+  useEffect(() => {
+    if (replayActionId) {
+      setActionId(replayActionId);
+      doReplay(replayActionId);
+      setReplayActionId('');
+    }
+  }, [replayActionId]);
+
+  const doReplay = async (id) => {
+    const targetId = id || actionId;
+    if (!targetId) return;
+    setLoading(true);
+    setResult(null);
+    setBulkResult(null);
+    try {
+      const resp = await fetch(`${API}/audit/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_id: targetId }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        setResult({ error: err.detail || `HTTP ${resp.status}` });
+      } else {
+        setResult(await resp.json());
+      }
+    } catch (e) {
+      setResult({ error: e.message });
+    }
+    setLoading(false);
+  };
+
+  const doLastBlock = async () => {
+    setLoading(true);
+    setResult(null);
+    setBulkResult(null);
+    try {
+      const resp = await fetch(`${API}/audit/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ last_block: true }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        setResult({ error: err.detail || `HTTP ${resp.status}` });
+      } else {
+        const data = await resp.json();
+        setActionId(data.action_id || '');
+        setResult(data);
+      }
+    } catch (e) {
+      setResult({ error: e.message });
+    }
+    setLoading(false);
+  };
+
+  const doVerifyLast20 = async () => {
+    setLoading(true);
+    setResult(null);
+    setBulkResult(null);
+    try {
+      const resp = await fetch(`${API}/audit/replay-bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 20 }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        setResult({ error: err.detail || `HTTP ${resp.status}` });
+      } else {
+        setBulkResult(await resp.json());
+      }
+    } catch (e) {
+      setResult({ error: e.message });
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-navy-900/40 rounded-xl border border-navy-800/40 overflow-hidden">
+      <div className="px-5 py-4 border-b border-navy-800/40 flex items-center gap-3">
+        <span className="text-lg">🔁</span>
+        <span className="text-white text-sm font-semibold">Policy Replay</span>
+        <span className="text-navy-500 text-xs ml-1">— Verify Any Decision</span>
+      </div>
+      <div className="p-5">
+        <p className="text-navy-400 text-xs mb-4 leading-relaxed">
+          Enter an Action ID to replay the policy decision from the original input document and policy bundle.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <span className="text-navy-500 text-xs font-medium shrink-0">Action ID:</span>
+            <input
+              type="text"
+              value={actionId}
+              onChange={e => setActionId(e.target.value)}
+              placeholder="e.g. def456-7890-abcd-..."
+              className="flex-1 bg-navy-950 border border-navy-700 text-navy-200 text-xs font-mono rounded-lg px-3 py-1.5 focus:border-vargate focus:ring-1 focus:ring-vargate/30 outline-none placeholder-navy-700 min-w-0"
+            />
+          </div>
+          <button
+            onClick={() => doReplay()}
+            disabled={loading || !actionId}
+            className="px-4 py-1.5 bg-blue-600/80 hover:bg-blue-600 text-white text-xs font-semibold rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            {loading ? '⏳' : '🔁'} Replay
+          </button>
+        </div>
+        <div className="flex items-center gap-3 mt-3">
+          <span className="text-navy-600 text-xs">— or —</span>
+          <button
+            onClick={doLastBlock}
+            disabled={loading}
+            className="px-3 py-1 bg-navy-800 hover:bg-navy-700 text-navy-300 text-xs font-semibold rounded-lg border border-navy-700 transition-all disabled:opacity-30"
+          >
+            Replay Last Block
+          </button>
+          <button
+            onClick={doVerifyLast20}
+            disabled={loading}
+            className="px-3 py-1 bg-navy-800 hover:bg-navy-700 text-navy-300 text-xs font-semibold rounded-lg border border-navy-700 transition-all disabled:opacity-30"
+          >
+            Verify Last 20
+          </button>
+        </div>
+
+        {/* Single replay result */}
+        {result && !result.error && (
+          <div className={`mt-4 p-4 rounded-lg border ${
+            result.replay_status === 'MATCH'
+              ? 'bg-emerald-500/5 border-emerald-500/20'
+              : 'bg-red-500/5 border-red-500/20'
+          }`}>
+            <div className="flex items-center gap-2 mb-3">
+              {result.replay_status === 'MATCH' ? (
+                <span className="text-emerald-300 text-sm font-semibold">✅ VERIFIED — Decision reproducible</span>
+              ) : (
+                <span className="text-red-300 text-sm font-semibold">⚠ MISMATCH DETECTED</span>
+              )}
+            </div>
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-center gap-3">
+                <span className="text-navy-500 w-20">Action</span>
+                <span className="text-navy-200">{result.original?.bundle_revision && `${result.opa_input_used?.action?.tool || '?'} / ${result.opa_input_used?.action?.method || '?'}`}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-navy-500 w-20">Agent</span>
+                <span className="text-navy-200">{result.opa_input_used?.agent?.id || '?'}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-navy-500 w-20">Policy</span>
+                <span className="text-navy-200 font-mono text-[10px]">{result.original?.bundle_revision}</span>
+              </div>
+              <div className="mt-2 pt-2 border-t border-navy-800/40 space-y-1">
+                <div className="flex items-center gap-3">
+                  <span className="text-navy-500 w-20">Original</span>
+                  <DecisionPill decision={result.original?.decision} />
+                  <span className="text-navy-400">{result.original?.violations?.join(', ') || '—'}</span>
+                  <SeverityBadge severity={result.original?.severity} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-navy-500 w-20">Replayed</span>
+                  <DecisionPill decision={result.replayed?.decision} />
+                  <span className="text-navy-400">{result.replayed?.violations?.join(', ') || '—'}</span>
+                  <SeverityBadge severity={result.replayed?.severity} />
+                </div>
+              </div>
+              <div className="mt-2 pt-2 border-t border-navy-800/40 flex items-center gap-4 flex-wrap">
+                {['decision', 'violations', 'severity', 'bundle_revision'].map(f => (
+                  <span key={f} className={`text-xs font-medium ${
+                    result.match?.[f] ? 'text-emerald-400' : 'text-red-400'
+                  }`}>
+                    {f.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())} {result.match?.[f] ? '✓' : '✗'}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {result?.error && (
+          <div className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-xs">
+            Error: {result.error}
+          </div>
+        )}
+
+        {/* Bulk verification results */}
+        {bulkResult && (
+          <div className="mt-4 p-4 rounded-lg border bg-navy-950/40 border-navy-800/40">
+            <div className="text-sm font-semibold text-white mb-3">
+              Bulk Verification — {bulkResult.summary.total} records
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-navy-800/40">
+                    <th className="text-left py-1.5 px-2 text-navy-500">#</th>
+                    <th className="text-left py-1.5 px-2 text-navy-500">Action ID</th>
+                    <th className="text-left py-1.5 px-2 text-navy-500">Decision</th>
+                    <th className="text-left py-1.5 px-2 text-navy-500">Violations</th>
+                    <th className="text-center py-1.5 px-2 text-navy-500">Match</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkResult.results.map((r, i) => (
+                    <tr key={i} className="border-b border-navy-800/20">
+                      <td className="py-1 px-2 text-navy-600">{i + 1}</td>
+                      <td className="py-1 px-2 text-navy-300 font-mono">{r.action_id?.slice(0, 14)}…</td>
+                      <td className="py-1 px-2">
+                        {r.replay_status === 'ERROR' ? (
+                          <span className="text-amber-400">ERROR</span>
+                        ) : (
+                          <span className={r.original?.decision === 'allow' ? 'text-emerald-400' : 'text-red-400'}>
+                            {r.original?.decision?.toUpperCase()}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1 px-2 text-navy-400">
+                        {r.original?.violations?.length ? r.original.violations[0]?.slice(0, 28) : '—'}
+                      </td>
+                      <td className="py-1 px-2 text-center">
+                        {r.replay_status === 'MATCH' ? (
+                          <span className="text-emerald-400">✓</span>
+                        ) : r.replay_status === 'ERROR' ? (
+                          <span className="text-amber-400">⚠</span>
+                        ) : (
+                          <span className="text-red-400 font-bold">✗</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 pt-2 border-t border-navy-800/40 text-xs">
+              <span className={bulkResult.summary.mismatched === 0 ? 'text-emerald-400' : 'text-red-400'}>
+                {bulkResult.summary.matched}/{bulkResult.summary.total} records verified.
+                {bulkResult.summary.mismatched > 0 && ` ${bulkResult.summary.mismatched} mismatches.`}
+              </span>
+              {bulkResult.summary.mismatched === 0 && (
+                <span className="text-navy-500 ml-2">All decisions reproducible from archived policy bundles.</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -474,6 +742,7 @@ export default function App() {
   const [policy, setPolicy] = useState(null);
   const [liveMode, setLiveMode] = useState(false);
   const [newIds, setNewIds] = useState(new Set());
+  const [replayActionId, setReplayActionId] = useState('');
   const knownIds = useRef(new Set());
 
   const fetchData = useCallback(async () => {
@@ -522,14 +791,25 @@ export default function App() {
     return () => clearInterval(interval);
   }, [liveMode, fetchData]);
 
+  const handleReplayFromRow = (actionId) => {
+    setReplayActionId(actionId);
+    // Scroll to replay panel
+    setTimeout(() => {
+      document.getElementById('replay-panel')?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
   return (
     <div className="min-h-screen bg-navy-950 text-white font-sans">
       <TopBar chain={chain} liveMode={liveMode} setLiveMode={setLiveMode} />
 
       <main className="pt-20 pb-12 px-6 max-w-[1600px] mx-auto space-y-6">
         <StatsRow records={records} policy={policy} />
-        <AuditTable records={records} chain={chain} newIds={newIds} />
+        <AuditTable records={records} chain={chain} newIds={newIds} onReplay={handleReplayFromRow} />
         <TamperPanel records={records} chain={chain} onRefresh={fetchData} />
+        <div id="replay-panel">
+          <ReplayPanel replayActionId={replayActionId} setReplayActionId={setReplayActionId} />
+        </div>
         <PolicyTimeline records={records} />
       </main>
     </div>

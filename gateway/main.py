@@ -9,7 +9,10 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -108,18 +111,20 @@ def init_db():
             record_hash           TEXT NOT NULL,
             created_at            TEXT NOT NULL,
             evaluation_pass       INTEGER DEFAULT 1,
-            anomaly_score_at_eval REAL DEFAULT 0.0
+            anomaly_score_at_eval REAL DEFAULT 0.0,
+            opa_input             TEXT
         )
     """)
-    # Add columns if upgrading from Session 1/2 schema
-    try:
-        conn.execute("ALTER TABLE audit_log ADD COLUMN evaluation_pass INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    try:
-        conn.execute("ALTER TABLE audit_log ADD COLUMN anomaly_score_at_eval REAL DEFAULT 0.0")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    # Add columns if upgrading from earlier schemas
+    for col_sql in [
+        "ALTER TABLE audit_log ADD COLUMN evaluation_pass INTEGER DEFAULT 1",
+        "ALTER TABLE audit_log ADD COLUMN anomaly_score_at_eval REAL DEFAULT 0.0",
+        "ALTER TABLE audit_log ADD COLUMN opa_input TEXT",
+    ]:
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -184,10 +189,12 @@ def write_audit_record(
     bundle_revision: str = DEFAULT_BUNDLE_REVISION,
     evaluation_pass: int = 1,
     anomaly_score_at_eval: float = 0.0,
+    opa_input: Optional[dict] = None,
 ):
     """Write a hash-chained audit record to SQLite."""
     params_str = json.dumps(params, separators=(",", ":"))
     violations_str = json.dumps(violations, separators=(",", ":"))
+    opa_input_str = json.dumps(opa_input, separators=(",", ":")) if opa_input else None
     prev_hash = get_prev_hash(conn)
 
     record_hash = compute_record_hash(
@@ -212,14 +219,14 @@ def write_audit_record(
             (action_id, agent_id, tool, method, params, requested_at,
              decision, violations, severity, alert_tier, bundle_revision,
              prev_hash, record_hash, created_at,
-             evaluation_pass, anomaly_score_at_eval)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             evaluation_pass, anomaly_score_at_eval, opa_input)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             action_id, agent_id, tool, method, params_str, requested_at,
             decision, violations_str, severity, alert_tier, bundle_revision,
             prev_hash, record_hash, now,
-            evaluation_pass, anomaly_score_at_eval,
+            evaluation_pass, anomaly_score_at_eval, opa_input_str,
         ),
     )
     conn.commit()
@@ -637,6 +644,12 @@ async def tool_call(req: ToolCallRequest):
             flush=True,
         )
 
+    # Determine the final opa_input used for the decision
+    if evaluation_pass == 2:
+        final_opa_input = opa_input_p2
+    else:
+        final_opa_input = opa_input_p1
+
     # Write audit record
     conn = get_db()
     try:
@@ -655,6 +668,7 @@ async def tool_call(req: ToolCallRequest):
             bundle_revision=bundle_revision,
             evaluation_pass=evaluation_pass,
             anomaly_score_at_eval=anomaly_score,
+            opa_input=final_opa_input,
         )
     finally:
         conn.close()
@@ -768,6 +782,7 @@ async def audit_log(
             "created_at": row["created_at"],
             "evaluation_pass": row["evaluation_pass"] if "evaluation_pass" in row.keys() else 1,
             "anomaly_score_at_eval": row["anomaly_score_at_eval"] if "anomaly_score_at_eval" in row.keys() else 0.0,
+            "opa_input": json.loads(row["opa_input"]) if ("opa_input" in row.keys() and row["opa_input"]) else None,
         }
         records.append(rec)
 
@@ -843,6 +858,237 @@ async def tamper_restore():
         }
     finally:
         conn.close()
+
+
+# ── Policy replay endpoints ──────────────────────────────────────────────────
+
+class ReplayRequest(BaseModel):
+    action_id: Optional[str] = None
+    record_number: Optional[int] = None
+    last_block: bool = False
+
+
+class BulkReplayRequest(BaseModel):
+    count: int = 10
+
+
+async def _replay_with_opa(opa_input: dict, bundle_revision: str) -> dict:
+    """Fetch the archived bundle and evaluate opa_input against it using a temp OPA."""
+    # 1. Fetch archived bundle from bundle server
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{BUNDLE_SERVER_URL}/bundles/vargate/archive/{bundle_revision}"
+            )
+            if resp.status_code != 200:
+                return {"error": f"Archived bundle {bundle_revision} not found (HTTP {resp.status_code})"}
+            bundle_bytes = resp.content
+    except Exception as e:
+        return {"error": f"Failed to fetch archived bundle: {e}"}
+
+    # 2. Write bundle to temp dir, start ephemeral OPA, query, shut down
+    tmpdir = tempfile.mkdtemp(prefix="vargate_replay_")
+    try:
+        bundle_path = os.path.join(tmpdir, "bundle.tar.gz")
+        with open(bundle_path, "wb") as f:
+            f.write(bundle_bytes)
+
+        # Find a free port
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            port = s.getsockname()[1]
+
+        # Start OPA with bundle
+        proc = subprocess.Popen(
+            [
+                "/usr/local/bin/opa", "run", "--server",
+                f"--addr=127.0.0.1:{port}",
+                "--log-level=error",
+                "-b", bundle_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Wait for OPA to be ready
+        import asyncio
+        for _ in range(30):
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as client:
+                    r = await client.get(f"http://127.0.0.1:{port}/health")
+                    if r.status_code == 200:
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(0.1)
+
+        # Query OPA
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.post(
+                    f"http://127.0.0.1:{port}/v1/data/vargate/policy/decision",
+                    json={"input": opa_input},
+                )
+                r.raise_for_status()
+                return r.json().get("result", {})
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _build_replay_response(row, replayed_result: dict) -> dict:
+    """Build the structured comparison response."""
+    original_decision = row["decision"]
+    original_violations = json.loads(row["violations"])
+    original_severity = row["severity"]
+    original_bundle = row["bundle_revision"]
+
+    replayed_decision = "allow" if replayed_result.get("allow", False) else "deny"
+    replayed_violations = sorted(replayed_result.get("violations", []))
+    replayed_severity = replayed_result.get("severity", "none")
+
+    match_decision = original_decision == replayed_decision
+    match_violations = sorted(original_violations) == replayed_violations
+    match_severity = original_severity == replayed_severity
+
+    all_match = match_decision and match_violations and match_severity
+    status = "MATCH" if all_match else "MISMATCH"
+
+    if all_match:
+        viols_str = ", ".join(original_violations) if original_violations else "no violations"
+        interpretation = (
+            f"The recorded decision is verified. Under policy {original_bundle}, "
+            f"this action was correctly {'denied for ' + viols_str if original_decision == 'deny' else 'allowed'}. "
+            f"This decision is reproducible and tamper-evident."
+        )
+    else:
+        interpretation = (
+            f"MISMATCH detected. The replayed decision differs from the original record. "
+            f"This indicates either: (a) the stored input document was modified, or "
+            f"(b) the policy bundle archive does not match what was deployed at the time. "
+            f"Recommend forensic investigation."
+        )
+
+    return {
+        "action_id": row["action_id"],
+        "replay_status": status,
+        "original": {
+            "decision": original_decision,
+            "violations": original_violations,
+            "severity": original_severity,
+            "bundle_revision": original_bundle,
+            "recorded_at": row["created_at"],
+        },
+        "replayed": {
+            "decision": replayed_decision,
+            "violations": replayed_violations,
+            "severity": replayed_severity,
+            "bundle_revision": original_bundle,
+            "replayed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "match": {
+            "decision": match_decision,
+            "violations": match_violations,
+            "severity": match_severity,
+            "bundle_revision": True,
+        },
+        "opa_input_used": json.loads(row["opa_input"]) if row["opa_input"] else None,
+        "interpretation": interpretation,
+    }
+
+
+@app.post("/audit/replay")
+async def audit_replay(req: ReplayRequest):
+    """Replay a policy decision from archived input document and bundle."""
+    conn = get_db()
+    try:
+        if req.action_id:
+            row = conn.execute(
+                "SELECT * FROM audit_log WHERE action_id = ?", (req.action_id,)
+            ).fetchone()
+        elif req.record_number:
+            row = conn.execute(
+                "SELECT * FROM audit_log ORDER BY id ASC LIMIT 1 OFFSET ?",
+                (req.record_number - 1,),
+            ).fetchone()
+        elif req.last_block:
+            row = conn.execute(
+                "SELECT * FROM audit_log WHERE decision = 'deny' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            raise HTTPException(400, "Provide action_id, record_number, or last_block=true")
+
+        if not row:
+            raise HTTPException(404, "Record not found")
+
+        if not row["opa_input"]:
+            raise HTTPException(
+                422,
+                f"Record {row['action_id']} predates Session 5 — no opa_input stored. "
+                f"Only records created after the replay feature can be replayed."
+            )
+
+        opa_input = json.loads(row["opa_input"])
+        bundle_revision = row["bundle_revision"]
+
+        replayed_result = await _replay_with_opa(opa_input, bundle_revision)
+        if "error" in replayed_result:
+            raise HTTPException(502, replayed_result["error"])
+
+        return _build_replay_response(row, replayed_result)
+    finally:
+        conn.close()
+
+
+@app.post("/audit/replay-bulk")
+async def audit_replay_bulk(req: BulkReplayRequest):
+    """Bulk replay the last N records."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE opa_input IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (req.count,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    results = []
+    match_count = 0
+    mismatch_count = 0
+    skip_count = 0
+
+    for row in reversed(rows):  # oldest first
+        opa_input = json.loads(row["opa_input"])
+        replayed_result = await _replay_with_opa(opa_input, row["bundle_revision"])
+
+        if "error" in replayed_result:
+            results.append({
+                "action_id": row["action_id"],
+                "replay_status": "ERROR",
+                "error": replayed_result["error"],
+            })
+            skip_count += 1
+            continue
+
+        resp = _build_replay_response(row, replayed_result)
+        results.append(resp)
+        if resp["replay_status"] == "MATCH":
+            match_count += 1
+        else:
+            mismatch_count += 1
+
+    return {
+        "results": results,
+        "summary": {
+            "total": len(results),
+            "matched": match_count,
+            "mismatched": mismatch_count,
+            "errors": skip_count,
+        },
+    }
 
 
 @app.get("/health")

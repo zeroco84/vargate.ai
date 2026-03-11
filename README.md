@@ -60,8 +60,12 @@ Agent ─► POST /mcp/tools/call ─► Vargate Gateway ──► OPA Policy Ch
 | DELETE | `/agents/{id}/history`      | Clear behavioral history for an agent            |
 | POST   | `/audit/tamper-simulate`    | DEMO: corrupt a record hash to break the chain   |
 | POST   | `/audit/tamper-restore`     | DEMO: restore corrupted hashes                   |
+| POST   | `/audit/replay`             | Replay a policy decision from archived input/bundle |
+| POST   | `/audit/replay-bulk`        | Bulk replay the last N records                   |
 | GET    | `/bundles/vargate/status`   | Current policy revision, ETag, rule count        |
 | POST   | `/bundles/vargate/update`   | Live policy update (add/remove domains, etc.)    |
+| GET    | `/bundles/vargate/archive/list` | List all archived bundle revisions            |
+| GET    | `/bundles/vargate/archive/{revision}` | Retrieve an archived bundle by revision |
 
 ## Policy Rules
 
@@ -143,7 +147,31 @@ GENESIS → hash₁ → hash₂ → hash₃ → ... → hashₙ
 
 The `GET /audit/verify` endpoint walks the full chain and reports validity.
 
-**Audit columns:** `id`, `action_id`, `agent_id`, `tool`, `method`, `params`, `requested_at`, `decision`, `violations`, `severity`, `alert_tier`, `bundle_revision`, `prev_hash`, `record_hash`, `created_at`, `evaluation_pass`, `anomaly_score_at_eval`
+**Audit columns:** `id`, `action_id`, `agent_id`, `tool`, `method`, `params`, `requested_at`, `decision`, `violations`, `severity`, `alert_tier`, `bundle_revision`, `prev_hash`, `record_hash`, `created_at`, `evaluation_pass`, `anomaly_score_at_eval`, `opa_input`
+
+## Policy Replay
+
+Any historical decision can be reproduced from the original OPA input document and the archived policy bundle (AGCS control AG-2.8 — Decision Replayability).
+
+```bash
+# Replay a specific action by UUID
+python replay.py --action-id def456-7890-abcd-...
+
+# Replay the most recent BLOCK decision
+python replay.py --last-block
+
+# Bulk verify the last 20 records
+python replay.py --verify-last 20
+
+# Replay by sequential record number
+python replay.py --record 7
+```
+
+**How it works:**
+1. Every record now stores the full OPA input document (`opa_input` column)
+2. Every policy bundle is archived by revision in the bundle server
+3. The replay endpoint fetches the archived bundle, spins up an ephemeral OPA instance, evaluates the stored input, and compares the result to what was recorded
+4. If decision, violations, and severity all match → **VERIFIED**
 
 ## Build Sessions
 
@@ -153,6 +181,7 @@ The `GET /audit/verify` endpoint walks the full chain and reports validity.
 | 2 | Bundle server, ETag polling, live policy hot-swap, `test_hotswap.py` |
 | 3 | Redis behavioral history, two-pass evaluation, anomaly scoring, `test_behavioral.py` |
 | 4 | React audit dashboard, tamper simulation, policy timeline |
+| 5 | Policy replay, bundle archival, replay UI panel, `replay.py` CLI, `test_replay.py` |
 
 ## License
 
