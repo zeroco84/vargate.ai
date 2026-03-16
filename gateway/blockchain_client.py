@@ -451,9 +451,10 @@ class BlockchainClient:
             # Get latest anchor from contract (blocking RPC)
             anchor_data, anchor_index = self.contract.functions.getLatestAnchor().call()
             on_chain_root = anchor_data[0].hex()  # merkleRoot (bytes32)
-            on_chain_count = anchor_data[1]  # recordCount
-            on_chain_from = anchor_data[2]  # fromRecord
-            on_chain_to = anchor_data[3]  # toRecord
+            # anchor_data[1] = prevMerkleRoot (bytes32) — skip
+            on_chain_count = anchor_data[2]  # recordCount
+            on_chain_from = anchor_data[3]  # fromRecord
+            on_chain_to = anchor_data[4]  # toRecord
         except Exception as e:
             return {
                 "error": f"No anchors on-chain or call failed: {e}",
@@ -521,12 +522,13 @@ class BlockchainClient:
             return {
                 "index": index,
                 "merkle_root": anchor_data[0].hex(),
-                "record_count": anchor_data[1],
-                "from_record": anchor_data[2],
-                "to_record": anchor_data[3],
-                "block_number": anchor_data[4],
-                "timestamp": anchor_data[5],
-                "system_id": anchor_data[6],
+                "prev_merkle_root": anchor_data[1].hex(),
+                "record_count": anchor_data[2],
+                "from_record": anchor_data[3],
+                "to_record": anchor_data[4],
+                "block_number": anchor_data[5],
+                "timestamp": anchor_data[6],
+                "system_id": anchor_data[7],
             }
         except Exception:
             return None
