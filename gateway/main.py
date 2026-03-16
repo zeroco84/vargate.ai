@@ -1909,14 +1909,22 @@ def _get_chain_tip() -> dict:
     return {"record_hash": "GENESIS", "record_count": 0}
 
 
-async def submit_anchor():
-    """Submit current chain state to the blockchain."""
-    global blockchain_client
+_last_anchored_count = 0
+
+async def submit_anchor(force=False):
+    """Submit current chain state to the blockchain.
+    Skips if no new records since last anchor (unless force=True).
+    """
+    global blockchain_client, _last_anchored_count
     if not blockchain_client:
         return None
 
     tip = _get_chain_tip()
     if tip["record_count"] == 0:
+        return None
+
+    # Skip if no new records since last anchor (saves gas)
+    if not force and tip["record_count"] == _last_anchored_count:
         return None
 
     try:
@@ -1952,6 +1960,8 @@ async def submit_anchor():
             f"block={result['block_number']}",
             flush=True,
         )
+
+        _last_anchored_count = tip["record_count"]
 
         return {
             "chain_tip_hash": tip["record_hash"],
@@ -2036,7 +2046,7 @@ async def trigger_anchor():
     # Fallback to legacy Hardhat
     if not blockchain_client:
         return {"error": "blockchain unavailable"}
-    result = await submit_anchor()
+    result = await submit_anchor(force=True)
     if not result:
         raise HTTPException(500, "Anchor submission failed")
     return result
