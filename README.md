@@ -15,7 +15,8 @@ python test_hotswap.py           # Session 2 — live policy hot-swap
 python test_behavioral.py        # Session 3 — behavioral history demo
 python test_replay.py            # Session 5 — policy replay verification
 python test_crypto_shredding.py  # Session 6 — GDPR crypto-shredding
-python test_blockchain.py        # Session 7 — blockchain anchoring
+python test_blockchain.py        # Session 7 — blockchain anchoring (Hardhat local)
+python test_sepolia_blockchain.py # Session 7B — Sepolia Merkle anchor test
 python test_credential_enclave.py # Session 8 — credential vault & brokered execution
 
 # Open the audit dashboard
@@ -57,7 +58,10 @@ Agent ─► POST /mcp/tools/call ─► Vargate Gateway ──► OPA Policy Ch
               SoftHSM2 (PKCS#11)         Hardhat Ethereum (local)  │
               AES-256 per-subject        AuditAnchor contract      │
               crypto-shredding           periodic chain anchoring  │
-                    │                                               │
+                    │                         │                     │
+                    │               Sepolia Ethereum (testnet)      │
+                    │               MerkleAuditAnchor contract      │
+                    │               Merkle root + inclusion proofs  │
                     └───────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -75,6 +79,7 @@ Agent ─► POST /mcp/tools/call ─► Vargate Gateway ──► OPA Policy Ch
 | `gateway`       | 8000 | FastAPI MCP proxy with two-pass OPA evaluation           |
 | `hsm`           | 8300 | SoftHSM2 PKCS#11 service for per-subject AES-256 keys   |
 | `blockchain`    | 8545 | Hardhat local Ethereum network + AuditAnchor contract    |
+| *(Sepolia)*     | —    | Ethereum Sepolia testnet (external) + MerkleAuditAnchor  |
 | `ui`            | 3000 | React audit dashboard (nginx + Vite build)               |
 
 ---
@@ -400,6 +405,129 @@ The gateway includes a `BlockchainClient` class that uses `web3.py` to interact 
 
 ---
 
+### Stage 7B — Sepolia Merkle Tree Anchoring (AG-2.2 / AG-2.3)
+
+Stage 7 anchored the linear chain tip — but a linear chain cannot produce an inclusion proof for any single record in sub-linear time. Stage 7B replaces the anchored value with a **Merkle tree root** and deploys to a real Ethereum testnet (Sepolia), making the anchoring independently verifiable by any third party.
+
+**What changed from Stage 7:**
+
+| Aspect | Stage 7 (Hardhat) | Stage 7B (Sepolia) |
+|--------|-------------------|--------------------|
+| Network | Local Hardhat (chain 31337) | Sepolia testnet (chain 11155111) |
+| On-chain data | Linear chain tip hash | Merkle root of all records |
+| Inclusion proofs | ❌ Not possible | ✅ O(log n) for any record |
+| Independent verification | ❌ Local only | ✅ Anyone via Etherscan |
+| Transaction signing | Unlocked local account | Manual signing with private key |
+| Gas pricing | Free (local) | EIP-1559 dynamic estimation |
+| Contract access | Anyone | Owner-only (OpenZeppelin Ownable) |
+
+**MerkleAuditAnchor Smart Contract (`blockchain/contracts/MerkleAuditAnchor.sol`)**
+
+A Solidity contract (^0.8.24) deployed to Sepolia, inheriting OpenZeppelin's `Ownable` for access control:
+
+```solidity
+struct Anchor {
+    bytes32  merkleRoot;
+    uint256  recordCount;
+    uint256  fromRecord;
+    uint256  toRecord;
+    uint256  blockNumber;
+    uint256  timestamp;
+    string   systemId;
+}
+```
+
+| Function | Description |
+|----------|-------------|
+| `submitAnchor(bytes32, uint256, uint256, uint256, string)` | Store Merkle root on-chain, emit `AnchorSubmitted` event (owner only) |
+| `getAnchor(uint256)` | Retrieve an anchor by index |
+| `getLatestAnchor()` | Get the most recent anchor and its index |
+| `getAnchorCount()` | Total number of anchors submitted |
+
+**Merkle Tree (`gateway/merkle.py`)**
+
+A from-scratch binary Merkle tree implementation with no external libraries:
+
+- **Hash function:** `SHA-256(left_bytes + right_bytes)` — raw byte concatenation
+- **Odd leaves:** Duplicate the last leaf (Bitcoin-style padding)
+- **Empty tree:** Returns `sha256(b"VARGATE_GENESIS").hexdigest()`
+- **All hashes:** Lowercase hex, no `0x` prefix
+
+| Method | Complexity | Description |
+|--------|-----------|-------------|
+| `MerkleTree(leaves)` | O(n) | Build full tree bottom-up |
+| `.root` | O(1) | Return cached Merkle root |
+| `.get_proof(index)` | O(log n) | Sibling path from leaf to root |
+| `.verify_proof(leaf, proof, root)` | O(log n) | Static verification |
+| `.from_db(conn)` | O(n) | Build from SQLite audit_log |
+
+Proof format:
+```json
+[
+  {"sibling": "a1b2c3...", "position": "left"},
+  {"sibling": "d4e5f6...", "position": "right"}
+]
+```
+
+Verified across tree sizes from 1 to 1,000 leaves. Proof depth of 10 for 1,000 records confirms O(log₂ n) complexity.
+
+**Blockchain Client (`gateway/blockchain_client.py`)**
+
+Replaces the inline `BlockchainClient` from Stage 7 with a standalone module:
+
+- Connects via `web3.py` (HTTP or WebSocket RPC)
+- **Manually signs transactions** — never assumes unlocked accounts
+- **EIP-1559 gas pricing** with legacy gasPrice fallback
+- **Dynamic gas estimation** with 30% buffer
+- Background anchor loop every `ANCHOR_INTERVAL_SECONDS` (default: 3600s)
+- **Graceful degradation** — gateway never crashes if Sepolia is unavailable; endpoints return `{"error": "blockchain unavailable"}`
+
+Anchor pipeline:
+1. Fetch all `record_hash` from SQLite
+2. Build `MerkleTree` → compute root
+3. Convert root to `bytes32`
+4. Estimate gas, build EIP-1559 transaction
+5. Sign with deployer key → `send_raw_transaction`
+6. Wait for receipt (up to 120s)
+7. Parse `AnchorSubmitted` event for `anchorIndex`
+8. Write to local `anchor_log` table
+
+**Anchor endpoints (updated):**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `POST /anchor/trigger` | Trigger | Submit a Merkle anchor (Sepolia preferred, Hardhat fallback) |
+| `GET /anchor/verify` | Verify | Compare on-chain Merkle root against freshly computed root |
+| `GET /anchor/proof/{action_id}` | Proof | **New** — O(log n) Merkle inclusion proof for any audit record |
+| `GET /anchor/log` | Log | All anchors with Etherscan URLs (Sepolia) and legacy entries |
+| `GET /anchor/status` | Status | Network, contract, deployer address, anchor count |
+
+**Four-layer tamper evidence:**
+
+| Layer | Mechanism | Detects |
+|-------|-----------|---------|
+| **Layer 1: Hash chain (SQLite)** | SHA-256 linked records | Any individual record modification |
+| **Layer 2: Policy replay (OPA)** | Ephemeral OPA re-evaluation | Decision correctness / input tampering |
+| **Layer 3: Blockchain anchor** | On-chain Ethereum state | Full chain recomputation attacks |
+| **Layer 4: Merkle inclusion proof** | Sibling-path verification | Individual record presence / absence |
+
+**Deployment:** See `DEPLOY.md` for the full guide — Sepolia faucets, RPC endpoints (Alchemy/Infura), contract deployment, Docker configuration, and cost estimates.
+
+**Environment variables (new):**
+
+| Variable | Description |
+|----------|-------------|
+| `SEPOLIA_RPC_URL` | Alchemy/Infura Sepolia RPC endpoint |
+| `DEPLOYER_PRIVATE_KEY` | Hex private key for anchor submission |
+| `MERKLE_CONTRACT_FILE` | Path to `MerkleAuditAnchor.json` (address + ABI) |
+| `ANCHOR_INTERVAL_SECONDS` | Auto-anchor interval (default: 3600) |
+| `SYSTEM_ID` | Gateway identifier (default: `vargate-v1`) |
+| `ETHERSCAN_API_KEY` | Optional — for contract verification |
+
+**Test script:** `test_sepolia_blockchain.py` creates 5 audit records, triggers a Merkle anchor, verifies the on-chain root, gets inclusion proofs for all 5 records, adds 3 more records, verifies old proofs still work in the larger tree, and prints a summary table.
+
+---
+
 ## Full Endpoint Reference
 
 | Method | Path                        | Stage | Description                                      |
@@ -426,10 +554,11 @@ The gateway includes a `BlockchainClient` class that uses `web3.py` to interact 
 | POST   | `/hsm/decrypt`              | 6 | Decrypt ciphertext (fails after erasure)         |
 | DELETE | `/hsm/keys/{subject_id}`    | 6 | Delete subject's key (erasure event)             |
 | GET    | `/hsm/keys/{subject_id}/status` | 6 | Check key status                             |
-| POST   | `/anchor/trigger`           | 7 | Trigger an immediate blockchain anchor           |
-| GET    | `/anchor/log`               | 7 | Return all anchor records                        |
-| GET    | `/anchor/verify`            | 7 | Verify chain tip against latest on-chain anchor  |
-| GET    | `/anchor/status`            | 7 | Blockchain connection and anchor status          |
+| POST   | `/anchor/trigger`           | 7/7B | Trigger Merkle anchor (Sepolia) or legacy anchor |
+| GET    | `/anchor/log`               | 7/7B | All anchor records with Etherscan URLs           |
+| GET    | `/anchor/verify`            | 7/7B | Compare on-chain Merkle root vs computed root    |
+| GET    | `/anchor/proof/{action_id}` | 7B | Merkle inclusion proof for a specific record     |
+| GET    | `/anchor/status`            | 7/7B | Network, contract, deployer, anchor count        |
 
 ## Docker Volumes
 
@@ -438,7 +567,7 @@ The gateway includes a `BlockchainClient` class that uses `web3.py` to interact 
 | `audit-data` | SQLite audit database (`audit.db`) |
 | `bundle-archive` | Archived policy bundles by revision |
 | `hsm-tokens` | SoftHSM2 PKCS#11 token storage |
-| `shared-data` | Contract address + ABI shared between blockchain and gateway |
+| `shared-data` | Contract address + ABI shared between blockchain and gateway (Hardhat + Sepolia) |
 | `cred-data` | HSM credential vault database |
 
 ## Stage 8 — Credential Enclave & Agent-Blind Execution
@@ -500,6 +629,7 @@ A FastAPI service on port 9000 simulates external APIs (Gmail, Salesforce, Strip
 | 5 | Policy replay, bundle archival, replay UI panel, `replay.py` CLI, `test_replay.py` |
 | 6 | Crypto-shredding via SoftHSM2, PII detection, GDPR erasure, `test_crypto_shredding.py` |
 | 7 | Blockchain anchoring via Hardhat, AuditAnchor smart contract, `test_blockchain.py` |
+| 7B | Sepolia Merkle anchoring, MerkleAuditAnchor.sol, inclusion proofs (AG-2.2/AG-2.3), `test_sepolia_blockchain.py` |
 | 8 | Credential enclave, agent-blind brokered execution, mock tool server, vault dashboard, `test_credential_enclave.py` |
 
 ## License

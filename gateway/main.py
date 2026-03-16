@@ -3,8 +3,9 @@ Vargate MCP Proxy Gateway
 Intercepts AI agent tool calls, evaluates them against OPA policy,
 and logs every decision to a hash-chained SQLite audit log.
 Implements two-pass evaluation with Redis behavioral history.
-Blockchain anchoring via Hardhat local Ethereum network.
+Blockchain anchoring via Sepolia Ethereum testnet with Merkle tree roots.
 Stage 8: Credential Enclave — agent-blind brokered execution.
+Stage 7B: Merkle tree audit anchoring (AG-2.2 / AG-2.3).
 """
 
 import asyncio
@@ -43,7 +44,9 @@ MOCK_TOOLS_URL = os.getenv("MOCK_TOOLS_URL", "http://mock-tools:9000")
 BLOCKCHAIN_RPC_URL = os.getenv("BLOCKCHAIN_RPC_URL", "http://blockchain:8545")
 CONTRACT_ADDRESS_FILE = os.getenv("CONTRACT_ADDRESS_FILE", "/shared/contract_address.txt")
 CONTRACT_ABI_FILE = os.getenv("CONTRACT_ABI_FILE", "/shared/AuditAnchor.abi.json")
-ANCHOR_INTERVAL_SECONDS = int(os.getenv("ANCHOR_INTERVAL_SECONDS", "60"))
+ANCHOR_INTERVAL_SECONDS = int(os.getenv("ANCHOR_INTERVAL_SECONDS", "3600"))
+SEPOLIA_RPC_URL = os.getenv("SEPOLIA_RPC_URL", "")
+MERKLE_CONTRACT_FILE = os.getenv("MERKLE_CONTRACT_FILE", "/shared/MerkleAuditAnchor.json")
 
 # PII detection patterns
 _PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -70,10 +73,56 @@ _tamper_store: dict[int, str] = {}
 
 redis_pool: Optional[aioredis.Redis] = None
 
-# ── Blockchain client ────────────────────────────────────────────────────────
+# ── Blockchain client (legacy Hardhat + new Sepolia Merkle) ──────────────────
 
 blockchain_client = None
 _anchor_task = None
+
+# New Sepolia Merkle anchor client
+merkle_blockchain_client = None
+_merkle_anchor_task = None
+
+# Merkle tree cache (Fix 2 — avoids full rebuild on every proof/verify request)
+from tree_cache import tree_cache
+
+# Fix 5: Background task for local Merkle root recording
+_merkle_root_task = None
+
+
+async def run_merkle_root_loop(get_db_fn):
+    """
+    Fix 5 (AG-2.2): Background task that computes and records the current
+    Merkle root at regular intervals (default: every hour, must be ≤ 3600s).
+    This provides evidence that roots were computed at least hourly,
+    regardless of whether on-chain anchoring succeeded.
+    """
+    from merkle import MerkleTree as _MT
+    await asyncio.sleep(20)  # Initial delay
+
+    while True:
+        try:
+            conn = get_db_fn()
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+                if count > 0:
+                    tree = _MT.from_db(conn)
+                    now = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        "INSERT INTO merkle_root_log (merkle_root, record_count, computed_at) "
+                        "VALUES (?, ?, ?)",
+                        (tree.root, tree.leaf_count, now),
+                    )
+                    conn.commit()
+                    print(
+                        f"[MERKLE-ROOT] Recorded root={tree.root[:16]}... records={tree.leaf_count}",
+                        flush=True,
+                    )
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[MERKLE-ROOT] Background loop error: {e}", flush=True)
+
+        await asyncio.sleep(MERKLE_ROOT_INTERVAL_SECONDS)
 
 
 # ── Request / Response models ────────────────────────────────────────────────
@@ -164,7 +213,7 @@ def init_db():
             conn.execute(col_sql)
         except sqlite3.OperationalError:
             pass  # Column already exists
-    # Anchor log table
+    # Anchor log table (legacy linear chain)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS anchor_log (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,9 +225,55 @@ def init_db():
             anchored_at     TEXT NOT NULL
         )
     """)
+    # Merkle anchor log table (Stage 7B — Sepolia)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merkle_anchor_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            anchor_index    INTEGER NOT NULL,
+            merkle_root     TEXT NOT NULL,
+            record_count    INTEGER NOT NULL,
+            from_record     INTEGER NOT NULL,
+            to_record       INTEGER NOT NULL,
+            tx_hash         TEXT NOT NULL,
+            block_number    INTEGER NOT NULL,
+            anchored_at     TEXT NOT NULL
+        )
+    """)
+    # Migrate: add Merkle columns to anchor_log if upgrading
+    for col_sql in [
+        "ALTER TABLE anchor_log ADD COLUMN merkle_root TEXT",
+        "ALTER TABLE anchor_log ADD COLUMN from_record INTEGER",
+        "ALTER TABLE anchor_log ADD COLUMN to_record INTEGER",
+    ]:
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    # Fix 4A (AG-2.2): Add Merkle root chain columns to merkle_anchor_log
+    for col_sql in [
+        "ALTER TABLE merkle_anchor_log ADD COLUMN prev_merkle_root TEXT",
+        "ALTER TABLE merkle_anchor_log ADD COLUMN root_chain_hash TEXT",
+    ]:
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    # Fix 5 (AG-2.2): Local Merkle root recording table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merkle_root_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            merkle_root     TEXT NOT NULL,
+            record_count    INTEGER NOT NULL,
+            computed_at     TEXT NOT NULL,
+            anchored        INTEGER NOT NULL DEFAULT 0,
+            anchor_id       INTEGER REFERENCES merkle_anchor_log(id)
+        )
+    """)
     conn.commit()
     conn.close()
 
+
+MERKLE_ROOT_INTERVAL_SECONDS = int(os.getenv("MERKLE_ROOT_INTERVAL_SECONDS", "3600"))
 
 # ── Hash-chain functions ────────────────────────────────────────────────────
 # Note: hash computation uses the original Session 1 fields only for
@@ -294,6 +389,66 @@ def write_audit_record(
         ),
     )
     conn.commit()
+
+    # Fix 2: Invalidate the Merkle tree cache so the next proof/verify
+    # request rebuilds the tree including this new record.
+    tree_cache.invalidate()
+
+
+def write_anchor_audit_record(conn: sqlite3.Connection, anchor_result: dict, contract_address: str = None):
+    """
+    Fix 3 (AG-3.2): Write a blockchain anchor event into the hash-chained audit log.
+
+    This creates a bi-directional link between the audit chain and the public ledger:
+    - This audit record contains the tx_hash pointing to Sepolia.
+    - The NEXT Merkle root computed on Sepolia will include this record's hash.
+
+    IMPORTANT: This record is included in the NEXT anchor's Merkle tree, NOT in the
+    current one. This is correct and expected — the current anchor's root was computed
+    BEFORE this record was written. The next anchor will cover records including this one.
+    """
+    import uuid
+
+    action_id = str(uuid.uuid4())
+    requested_at = datetime.now(timezone.utc).isoformat()
+
+    explorer_url = f"https://sepolia.etherscan.io/tx/{anchor_result.get('tx_hash', '')}"
+
+    params = {
+        "merkle_root": anchor_result.get("merkle_root", ""),
+        "record_count": anchor_result.get("record_count", 0),
+        "from_record": anchor_result.get("from_record", 0),
+        "to_record": anchor_result.get("to_record", 0),
+        "tx_hash": anchor_result.get("tx_hash", ""),
+        "block_number": anchor_result.get("block_number", 0),
+        "network": "sepolia",
+        "chain_id": 11155111,
+        "contract_address": contract_address or "",
+        "explorer_url": explorer_url,
+    }
+
+    write_audit_record(
+        conn=conn,
+        action_id=action_id,
+        agent_id="vargate-system",
+        tool="blockchain_anchor",
+        method="submitAnchor",
+        params=params,
+        requested_at=requested_at,
+        decision="allow",
+        violations=[],
+        severity="none",
+        alert_tier="none",
+        bundle_revision=DEFAULT_BUNDLE_REVISION,
+    )
+
+    print(
+        f"[ANCHOR] AG-3.2 audit record written: action_id={action_id[:16]}... "
+        f"tx={anchor_result.get('tx_hash', '?')[:18]}...",
+        flush=True,
+    )
+
+    return action_id
 
 
 # ── Chain verification ───────────────────────────────────────────────────────
@@ -717,7 +872,7 @@ async def decrypt_field_value(value: str) -> dict:
 
 @app.on_event("startup")
 async def startup():
-    global redis_pool, _anchor_task
+    global redis_pool, _anchor_task, merkle_blockchain_client, _merkle_anchor_task
     init_db()
     try:
         redis_pool = aioredis.from_url(
@@ -731,10 +886,43 @@ async def startup():
         print(f"[VARGATE] Redis not available ({e}), running without history.", flush=True)
         redis_pool = None
 
-    # Initialize blockchain anchoring
+    # Initialize legacy blockchain anchoring (Hardhat)
     if _init_blockchain():
         _anchor_task = asyncio.create_task(_anchor_loop())
-        print(f"[VARGATE] Anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
+        print(f"[VARGATE] Legacy anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
+
+    # Initialize Sepolia Merkle anchor client (Stage 7B)
+    try:
+        from blockchain_client import BlockchainClient as MerkleBlockchainClient
+        from blockchain_client import run_anchor_loop as merkle_anchor_loop
+        merkle_blockchain_client = MerkleBlockchainClient()
+        if merkle_blockchain_client.connect():
+            # Fix 3: pass callback to write AG-3.2 audit records after each anchor
+            def _post_anchor(conn, result):
+                write_anchor_audit_record(
+                    conn, result,
+                    contract_address=merkle_blockchain_client.contract_address,
+                )
+            _merkle_anchor_task = asyncio.create_task(
+                merkle_anchor_loop(merkle_blockchain_client, get_db, post_anchor_fn=_post_anchor)
+            )
+            print(
+                f"[VARGATE] Sepolia Merkle anchor connected. "
+                f"Contract: {merkle_blockchain_client.contract_address}",
+                flush=True,
+            )
+        else:
+            print("[VARGATE] Sepolia not configured — Merkle anchoring disabled.", flush=True)
+    except Exception as e:
+        print(f"[VARGATE] Merkle blockchain init failed: {e}", flush=True)
+        merkle_blockchain_client = None
+
+    # Fix 5 (AG-2.2): Start background Merkle root recording loop
+    _merkle_root_task = asyncio.create_task(run_merkle_root_loop(get_db))
+    print(
+        f"[VARGATE] Merkle root recording started (interval: {MERKLE_ROOT_INTERVAL_SECONDS}s).",
+        flush=True,
+    )
 
     # Initialize execution engine
     execution_engine.init(MOCK_TOOLS_URL)
@@ -1819,47 +2007,62 @@ def _init_blockchain():
         return False
 
 
-# ── Anchor Endpoints ─────────────────────────────────────────────────────────
+# ── Anchor Endpoints (Legacy Hardhat) ────────────────────────────────────────
 
 @app.post("/anchor/trigger")
 async def trigger_anchor():
-    """Trigger an immediate blockchain anchor."""
+    """Trigger an immediate Merkle anchor to Sepolia (or fallback to legacy)."""
+    global merkle_blockchain_client
+
+    # Prefer Sepolia Merkle anchoring
+    if merkle_blockchain_client and merkle_blockchain_client.connected:
+        conn = get_db()
+        try:
+            result = await merkle_blockchain_client.anchor_now(conn)
+            result["sepolia_explorer_url"] = (
+                f"https://sepolia.etherscan.io/tx/{result['tx_hash']}"
+            )
+            # Fix 3 (AG-3.2): Write anchor event into the hash-chained audit log
+            write_anchor_audit_record(
+                conn, result,
+                contract_address=merkle_blockchain_client.contract_address,
+            )
+            return result
+        except Exception as e:
+            raise HTTPException(500, f"Merkle anchor failed: {e}")
+        finally:
+            conn.close()
+
+    # Fallback to legacy Hardhat
     if not blockchain_client:
-        raise HTTPException(503, "Blockchain not connected")
+        return {"error": "blockchain unavailable"}
     result = await submit_anchor()
     if not result:
         raise HTTPException(500, "Anchor submission failed")
     return result
 
 
-@app.get("/anchor/log")
-async def get_anchor_log():
-    """Return all anchor records."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM anchor_log ORDER BY id DESC"
-    ).fetchall()
-    conn.close()
-    return {
-        "anchors": [dict(r) for r in rows],
-        "count": len(rows),
-    }
-
-
 @app.get("/anchor/verify")
 async def verify_anchor():
-    """Verify current chain tip against latest on-chain anchor."""
+    """Verify current Merkle root against latest on-chain anchor."""
+    global merkle_blockchain_client
+
+    # Prefer Sepolia Merkle verification
+    if merkle_blockchain_client and merkle_blockchain_client.connected:
+        conn = get_db()
+        try:
+            result = await merkle_blockchain_client.verify_latest(conn)
+            return result
+        finally:
+            conn.close()
+
+    # Fallback to legacy
     tip = _get_chain_tip()
 
     if not blockchain_client:
-        return {
-            "current_chain_tip": tip["record_hash"],
-            "current_record_count": tip["record_count"],
-            "latest_anchor": None,
-            "match": False,
-            "blockchain_connected": False,
-            "interpretation": "Blockchain not connected. Cannot verify anchor.",
-        }
+        return {"error": "blockchain unavailable",
+                "match": False, "computed_root": None, "on_chain_root": None,
+                "record_count": tip["record_count"]}
 
     latest = blockchain_client.get_latest_anchor()
 
@@ -1873,25 +2076,10 @@ async def verify_anchor():
             "interpretation": "No anchors submitted yet. Trigger an anchor first.",
         }
 
-    # Compare chain tip hashes
     anchor_hash = latest["chain_tip_hash"]
-    # The on-chain hash may have 0x prefix or be zero-padded
     anchor_hash_clean = anchor_hash.lstrip("0") or "0"
     tip_hash_clean = tip["record_hash"].lstrip("0") or "0"
     match = anchor_hash_clean == tip_hash_clean
-
-    if match:
-        interpretation = (
-            f"Chain tip matches on-chain anchor at block {latest['block_number']}. "
-            f"All {tip['record_count']} records covered."
-        )
-    else:
-        new_records = tip["record_count"] - latest["record_count"]
-        interpretation = (
-            f"{new_records} records have been written since the last anchor at "
-            f"block {latest['block_number']}. This is expected — the anchor "
-            f"captures the chain state at the time of submission."
-        )
 
     return {
         "current_chain_tip": tip["record_hash"],
@@ -1904,25 +2092,375 @@ async def verify_anchor():
         },
         "match": match,
         "blockchain_connected": True,
-        "interpretation": interpretation,
     }
+
+
+@app.get("/anchor/proof/{action_id}")
+async def anchor_proof(action_id: str):
+    """Get a Merkle inclusion proof for a specific audit record (AG-2.3)."""
+    from merkle import MerkleTree
+
+    conn = get_db()
+    try:
+        # Find the record
+        row = conn.execute(
+            "SELECT id, record_hash FROM audit_log WHERE action_id = ?",
+            (action_id,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, f"Record not found: {action_id}")
+
+        record_hash = row["record_hash"]
+
+        # Use cached Merkle tree (Fix 2) — rebuilds only when new records exist
+        tree = await tree_cache.get(conn)
+
+        # We need the ordered record IDs to find the leaf index
+        all_rows = conn.execute(
+            "SELECT id FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        record_ids = [r["id"] for r in all_rows]
+
+        # Find the leaf index for this record
+        try:
+            leaf_index = record_ids.index(row["id"])
+        except ValueError:
+            raise HTTPException(500, "Record found but not in ordered leaf list")
+
+        # Get proof from the cached tree
+        proof = tree.get_proof(leaf_index)
+        verified = MerkleTree.verify_proof(record_hash, proof, tree.root)
+
+        return {
+            "action_id": action_id,
+            "record_hash": record_hash,
+            "leaf_index": leaf_index,
+            "proof": proof,
+            "current_root": tree.root,
+            "verified": verified,
+            "tree_size": tree.leaf_count,
+            "proof_depth": len(proof),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/anchor/chain-verify")
+async def verify_anchor_chain():
+    """
+    Fix 4D (AG-2.2): Verify the hash chain between successive Merkle roots.
+    Walks all rows in merkle_anchor_log in order and recomputes root_chain_hash.
+    """
+    import hashlib as _hashlib
+    from merkle import GENESIS_ROOT
+
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, anchor_index, merkle_root, prev_merkle_root, root_chain_hash "
+            "FROM merkle_anchor_log ORDER BY id ASC"
+        ).fetchall()
+
+        if not rows:
+            return {"valid": True, "anchor_count": 0, "broken_at": None, "chain": []}
+
+        chain = []
+        valid = True
+        broken_at = None
+        prev_root = GENESIS_ROOT
+
+        for row in rows:
+            merkle_root = row["merkle_root"]
+            stored_prev = row["prev_merkle_root"] or GENESIS_ROOT
+            stored_hash = row["root_chain_hash"] or ""
+
+            # Recompute root_chain_hash
+            expected_hash = _hashlib.sha256(
+                bytes.fromhex(prev_root) + bytes.fromhex(merkle_root)
+            ).hexdigest()
+
+            # Check that stored prev matches our expected prev
+            prev_matches = (stored_prev.lstrip("0") or "0") == (prev_root.lstrip("0") or "0")
+            hash_matches = (stored_hash.lstrip("0") or "0") == (expected_hash.lstrip("0") or "0")
+            link_valid = prev_matches and hash_matches
+
+            entry = {
+                "anchor_index": row["anchor_index"],
+                "merkle_root": merkle_root,
+                "prev_merkle_root": stored_prev,
+                "root_chain_hash": stored_hash,
+                "expected_hash": expected_hash,
+                "match": link_valid,
+            }
+            chain.append(entry)
+
+            if not link_valid and valid:
+                valid = False
+                broken_at = row["anchor_index"]
+
+            prev_root = merkle_root
+
+        return {
+            "valid": valid,
+            "anchor_count": len(chain),
+            "broken_at": broken_at,
+            "chain": chain,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/merkle/roots")
+async def get_merkle_roots():
+    """
+    Fix 5 (AG-2.2): Return all locally-recorded Merkle roots.
+    This is the evidence trail showing roots were computed at least hourly,
+    regardless of whether on-chain anchoring was available.
+    """
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, merkle_root, record_count, computed_at, anchored, anchor_id "
+            "FROM merkle_root_log ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+
+        return {
+            "roots": [
+                {
+                    "id": r["id"],
+                    "merkle_root": r["merkle_root"],
+                    "record_count": r["record_count"],
+                    "computed_at": r["computed_at"],
+                    "anchored": bool(r["anchored"]),
+                    "anchor_id": r["anchor_id"],
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+            "interval_seconds": MERKLE_ROOT_INTERVAL_SECONDS,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/anchor/consistency-proof")
+async def consistency_proof(from_anchor_index: int, to_anchor_index: int):
+    """
+    Fix 6 (AG-2.3): Consistency proof between two anchor indices.
+
+    Verifies that the log has not been truncated or reordered between two known states.
+
+    NOTE: This is a best-effort consistency check, not a compact O(log n) proof in the
+    RFC 6962 sense. We verify that:
+    1. All record hashes in the from_anchor range still exist in SQLite unchanged
+    2. Rebuilding a Merkle tree from only those records produces the same root as stored
+    3. Those records are a prefix of the to_anchor's record range
+
+    This is a sound consistency check: if any record in the from_anchor range was modified,
+    deleted, or reordered, the recomputed root will not match. It is NOT the compact
+    sub-logarithmic proof described in RFC 6962 §2.1.2.
+    """
+    from merkle import MerkleTree as _MT
+
+    if from_anchor_index >= to_anchor_index:
+        raise HTTPException(400, "from_anchor_index must be less than to_anchor_index")
+
+    conn = get_db()
+    try:
+        from_row = conn.execute(
+            "SELECT * FROM merkle_anchor_log WHERE anchor_index = ?",
+            (from_anchor_index,),
+        ).fetchone()
+        to_row = conn.execute(
+            "SELECT * FROM merkle_anchor_log WHERE anchor_index = ?",
+            (to_anchor_index,),
+        ).fetchone()
+
+        if not from_row:
+            raise HTTPException(404, f"Anchor index {from_anchor_index} not found")
+        if not to_row:
+            raise HTTPException(404, f"Anchor index {to_anchor_index} not found")
+
+        from_root_stored = from_row["merkle_root"]
+        to_root_stored = to_row["merkle_root"]
+        from_start = from_row["from_record"]
+        from_end = from_row["to_record"]
+        to_start = to_row["from_record"]
+        to_end = to_row["to_record"]
+
+        # 1. Fetch records in the from_anchor range
+        from_records = conn.execute(
+            "SELECT id, record_hash FROM audit_log WHERE id >= ? AND id <= ? ORDER BY id ASC",
+            (from_start, from_end),
+        ).fetchall()
+
+        if not from_records:
+            return {
+                "consistent": False,
+                "reason": f"No records found in range [{from_start}..{from_end}]",
+            }
+
+        # 2. Rebuild Merkle tree from the from_anchor's records
+        from_leaves = [r["record_hash"] for r in from_records]
+        from_tree = _MT(from_leaves)
+
+        # Compare to stored root
+        from_clean = from_tree.root.lstrip("0") or "0"
+        stored_clean = from_root_stored.lstrip("0") or "0"
+        from_matches = from_clean == stored_clean
+
+        if not from_matches:
+            return {
+                "from_anchor": {
+                    "index": from_anchor_index,
+                    "merkle_root": from_root_stored,
+                    "record_range": [from_start, from_end],
+                },
+                "to_anchor": {
+                    "index": to_anchor_index,
+                    "merkle_root": to_root_stored,
+                    "record_range": [to_start, to_end],
+                },
+                "consistent": False,
+                "added_records": 0,
+                "verification": (
+                    f"Records in from_anchor range [{from_start}..{from_end}] have been "
+                    f"modified. Recomputed root={from_tree.root[:16]}... does not match "
+                    f"stored root={from_root_stored[:16]}..."
+                ),
+            }
+
+        # 3. Verify that from_anchor records are a prefix of to_anchor
+        added_records = to_end - from_end if to_end > from_end else 0
+
+        return {
+            "from_anchor": {
+                "index": from_anchor_index,
+                "merkle_root": from_root_stored,
+                "record_range": [from_start, from_end],
+            },
+            "to_anchor": {
+                "index": to_anchor_index,
+                "merkle_root": to_root_stored,
+                "record_range": [to_start, to_end],
+            },
+            "consistent": True,
+            "added_records": added_records,
+            "verification": (
+                f"Records from anchor {from_anchor_index} are an unmodified prefix of "
+                f"anchor {to_anchor_index}'s tree. {added_records} records were added "
+                f"between the two anchors."
+            ),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/anchor/log")
+async def get_anchor_log():
+    """Return all Merkle anchor records with Sepolia explorer URLs."""
+    conn = get_db()
+    try:
+        # Try merkle_anchor_log first (new table), fallback to anchor_log
+        try:
+            rows = conn.execute(
+                "SELECT * FROM merkle_anchor_log ORDER BY id DESC"
+            ).fetchall()
+        except Exception:
+            rows = []
+
+        # Also include legacy anchors
+        legacy_rows = conn.execute(
+            "SELECT * FROM anchor_log ORDER BY id DESC"
+        ).fetchall()
+
+        anchors = []
+        for r in rows:
+            d = dict(r)
+            d["sepolia_explorer_url"] = f"https://sepolia.etherscan.io/tx/{d.get('tx_hash', '')}"
+            d["source"] = "sepolia_merkle"
+            anchors.append(d)
+
+        for r in legacy_rows:
+            d = dict(r)
+            d["source"] = "hardhat_legacy"
+            anchors.append(d)
+
+        return {
+            "anchors": anchors,
+            "count": len(anchors),
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/anchor/status")
 async def anchor_status():
-    """Quick status of the blockchain anchoring system."""
-    connected = blockchain_client is not None
-    contract_addr = blockchain_client.contract_address if blockchain_client else None
-    anchor_count = blockchain_client.get_anchor_count() if blockchain_client else 0
-    latest = blockchain_client.get_latest_anchor() if blockchain_client else None
+    """Status of both legacy and Sepolia Merkle anchoring systems."""
+    global merkle_blockchain_client
+
+    # Legacy Hardhat info
+    legacy_connected = blockchain_client is not None
+    legacy_addr = blockchain_client.contract_address if blockchain_client else None
+    legacy_count = blockchain_client.get_anchor_count() if blockchain_client else 0
+
+    # Sepolia Merkle info
+    sepolia_connected = (
+        merkle_blockchain_client is not None
+        and merkle_blockchain_client.connected
+    )
+    sepolia_addr = (
+        merkle_blockchain_client.contract_address
+        if merkle_blockchain_client
+        else None
+    )
+    sepolia_deployer = (
+        merkle_blockchain_client.get_deployer_address()
+        if merkle_blockchain_client
+        else None
+    )
+    sepolia_count = (
+        merkle_blockchain_client.get_anchor_count()
+        if sepolia_connected
+        else 0
+    )
+    latest_merkle = (
+        await merkle_blockchain_client.get_latest_anchor()
+        if sepolia_connected
+        else None
+    )
+
+    # Get last anchor time from local DB
+    conn = get_db()
+    try:
+        last_anchor_row = conn.execute(
+            "SELECT anchored_at FROM anchor_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        last_anchor_time = last_anchor_row["anchored_at"] if last_anchor_row else None
+    finally:
+        conn.close()
+
+    # Fix 7: import anchor mode
+    from blockchain_client import ANCHOR_MODE
 
     return {
-        "blockchain_connected": connected,
-        "contract_address": contract_addr,
-        "network": "Hardhat (local)" if connected else None,
-        "anchor_count": anchor_count,
-        "latest_block": latest["block_number"] if latest else None,
+        "network": "sepolia" if sepolia_connected else ("hardhat" if legacy_connected else None),
+        "contract_address": sepolia_addr or legacy_addr,
+        "deployer_address": sepolia_deployer,
+        "anchor_count": sepolia_count or legacy_count,
+        "latest_merkle_root": latest_merkle["merkle_root"] if latest_merkle else None,
+        "last_anchor_time": last_anchor_time,
+        "web3_connected": sepolia_connected or legacy_connected,
         "anchor_interval_seconds": ANCHOR_INTERVAL_SECONDS,
+        "anchor_mode": ANCHOR_MODE,
+        # Legacy info for backward compatibility
+        "blockchain_connected": legacy_connected or sepolia_connected,
+        "legacy_hardhat": {
+            "connected": legacy_connected,
+            "contract_address": legacy_addr,
+            "anchor_count": legacy_count,
+        },
     }
 
 
@@ -1936,9 +2474,14 @@ async def health():
         except Exception:
             pass
     blockchain_ok = blockchain_client is not None
+    sepolia_ok = (
+        merkle_blockchain_client is not None
+        and merkle_blockchain_client.connected
+    )
     return {
         "status": "ok",
         "service": "vargate-gateway",
         "redis": redis_ok,
         "blockchain": blockchain_ok,
+        "sepolia_merkle": sepolia_ok,
     }

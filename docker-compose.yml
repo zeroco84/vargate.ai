@@ -104,7 +104,15 @@ services:
       - BLOCKCHAIN_RPC_URL=http://blockchain:8545
       - CONTRACT_ADDRESS_FILE=/shared/contract_address.txt
       - CONTRACT_ABI_FILE=/shared/AuditAnchor.abi.json
-      - ANCHOR_INTERVAL_SECONDS=60
+      - ANCHOR_INTERVAL_SECONDS=${ANCHOR_INTERVAL_SECONDS:-3600}
+      # ── Stage 7B: Sepolia Merkle anchoring ──
+      - SEPOLIA_RPC_URL=${SEPOLIA_RPC_URL:-}
+      - DEPLOYER_PRIVATE_KEY=${DEPLOYER_PRIVATE_KEY:-}
+      - MERKLE_CONTRACT_FILE=/shared/MerkleAuditAnchor.json
+      - SYSTEM_ID=vargate-v1
+      # ── Stage 7C: AGCS compliance ──
+      - ANCHOR_MODE=${ANCHOR_MODE:-full}
+      - MERKLE_ROOT_INTERVAL_SECONDS=${MERKLE_ROOT_INTERVAL_SECONDS:-3600}
     volumes:
       - audit-data:/data
       - shared-data:/shared:ro
