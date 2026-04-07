@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install linters
+        run: pip install black isort flake8
+
+      - name: Check formatting (Black)
+        run: black --check gateway/ bundle-server/ hsm/ mock-tools/
+      - name: Check import ordering (isort)
+        run: isort --check-only --profile black gateway/ bundle-server/ hsm/ mock-tools/
+
+      - name: Lint (flake8)
+        run: flake8 --max-line-length 120 --extend-ignore E501,W503 gateway/ bundle-server/ hsm/ mock-tools/
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build all Docker images
+        run: docker compose build
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start all services
+        run: |
+          docker compose up -d --build
+          # Wait for all services to be healthy
+          for i in $(seq 1 60); do
+            if docker compose ps --format json | python3 -c "
+import sys, json
+services = [json.loads(l) for l in sys.stdin if l.strip()]
+healthy = all(s.get('Health','') == 'healthy' for s in services if s.get('Health'))
+print('ready' if healthy and len(services) >= 7 else 'waiting')
+" | grep -q ready; then              echo "All services healthy"
+              break
+            fi
+            echo "Waiting for services... ($i/60)"
+            sleep 5
+          done
+
+      - name: Install test dependencies
+        run: pip install requests
+
+      - name: Run core tests
+        run: |
+          python test_demo.py
+          python test_hotswap.py
+          python test_behavioral.py
+          python test_replay.py
+          python test_crypto_shredding.py
+          python test_blockchain.py
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v

@@ -3,6 +3,8 @@ __pycache__/
 *.pyo
 *.db
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 *.egg-info/
@@ -10,3 +12,10 @@ dist/
 build/
 .DS_Store
 node_modules/
+
+# Secrets — never commit
+*.key
+*.pem
+*.p12
+credentials.json
+secrets.yaml

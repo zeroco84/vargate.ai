@@ -462,19 +462,29 @@ class BlockchainClient:
             }
 
         # Fix 7: Build tree from the correct record range
-        if ANCHOR_MODE == "incremental":
-            # Build tree from only the anchor's record range
-            rows = conn.execute(
-                "SELECT record_hash FROM audit_log WHERE id >= ? AND id <= ? ORDER BY id ASC",
-                (on_chain_from, on_chain_to),
-            ).fetchall()
-            leaves = [r["record_hash"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
-            tree = MerkleTree(leaves)
-        else:
-            # Full mode: build from all records
-            tree = MerkleTree.from_db(conn)
+        try:
+            if ANCHOR_MODE == "incremental":
+                # Build tree from only the anchor's record range
+                rows = conn.execute(
+                    "SELECT record_hash FROM audit_log WHERE id >= ? AND id <= ? ORDER BY id ASC",
+                    (on_chain_from, on_chain_to),
+                ).fetchall()
+                leaves = [r["record_hash"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
+                tree = MerkleTree(leaves)
+            else:
+                # Full mode: build from all records
+                tree = MerkleTree.from_db(conn)
 
-        computed_root = tree.root
+            computed_root = tree.root
+        except Exception as e:
+            return {
+                "error": f"Failed to build Merkle tree from audit records: {e}",
+                "match": False,
+                "on_chain_root": on_chain_root,
+                "computed_root": None,
+                "on_chain_record_count": on_chain_count,
+                "anchor_index": anchor_index,
+            }
 
         # Normalise: on-chain bytes32 may have leading zeros stripped
         on_chain_clean = on_chain_root.lstrip("0") or "0"

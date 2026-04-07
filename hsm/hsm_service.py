@@ -26,6 +26,13 @@ import uvicorn
 PKCS11_LIB = os.environ.get("PKCS11_LIB", "/usr/lib/softhsm/libsofthsm2.so")
 TOKEN_LABEL = os.environ.get("HSM_TOKEN_LABEL", "vargate-prototype")
 TOKEN_PIN = os.environ.get("HSM_TOKEN_PIN", "1234")
+if TOKEN_PIN == "1234":
+    import warnings
+    warnings.warn(
+        "HSM_TOKEN_PIN is using the default development value '1234'. "
+        "Set HSM_TOKEN_PIN environment variable for production use.",
+        stacklevel=1,
+    )
 CRED_DB_PATH = os.environ.get("CRED_DB_PATH", "/data/credentials.db")
 
 app = FastAPI(title="Vargate HSM Service", version="2.0.0")

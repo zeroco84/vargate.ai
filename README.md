@@ -632,6 +632,26 @@ A FastAPI service on port 9000 simulates external APIs (Gmail, Salesforce, Strip
 | 7B | Sepolia Merkle anchoring, MerkleAuditAnchor.sol, inclusion proofs (AG-2.2/AG-2.3), `test_sepolia_blockchain.py` |
 | 8 | Credential enclave, agent-blind brokered execution, mock tool server, vault dashboard, `test_credential_enclave.py` |
 
+## Known Limitations
+
+This project is under active development. The following limitations are
+documented honestly so you can evaluate Vargate with accurate expectations:
+
+| Area | Current State | Target |
+|------|--------------|--------|
+| **Multi-tenancy** | Single-tenant only. All audit records share one namespace. | Per-tenant isolation, API key auth, rate limiting |
+| **Merkle tree aggregation** | Linear hash chain only. AGCS AG-2.2 requires hourly Merkle tree roots with inclusion/consistency proofs. Merkle roots are computed and logged locally but the proof API is not yet production-grade. | Full RFC 6962-compatible Merkle trees with O(log n) proofs |
+| **Blockchain anchoring** | Sepolia testnet (Ethereum). Hardhat for local dev. No production mainnet anchoring yet. | Polygon PoS (primary) + Ethereum mainnet (high-value) |
+| **HSM signer** | `HsmSigner.sign_transaction()` raises `NotImplementedError`. Transaction signing uses a software private key. | PKCS#11-backed transaction signing for production |
+| **Authentication** | No signup flow, no API keys, no OAuth. The gateway is open. | GitHub OAuth + API key provisioning |
+| **Dashboard** | Single-tenant view only. No auth on the dashboard. | Per-tenant views with shareable public URLs |
+| **Monitoring** | `print()` logging only. No metrics, no alerting. | Prometheus + Grafana + alerting |
+| **CORS** | `allow_origins=["*"]` (demo only) | Restricted origins in production |
+
+If you encounter additional issues, please open a GitHub issue.
+
 ## License
 
-Proprietary — Vargate.ai
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+Copyright 2025-2026 Vargate.ai

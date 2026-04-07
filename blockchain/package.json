@@ -2,10 +2,10 @@
   "name": "vargate-blockchain",
   "version": "1.0.0",
   "devDependencies": {
-    "hardhat": "^2.22.0",
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0"
+    "hardhat": "2.22.0",
+    "@nomicfoundation/hardhat-toolbox": "5.0.0"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.0.0"
+    "@openzeppelin/contracts": "5.0.0"
   }
 }

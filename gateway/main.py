@@ -2063,6 +2063,13 @@ async def verify_anchor():
         try:
             result = await merkle_blockchain_client.verify_latest(conn)
             return result
+        except Exception as e:
+            return {
+                "error": f"Merkle verification failed: {e}",
+                "match": False,
+                "computed_root": None,
+                "on_chain_root": None,
+            }
         finally:
             conn.close()
 
