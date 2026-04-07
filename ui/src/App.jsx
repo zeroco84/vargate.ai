@@ -16,6 +16,10 @@ import PolicyReplay from './components/secondary/PolicyReplay';
 import ErasurePanel from './components/secondary/ErasurePanel';
 import VaultManage from './components/secondary/VaultManage';
 
+// Sprint 3
+import Onboarding from './components/Onboarding';
+import SettingsPage from './components/Settings';
+
 // API helpers
 import {
   fetchAuditLog,
@@ -28,11 +32,12 @@ import {
   fetchCredentialAccessLog,
 } from './api';
 
-export default function App() {
+export default function App({ session, onLogout }) {
   // ── State ──────────────────────────────────────────────────────────────────
 
-  const [view, setView] = useState('dashboard');       // 'dashboard' | 'settings'
+  const [view, setView] = useState('dashboard');       // 'dashboard' | 'settings' | 'account'
   const [liveMode, setLiveMode] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('vargate_onboarding_done'));
 
   // Data
   const [records, setRecords] = useState([]);
@@ -112,10 +117,20 @@ export default function App() {
         policy={policy}
         view={view}
         setView={setView}
+        onLogout={onLogout}
       />
 
-      {view === 'dashboard' ? (
+      {view === 'account' ? (
+        <SettingsPage onBack={() => setView('dashboard')} />
+      ) : view === 'dashboard' ? (
         <div className="main-content">
+          {/* Onboarding wizard (Sprint 3) */}
+          {showOnboarding && (
+            <div style={{ gridColumn: '1 / -1', padding: '0 20px' }}>
+              <Onboarding onDismiss={() => { setShowOnboarding(false); localStorage.setItem('vargate_onboarding_done', '1'); }} />
+            </div>
+          )}
+
           {/* Left Column — Agent & Policy */}
           <div className="col-left">
             <AgentPanel records={records} />

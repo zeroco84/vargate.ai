@@ -1,7 +1,7 @@
 import React from 'react';
 import { parseBundleRevision } from '../api';
 
-export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView }) {
+export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView, onLogout }) {
   const valid = chain?.valid;
   const count = chain?.record_count ?? 0;
   const failedId = chain?.failed_at_action_id;
@@ -51,8 +51,23 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
           className={`header-nav-btn ${view === 'settings' ? 'active' : ''}`}
           onClick={() => setView('settings')}
         >
+          Tools
+        </button>
+        <button
+          className={`header-nav-btn ${view === 'account' ? 'active' : ''}`}
+          onClick={() => setView('account')}
+        >
           Settings
         </button>
+        {onLogout && (
+          <button
+            className="header-nav-btn"
+            onClick={onLogout}
+            style={{ color: 'var(--text-faint)' }}
+          >
+            Logout
+          </button>
+        )}
 
         <div
           style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}

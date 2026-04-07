@@ -5,9 +5,18 @@
 
 const API = '/api';
 
+function getAuthHeaders() {
+  const token = localStorage.getItem('vargate_session');
+  if (token && token !== 'pin') {
+    return { 'Authorization': `Bearer ${token}` };
+  }
+  return {};
+}
+
 async function fetchJSON(path, options = {}) {
   try {
-    const resp = await fetch(`${API}${path}`, options);
+    const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
+    const resp = await fetch(`${API}${path}`, { ...options, headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return await resp.json();
   } catch (e) {
@@ -114,6 +123,24 @@ export async function fetchSubjectKeyStatus(subjectId) {
 
 export async function fetchAgentAnomalyScore(agentId) {
   return fetchJSON(`/agents/${agentId}/anomaly_score`);
+}
+
+// ── Auth & Dashboard (Sprint 3) ─────────────────────────────────────────────
+
+export async function fetchDashboardMe() {
+  return fetchJSON('/dashboard/me');
+}
+
+export async function updateSettings(settings) {
+  return fetchJSON('/dashboard/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function rotateApiKey() {
+  return fetchJSON('/api-keys/rotate', { method: 'POST' });
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

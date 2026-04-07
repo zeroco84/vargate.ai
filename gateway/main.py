@@ -6,6 +6,7 @@ Implements two-pass evaluation with Redis behavioral history.
 Blockchain anchoring via Sepolia Ethereum testnet with Merkle tree roots.
 Stage 8: Credential Enclave — agent-blind brokered execution.
 Stage 7B: Merkle tree audit anchoring (AG-2.2 / AG-2.3).
+Sprint 2: Multi-tenancy — per-tenant hash chains, API key auth, rate limiting.
 """
 
 import asyncio
@@ -25,11 +26,12 @@ from typing import Any, Optional
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import execution_engine
+import auth as auth_module
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -53,6 +55,10 @@ _PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _PII_SORT_CODE_RE = re.compile(r"\d{2}-\d{2}-\d{2}")
 _PII_NI_NUMBER_RE = re.compile(r"[A-Z]{2}\d{6}[A-Z]")
 _PII_NAME_FIELDS = {"name", "customer_name", "full_name", "first_name", "last_name"}
+
+# ── Multi-tenancy defaults ─────────────────────────────────────────────────
+DEFAULT_TENANT_ID = "vargate-internal"
+DEFAULT_TENANT_NAME = "Vargate Internal"
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -165,10 +171,22 @@ def get_db() -> sqlite3.Connection:
 
 def init_db():
     conn = get_db()
+    # ── Tenants table (Sprint 2) ────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tenants (
+            tenant_id       TEXT PRIMARY KEY,
+            api_key         TEXT NOT NULL UNIQUE,
+            name            TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            rate_limit_rps  INTEGER NOT NULL DEFAULT 10,
+            rate_limit_burst INTEGER NOT NULL DEFAULT 20
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id                    INTEGER PRIMARY KEY AUTOINCREMENT,
             action_id             TEXT NOT NULL UNIQUE,
+            tenant_id             TEXT NOT NULL DEFAULT 'vargate-internal',
             agent_id              TEXT NOT NULL,
             tool                  TEXT NOT NULL,
             method                TEXT NOT NULL,
@@ -208,6 +226,7 @@ def init_db():
         "ALTER TABLE audit_log ADD COLUMN execution_result TEXT",
         "ALTER TABLE audit_log ADD COLUMN execution_latency_ms INTEGER",
         "ALTER TABLE audit_log ADD COLUMN credential_accessed TEXT",
+        "ALTER TABLE audit_log ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'vargate-internal'",
     ]:
         try:
             conn.execute(col_sql)
@@ -269,6 +288,25 @@ def init_db():
             anchor_id       INTEGER REFERENCES merkle_anchor_log(id)
         )
     """)
+    # ── Seed default tenant (Sprint 2) ──────────────────────────────
+    existing = conn.execute(
+        "SELECT 1 FROM tenants WHERE tenant_id = ?", (DEFAULT_TENANT_ID,)
+    ).fetchone()
+    if not existing:
+        default_api_key = f"vg-internal-{secrets.token_hex(24)}"
+        conn.execute(
+            """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                DEFAULT_TENANT_ID,
+                default_api_key,
+                DEFAULT_TENANT_NAME,
+                datetime.now(timezone.utc).isoformat(),
+                100,  # generous rate limit for internal
+                200,
+            ),
+        )
+        print(f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (key={default_api_key[:20]}...)", flush=True)
     conn.commit()
     conn.close()
 
@@ -312,10 +350,12 @@ def compute_record_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def get_prev_hash(conn: sqlite3.Connection) -> str:
-    """Get the hash of the most recent audit record, or GENESIS."""
+def get_prev_hash(conn: sqlite3.Connection, tenant_id: str = DEFAULT_TENANT_ID) -> str:
+    """Get the hash of the most recent audit record for a tenant, or GENESIS.
+    Each tenant has an independent hash chain."""
     row = conn.execute(
-        "SELECT record_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+        "SELECT record_hash FROM audit_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 1",
+        (tenant_id,),
     ).fetchone()
     return row["record_hash"] if row else "GENESIS"
 
@@ -337,6 +377,7 @@ def write_audit_record(
     anomaly_score_at_eval: float = 0.0,
     opa_input: Optional[dict] = None,
     contains_pii: int = 0,
+    tenant_id: str = DEFAULT_TENANT_ID,
     pii_subject_id: Optional[str] = None,
     pii_fields: Optional[list[str]] = None,
     execution_mode: str = "agent_direct",
@@ -344,13 +385,13 @@ def write_audit_record(
     execution_latency_ms: Optional[int] = None,
     credential_accessed: Optional[str] = None,
 ):
-    """Write a hash-chained audit record to SQLite."""
+    """Write a hash-chained audit record to SQLite. Chain is scoped per tenant."""
     params_str = json.dumps(params, separators=(",", ":"))
     violations_str = json.dumps(violations, separators=(",", ":"))
     opa_input_str = json.dumps(opa_input, separators=(",", ":")) if opa_input else None
     pii_fields_str = json.dumps(pii_fields) if pii_fields else None
     execution_result_str = json.dumps(execution_result, separators=(",", ":")) if execution_result else None
-    prev_hash = get_prev_hash(conn)
+    prev_hash = get_prev_hash(conn, tenant_id=tenant_id)
 
     record_hash = compute_record_hash(
         action_id=action_id,
@@ -371,16 +412,16 @@ def write_audit_record(
     conn.execute(
         """
         INSERT INTO audit_log
-            (action_id, agent_id, tool, method, params, requested_at,
+            (action_id, tenant_id, agent_id, tool, method, params, requested_at,
              decision, violations, severity, alert_tier, bundle_revision,
              prev_hash, record_hash, created_at,
              evaluation_pass, anomaly_score_at_eval, opa_input,
              contains_pii, pii_subject_id, pii_fields, erasure_status,
              execution_mode, execution_result, execution_latency_ms, credential_accessed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            action_id, agent_id, tool, method, params_str, requested_at,
+            action_id, tenant_id, agent_id, tool, method, params_str, requested_at,
             decision, violations_str, severity, alert_tier, bundle_revision,
             prev_hash, record_hash, now,
             evaluation_pass, anomaly_score_at_eval, opa_input_str,
@@ -453,14 +494,40 @@ def write_anchor_audit_record(conn: sqlite3.Connection, anchor_result: dict, con
 
 # ── Chain verification ───────────────────────────────────────────────────────
 
-def verify_chain_integrity(conn: sqlite3.Connection) -> dict:
-    """Verify the entire hash chain. Returns validity status."""
+def verify_chain_integrity(conn: sqlite3.Connection, tenant_id: Optional[str] = None) -> dict:
+    """Verify the hash chain. If tenant_id is given, verify only that tenant's chain.
+    If tenant_id is None, verify all tenants independently."""
+    if tenant_id is not None:
+        return _verify_tenant_chain(conn, tenant_id)
+
+    # Verify all tenants
+    tenant_rows = conn.execute(
+        "SELECT DISTINCT tenant_id FROM audit_log"
+    ).fetchall()
+    if not tenant_rows:
+        return {"valid": True, "record_count": 0}
+
+    total_records = 0
+    for trow in tenant_rows:
+        tid = trow["tenant_id"]
+        result = _verify_tenant_chain(conn, tid)
+        if not result["valid"]:
+            result["tenant_id"] = tid
+            return result
+        total_records += result["record_count"]
+
+    return {"valid": True, "record_count": total_records}
+
+
+def _verify_tenant_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
+    """Verify the hash chain for a single tenant."""
     rows = conn.execute(
-        "SELECT * FROM audit_log ORDER BY id ASC"
+        "SELECT * FROM audit_log WHERE tenant_id = ? ORDER BY id ASC",
+        (tenant_id,),
     ).fetchall()
 
     if not rows:
-        return {"valid": True, "record_count": 0}
+        return {"valid": True, "record_count": 0, "tenant_id": tenant_id}
 
     expected_prev = "GENESIS"
 
@@ -470,6 +537,7 @@ def verify_chain_integrity(conn: sqlite3.Connection) -> dict:
                 "valid": False,
                 "failed_at_action_id": row["action_id"],
                 "reason": "prev_hash mismatch",
+                "tenant_id": tenant_id,
             }
 
         expected_hash = compute_record_hash(
@@ -491,11 +559,12 @@ def verify_chain_integrity(conn: sqlite3.Connection) -> dict:
                 "valid": False,
                 "failed_at_action_id": row["action_id"],
                 "reason": "record_hash mismatch",
+                "tenant_id": tenant_id,
             }
 
         expected_prev = row["record_hash"]
 
-    return {"valid": True, "record_count": len(rows)}
+    return {"valid": True, "record_count": len(rows), "tenant_id": tenant_id}
 
 
 # ── Helper: build OPA input ─────────────────────────────────────────────────
@@ -505,6 +574,7 @@ def build_opa_input(
     action_id: str,
     history: Optional[dict] = None,
     credentials_registered: Optional[list[str]] = None,
+    tenant: Optional[dict] = None,
 ) -> dict:
     """Assemble the OPA input document from the incoming request."""
     now = datetime.now(timezone.utc)
@@ -530,7 +600,14 @@ def build_opa_input(
             "flagged": False,
         }
 
+    tenant_id = tenant["tenant_id"] if tenant else DEFAULT_TENANT_ID
+    tenant_name = tenant["name"] if tenant else DEFAULT_TENANT_NAME
+
     return {
+        "tenant": {
+            "id": tenant_id,
+            "name": tenant_name,
+        },
         "agent": {
             "id": req.agent_id,
             "type": req.agent_type,
@@ -575,24 +652,104 @@ def build_opa_input(
     }
 
 
+# ── Tenant resolution & API key authentication ─────────────────────────────
+
+# In-memory tenant cache (refreshed from SQLite on startup and on tenant creation)
+_tenant_cache: dict[str, dict] = {}  # api_key -> tenant dict
+_tenant_by_id: dict[str, dict] = {}  # tenant_id -> tenant dict
+
+
+def _refresh_tenant_cache():
+    """Reload tenant cache from SQLite."""
+    global _tenant_cache, _tenant_by_id
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM tenants").fetchall()
+        _tenant_cache = {row["api_key"]: dict(row) for row in rows}
+        _tenant_by_id = {row["tenant_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def resolve_tenant(api_key: Optional[str]) -> dict:
+    """Resolve an API key to a tenant dict. Falls back to default tenant if no key given."""
+    if not api_key:
+        tenant = _tenant_by_id.get(DEFAULT_TENANT_ID)
+        if not tenant:
+            _refresh_tenant_cache()
+            tenant = _tenant_by_id.get(DEFAULT_TENANT_ID)
+        return tenant
+
+    tenant = _tenant_cache.get(api_key)
+    if not tenant:
+        # Cache miss — try refreshing from DB
+        _refresh_tenant_cache()
+        tenant = _tenant_cache.get(api_key)
+    return tenant
+
+
+async def get_tenant(x_api_key: Optional[str] = Header(default=None)) -> dict:
+    """FastAPI dependency that resolves the tenant from X-API-Key header."""
+    tenant = resolve_tenant(x_api_key)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return tenant
+
+
+# ── Per-tenant rate limiting (Redis sliding window) ────────────────────────
+
+async def check_rate_limit(tenant: dict) -> bool:
+    """Check and increment rate limit for a tenant. Returns True if allowed."""
+    global redis_pool
+    if redis_pool is None:
+        return True  # No Redis = no rate limiting
+
+    tenant_id = tenant["tenant_id"]
+    rps = tenant["rate_limit_rps"]
+    burst = tenant["rate_limit_burst"]
+    now_ts = time.time()
+    window_key = f"t:{tenant_id}:ratelimit"
+
+    try:
+        pipe = redis_pool.pipeline()
+        # Remove entries older than 1 second
+        pipe.zremrangebyscore(window_key, "-inf", now_ts - 1.0)
+        # Count entries in current window
+        pipe.zcard(window_key)
+        # Add current request
+        pipe.zadd(window_key, {f"{now_ts}:{secrets.token_hex(4)}": now_ts})
+        # Set TTL on the key
+        pipe.expire(window_key, 2)
+        results = await pipe.execute()
+
+        current_count = results[1]
+        if current_count >= burst:
+            return False
+        return True
+    except Exception as e:
+        print(f"[RATELIMIT] Error checking rate limit for {tenant_id}: {e}", flush=True)
+        return True  # Fail open
+
+
 # ── Redis behavioral history ────────────────────────────────────────────────
 
-async def fetch_behavioral_history(agent_id: str) -> dict:
+async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
     """Fetch agent behavioral history from Redis for Pass 2 enrichment."""
     global redis_pool
     if redis_pool is None:
         return _default_history()
 
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     try:
         now_ts = time.time()
         ts_10min_ago = now_ts - 600
         ts_24h_ago = now_ts - 86400
 
         pipe = redis_pool.pipeline()
-        pipe.hgetall(f"agent:{agent_id}:counters")
-        pipe.get(f"agent:{agent_id}:anomaly_score")
-        pipe.zcount(f"agent:{agent_id}:actions", ts_10min_ago, "+inf")
-        pipe.zcount(f"agent:{agent_id}:actions", ts_24h_ago, "+inf")
+        pipe.hgetall(f"{prefix}:counters")
+        pipe.get(f"{prefix}:anomaly_score")
+        pipe.zcount(f"{prefix}:actions", ts_10min_ago, "+inf")
+        pipe.zcount(f"{prefix}:actions", ts_24h_ago, "+inf")
         results = await pipe.execute()
 
         counters = results[0] or {}
@@ -636,18 +793,20 @@ async def update_behavioral_history(
     action_id: str,
     decision: str,
     amount: Optional[float],
+    tenant_id: str = DEFAULT_TENANT_ID,
 ):
     """Update Redis behavioral history after a decision."""
     global redis_pool
     if redis_pool is None:
         return
 
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     try:
         now_ts = time.time()
         ts_24h_ago = now_ts - 86400
 
         # Always read current anomaly score from Redis
-        current_raw = await redis_pool.get(f"agent:{agent_id}:anomaly_score")
+        current_raw = await redis_pool.get(f"{prefix}:anomaly_score")
         current_score = float(current_raw) if current_raw else 0.0
 
         # Compute new anomaly score with decay
@@ -660,41 +819,46 @@ async def update_behavioral_history(
         pipe = redis_pool.pipeline()
 
         # Increment counters
-        pipe.hincrby(f"agent:{agent_id}:counters", "action_count_10min", 1)
-        pipe.hincrby(f"agent:{agent_id}:counters", "action_count_24h", 1)
+        pipe.hincrby(f"{prefix}:counters", "action_count_10min", 1)
+        pipe.hincrby(f"{prefix}:counters", "action_count_24h", 1)
 
         if decision == "deny":
-            pipe.hincrby(f"agent:{agent_id}:counters", "denied_count_10min", 1)
-            pipe.hincrby(f"agent:{agent_id}:counters", "violation_count_24h", 1)
+            pipe.hincrby(f"{prefix}:counters", "denied_count_10min", 1)
+            pipe.hincrby(f"{prefix}:counters", "violation_count_24h", 1)
 
         if amount is not None and amount >= 1000:
-            pipe.hincrby(f"agent:{agent_id}:counters", "high_value_count_24h", 1)
+            pipe.hincrby(f"{prefix}:counters", "high_value_count_24h", 1)
 
         # Update anomaly score
-        pipe.set(f"agent:{agent_id}:anomaly_score", str(round(new_score, 6)),
+        pipe.set(f"{prefix}:anomaly_score", str(round(new_score, 6)),
                  ex=7 * 86400)  # 7 day TTL
 
         # Add action to sorted set
-        pipe.zadd(f"agent:{agent_id}:actions", {action_id: now_ts})
+        pipe.zadd(f"{prefix}:actions", {action_id: now_ts})
 
         # Trim sorted set to last 24 hours
-        pipe.zremrangebyscore(f"agent:{agent_id}:actions", "-inf", ts_24h_ago)
+        pipe.zremrangebyscore(f"{prefix}:actions", "-inf", ts_24h_ago)
 
         # Set TTL on counters (25 hours)
-        pipe.expire(f"agent:{agent_id}:counters", 25 * 3600)
+        pipe.expire(f"{prefix}:counters", 25 * 3600)
 
         await pipe.execute()
     except Exception as e:
         print(f"[REDIS] Error updating history for {agent_id}: {e}", flush=True)
 
 
-async def flush_agent_history(agent_id: str):
+async def flush_agent_history(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID):
     """Clear all Redis data for an agent (used by tests)."""
     global redis_pool
     if redis_pool is None:
         return
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     try:
         pipe = redis_pool.pipeline()
+        pipe.delete(f"{prefix}:counters")
+        pipe.delete(f"{prefix}:anomaly_score")
+        pipe.delete(f"{prefix}:actions")
+        # Also clean legacy (non-prefixed) keys for backward compat during migration
         pipe.delete(f"agent:{agent_id}:counters")
         pipe.delete(f"agent:{agent_id}:anomaly_score")
         pipe.delete(f"agent:{agent_id}:actions")
@@ -703,26 +867,28 @@ async def flush_agent_history(agent_id: str):
         print(f"[REDIS] Error flushing agent {agent_id}: {e}", flush=True)
 
 
-async def get_agent_anomaly_score(agent_id: str) -> float:
+async def get_agent_anomaly_score(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> float:
     """Get current anomaly score for an agent."""
     global redis_pool
     if redis_pool is None:
         return 0.0
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     try:
-        val = await redis_pool.get(f"agent:{agent_id}:anomaly_score")
+        val = await redis_pool.get(f"{prefix}:anomaly_score")
         return float(val) if val else 0.0
     except Exception:
         return 0.0
 
 
-async def _agent_has_violations(agent_id: str) -> bool:
+async def _agent_has_violations(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
     """Quick check: does this agent have any recorded violations?
     Single Redis HGET — fast enough for every request."""
     global redis_pool
     if redis_pool is None:
         return False
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     try:
-        val = await redis_pool.hget(f"agent:{agent_id}:counters", "violation_count_24h")
+        val = await redis_pool.hget(f"{prefix}:counters", "violation_count_24h")
         return val is not None and int(val) > 0
     except Exception:
         return False
@@ -874,6 +1040,12 @@ async def decrypt_field_value(value: str) -> dict:
 async def startup():
     global redis_pool, _anchor_task, merkle_blockchain_client, _merkle_anchor_task
     init_db()
+    # Initialize auth tables (Sprint 3)
+    conn = get_db()
+    try:
+        auth_module.init_auth_db(conn)
+    finally:
+        conn.close()
     try:
         redis_pool = aioredis.from_url(
             REDIS_URL,
@@ -945,6 +1117,10 @@ async def startup():
     except Exception as e:
         print(f"[VARGATE] Could not register mock tokens: {e}", flush=True)
 
+    # Load tenant cache
+    _refresh_tenant_cache()
+    print(f"[VARGATE] Tenant cache loaded: {len(_tenant_cache)} tenant(s).", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
 
 
@@ -958,7 +1134,21 @@ async def shutdown():
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.post("/mcp/tools/call")
-async def tool_call(req: ToolCallRequest):
+async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
+    tenant_id = tenant["tenant_id"]
+
+    # ── Per-tenant rate limiting ────────────────────────────────────
+    if not await check_rate_limit(tenant):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limit_exceeded",
+                "tenant_id": tenant_id,
+                "rate_limit_rps": tenant["rate_limit_rps"],
+                "rate_limit_burst": tenant["rate_limit_burst"],
+            },
+        )
+
     total_start = time.monotonic()
     action_id = str(uuid.uuid4())
     bundle_revision = await get_bundle_revision()
@@ -979,7 +1169,7 @@ async def tool_call(req: ToolCallRequest):
 
     # ── Pass 1: Fast path (no Redis) ─────────────────────────────
     opa_start = time.monotonic()
-    opa_input_p1 = build_opa_input(req, action_id, history=None, credentials_registered=credentials_registered)
+    opa_input_p1 = build_opa_input(req, action_id, history=None, credentials_registered=credentials_registered, tenant=tenant)
     requested_at = opa_input_p1["action"]["requested_at"]
     result_p1 = await query_opa(opa_input_p1)
 
@@ -991,7 +1181,7 @@ async def tool_call(req: ToolCallRequest):
     anomaly_score = 0.0
 
     # Check if agent has behavioral red flags (cheap single Redis key check)
-    agent_flagged = await _agent_has_violations(req.agent_id)
+    agent_flagged = await _agent_has_violations(req.agent_id, tenant_id=tenant_id)
 
     # If denied on Pass 1 — block immediately
     if not allowed_p1:
@@ -999,9 +1189,9 @@ async def tool_call(req: ToolCallRequest):
     # If needs_enrichment OR agent has behavioral flags — do Pass 2
     elif eval_mode == "needs_enrichment" or agent_flagged:
         evaluation_pass = 2
-        history = await fetch_behavioral_history(req.agent_id)
+        history = await fetch_behavioral_history(req.agent_id, tenant_id=tenant_id)
         anomaly_score = history.get("anomaly_score", 0.0)
-        opa_input_p2 = build_opa_input(req, action_id, history=history, credentials_registered=credentials_registered)
+        opa_input_p2 = build_opa_input(req, action_id, history=history, credentials_registered=credentials_registered, tenant=tenant)
         # Preserve the same requested_at from Pass 1
         opa_input_p2["action"]["requested_at"] = requested_at
         final_result = await query_opa(opa_input_p2)
@@ -1152,6 +1342,7 @@ async def tool_call(req: ToolCallRequest):
             anomaly_score_at_eval=anomaly_score,
             opa_input=final_opa_input,
             contains_pii=contains_pii,
+            tenant_id=tenant_id,
             pii_subject_id=pii_subject_id,
             pii_fields=pii_fields if pii_fields else None,
             execution_mode=execution_mode,
@@ -1168,6 +1359,7 @@ async def tool_call(req: ToolCallRequest):
         action_id=action_id,
         decision=decision_str,
         amount=amount,
+        tenant_id=tenant_id,
     )
 
     # Return response
@@ -1193,26 +1385,31 @@ async def tool_call(req: ToolCallRequest):
 # ── Agent history endpoints (for test scripts) ──────────────────────────────
 
 @app.delete("/agents/{agent_id}/history")
-async def clear_agent_history(agent_id: str):
+async def clear_agent_history(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear behavioral history for an agent. Used by test scripts."""
-    await flush_agent_history(agent_id)
+    await flush_agent_history(agent_id, tenant_id=tenant["tenant_id"])
     return {"status": "cleared", "agent_id": agent_id}
 
 
 @app.get("/agents/{agent_id}/anomaly_score")
-async def agent_anomaly_score(agent_id: str):
+async def agent_anomaly_score(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Get current anomaly score for an agent."""
-    score = await get_agent_anomaly_score(agent_id)
+    score = await get_agent_anomaly_score(agent_id, tenant_id=tenant["tenant_id"])
     return {"agent_id": agent_id, "anomaly_score": round(score, 6)}
 
 
 @app.delete("/agents/{agent_id}/counters")
-async def clear_agent_counters(agent_id: str):
+async def clear_agent_counters(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear counters and actions but keep anomaly_score. Used by test scripts."""
     global redis_pool
+    tenant_id = tenant["tenant_id"]
+    prefix = f"t:{tenant_id}:agent:{agent_id}"
     if redis_pool:
         try:
             pipe = redis_pool.pipeline()
+            pipe.delete(f"{prefix}:counters")
+            pipe.delete(f"{prefix}:actions")
+            # Also clean legacy keys
             pipe.delete(f"agent:{agent_id}:counters")
             pipe.delete(f"agent:{agent_id}:actions")
             await pipe.execute()
@@ -1224,10 +1421,10 @@ async def clear_agent_counters(agent_id: str):
 # ── Audit endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/audit/verify")
-async def audit_verify():
+async def audit_verify(tenant: dict = Depends(get_tenant)):
     conn = get_db()
     try:
-        result = verify_chain_integrity(conn)
+        result = verify_chain_integrity(conn, tenant_id=tenant["tenant_id"])
     finally:
         conn.close()
     return result
@@ -1237,22 +1434,24 @@ async def audit_verify():
 async def audit_log(
     limit: int = Query(default=50, ge=1, le=1000),
     agent_id: Optional[str] = Query(default=None),
+    tenant: dict = Depends(get_tenant),
 ):
     conn = get_db()
+    tenant_id = tenant["tenant_id"]
     try:
         if agent_id:
             rows = conn.execute(
-                "SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
-                (agent_id, limit),
+                "SELECT * FROM audit_log WHERE tenant_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?",
+                (tenant_id, agent_id, limit),
             ).fetchall()
             total = conn.execute(
-                "SELECT COUNT(*) FROM audit_log WHERE agent_id = ?", (agent_id,)
+                "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND agent_id = ?", (tenant_id, agent_id,)
             ).fetchone()[0]
         else:
             rows = conn.execute(
-                "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT * FROM audit_log WHERE tenant_id = ? ORDER BY id DESC LIMIT ?", (tenant_id, limit,)
             ).fetchall()
-            total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM audit_log WHERE tenant_id = ?", (tenant_id,)).fetchone()[0]
     finally:
         conn.close()
 
@@ -1261,6 +1460,7 @@ async def audit_log(
         rec = {
             "id": row["id"],
             "action_id": row["action_id"],
+            "tenant_id": row["tenant_id"] if "tenant_id" in row.keys() else DEFAULT_TENANT_ID,
             "agent_id": row["agent_id"],
             "tool": row["tool"],
             "method": row["method"],
@@ -2478,6 +2678,480 @@ async def anchor_status():
             "contract_address": legacy_addr,
             "anchor_count": legacy_count,
         },
+    }
+
+
+# ── Tenant management endpoints (Sprint 2) ────────────────────────────────
+
+class CreateTenantRequest(BaseModel):
+    tenant_id: str
+    name: str
+    rate_limit_rps: int = 10
+    rate_limit_burst: int = 20
+
+
+@app.post("/tenants")
+async def create_tenant(req: CreateTenantRequest):
+    """Create a new tenant. Returns the generated API key."""
+    api_key = f"vg-{secrets.token_hex(24)}"
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (req.tenant_id, api_key, req.name, now, req.rate_limit_rps, req.rate_limit_burst),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(409, f"Tenant already exists or API key collision: {e}")
+    finally:
+        conn.close()
+
+    _refresh_tenant_cache()
+    print(f"[TENANT] Created tenant: {req.tenant_id} ({req.name})", flush=True)
+    return {
+        "tenant_id": req.tenant_id,
+        "api_key": api_key,
+        "name": req.name,
+        "rate_limit_rps": req.rate_limit_rps,
+        "rate_limit_burst": req.rate_limit_burst,
+        "created_at": now,
+    }
+
+
+@app.get("/tenants")
+async def list_tenants():
+    """List all tenants (API keys are masked)."""
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM tenants ORDER BY created_at ASC").fetchall()
+    finally:
+        conn.close()
+    return {
+        "tenants": [
+            {
+                "tenant_id": r["tenant_id"],
+                "name": r["name"],
+                "api_key_prefix": r["api_key"][:12] + "...",
+                "created_at": r["created_at"],
+                "rate_limit_rps": r["rate_limit_rps"],
+                "rate_limit_burst": r["rate_limit_burst"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/tenants/{tenant_id}")
+async def get_tenant_info(tenant_id: str):
+    """Get tenant info (API key masked)."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(404, f"Tenant not found: {tenant_id}")
+    return {
+        "tenant_id": row["tenant_id"],
+        "name": row["name"],
+        "api_key_prefix": row["api_key"][:12] + "...",
+        "created_at": row["created_at"],
+        "rate_limit_rps": row["rate_limit_rps"],
+        "rate_limit_burst": row["rate_limit_burst"],
+    }
+
+
+# ── Auth & Signup endpoints (Sprint 3) ─────────────────────────────────────
+
+class EmailSignupRequest(BaseModel):
+    email: str
+    name: str
+
+
+@app.post("/auth/signup")
+async def email_signup(req: EmailSignupRequest):
+    """Sign up with company email. Sends verification email."""
+    error = auth_module.validate_email(req.email)
+    if error:
+        raise HTTPException(400, error)
+
+    conn = get_db()
+    try:
+        # Check if email already registered
+        existing = conn.execute("SELECT 1 FROM users WHERE email = ?", (req.email,)).fetchone()
+        if existing:
+            raise HTTPException(409, "Email already registered")
+
+        # Check for pending signup
+        conn.execute("DELETE FROM pending_signups WHERE email = ?", (req.email,))
+
+        # Generate verification token
+        token = auth_module._generate_verification_token()
+        token_hash = auth_module._hash_verification_token(token)
+        now = datetime.now(timezone.utc)
+        expires = datetime(now.year, now.month, now.day, now.hour, now.minute, now.second,
+                           tzinfo=timezone.utc).__class__(
+            now.year, now.month, now.day + 1, now.hour, now.minute, now.second,
+            tzinfo=timezone.utc
+        )
+
+        conn.execute(
+            """INSERT INTO pending_signups (email, token_hash, tenant_name, created_at, expires_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (req.email, token_hash, req.name, now.isoformat(), expires.isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    await auth_module.send_verification_email(req.email, token)
+    return {"status": "verification_sent", "email": req.email}
+
+
+@app.get("/auth/verify-email")
+async def verify_email(token: str = Query(...)):
+    """Verify email and create tenant + user."""
+    token_hash = auth_module._hash_verification_token(token)
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM pending_signups WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Invalid or expired verification token")
+
+        now = datetime.now(timezone.utc).isoformat()
+        if row["expires_at"] < now:
+            conn.execute("DELETE FROM pending_signups WHERE id = ?", (row["id"],))
+            conn.commit()
+            raise HTTPException(400, "Verification token expired")
+
+        email = row["email"]
+        name = row["tenant_name"]
+        slug = auth_module.generate_tenant_slug(name)
+
+        # Ensure slug uniqueness
+        existing_slug = conn.execute("SELECT 1 FROM tenants WHERE slug = ?", (slug,)).fetchone()
+        if existing_slug:
+            slug = f"{slug}-{secrets.token_hex(3)}"
+
+        result = auth_module.provision_tenant(
+            conn=conn,
+            tenant_id=slug,
+            name=name,
+            email=email,
+        )
+
+        # Set slug on the new tenant
+        conn.execute("UPDATE tenants SET slug = ? WHERE tenant_id = ?", (slug, slug))
+
+        # Clean up pending signup
+        conn.execute("DELETE FROM pending_signups WHERE id = ?", (row["id"],))
+        conn.commit()
+
+        _refresh_tenant_cache()
+
+        # Create session token
+        session_token = auth_module.create_session_token(slug, email)
+
+        return {
+            "status": "verified",
+            "tenant_id": result["tenant_id"],
+            "api_key": result["api_key"],
+            "session_token": session_token,
+            "dashboard_url": f"/dashboard/{slug}",
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/auth/github")
+async def github_login():
+    """Redirect to GitHub OAuth authorization."""
+    if not auth_module.GITHUB_CLIENT_ID:
+        raise HTTPException(501, "GitHub OAuth not configured")
+    state = secrets.token_urlsafe(16)
+    url = auth_module.get_github_authorize_url(state)
+    return {"redirect_url": url, "state": state}
+
+
+@app.get("/auth/github/callback")
+async def github_callback(code: str = Query(...), state: str = Query(default="")):
+    """Handle GitHub OAuth callback."""
+    if not auth_module.GITHUB_CLIENT_ID:
+        raise HTTPException(501, "GitHub OAuth not configured")
+
+    profile = await auth_module.exchange_github_code(code)
+    if not profile:
+        raise HTTPException(400, "Failed to authenticate with GitHub")
+
+    conn = get_db()
+    try:
+        # Check if user already exists
+        existing = conn.execute(
+            "SELECT tenant_id FROM users WHERE github_id = ?", (profile["github_id"],)
+        ).fetchone()
+
+        if existing:
+            # Existing user — just create a session
+            tenant_id = existing["tenant_id"]
+            session_token = auth_module.create_session_token(tenant_id, profile["email"])
+            return {
+                "status": "authenticated",
+                "tenant_id": tenant_id,
+                "session_token": session_token,
+                "new_user": False,
+            }
+
+        # New user — provision tenant
+        slug = auth_module.generate_tenant_slug(profile["name"])
+        existing_slug = conn.execute("SELECT 1 FROM tenants WHERE slug = ?", (slug,)).fetchone()
+        if existing_slug:
+            slug = f"{slug}-{secrets.token_hex(3)}"
+
+        # Also check if tenant_id already taken
+        existing_tenant = conn.execute("SELECT 1 FROM tenants WHERE tenant_id = ?", (slug,)).fetchone()
+        if existing_tenant:
+            slug = f"{slug}-{secrets.token_hex(3)}"
+
+        result = auth_module.provision_tenant(
+            conn=conn,
+            tenant_id=slug,
+            name=profile["name"],
+            email=profile["email"],
+            github_login=profile["login"],
+            github_id=profile["github_id"],
+        )
+
+        conn.execute("UPDATE tenants SET slug = ? WHERE tenant_id = ?", (slug, slug))
+        conn.commit()
+        _refresh_tenant_cache()
+
+        session_token = auth_module.create_session_token(slug, profile["email"])
+        return {
+            "status": "authenticated",
+            "tenant_id": result["tenant_id"],
+            "api_key": result["api_key"],
+            "session_token": session_token,
+            "new_user": True,
+            "dashboard_url": f"/dashboard/{slug}",
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/auth/session")
+async def create_session(x_api_key: str = Header(...)):
+    """Exchange an API key for a JWT session token (for dashboard login)."""
+    tenant = resolve_tenant(x_api_key)
+    if not tenant:
+        raise HTTPException(401, "Invalid API key")
+
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        email = user["email"] if user else "unknown"
+    finally:
+        conn.close()
+
+    session_token = auth_module.create_session_token(tenant["tenant_id"], email)
+    return {"session_token": session_token, "tenant_id": tenant["tenant_id"]}
+
+
+async def get_session_tenant(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> dict:
+    """Resolve tenant from Bearer token (JWT session) or X-API-Key."""
+    # Try JWT session first
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        payload = auth_module.verify_session_token(token)
+        if payload:
+            tenant = _tenant_by_id.get(payload["tenant_id"])
+            if not tenant:
+                _refresh_tenant_cache()
+                tenant = _tenant_by_id.get(payload["tenant_id"])
+            if tenant:
+                return tenant
+        raise HTTPException(401, "Invalid or expired session token")
+
+    # Fall back to API key
+    if x_api_key:
+        tenant = resolve_tenant(x_api_key)
+        if tenant:
+            return tenant
+        raise HTTPException(401, "Invalid API key")
+
+    raise HTTPException(401, "Authentication required — provide Bearer token or X-API-Key")
+
+
+# ── API key rotation (Sprint 3) ───────────────────────────────────────────
+
+@app.post("/api-keys/rotate")
+async def rotate_api_key(tenant: dict = Depends(get_session_tenant)):
+    """Rotate the API key for the authenticated tenant."""
+    conn = get_db()
+    try:
+        result = auth_module.rotate_api_key(conn, tenant["tenant_id"])
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    finally:
+        conn.close()
+
+    _refresh_tenant_cache()
+    return {"tenant_id": tenant["tenant_id"], **result}
+
+
+# ── Dashboard data endpoints (Sprint 3) ───────────────────────────────────
+
+@app.get("/dashboard/me")
+async def dashboard_me(tenant: dict = Depends(get_session_tenant)):
+    """Get current tenant info for the authenticated dashboard user."""
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT email, github_login, created_at FROM users WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        stats = conn.execute(
+            "SELECT COUNT(*) as total, SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END) as allowed, "
+            "SUM(CASE WHEN decision='deny' THEN 1 ELSE 0 END) as denied "
+            "FROM audit_log WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    activated = (stats["total"] or 0) > 0
+
+    return {
+        "tenant_id": tenant["tenant_id"],
+        "name": tenant["name"],
+        "email": user["email"] if user else None,
+        "github_login": user["github_login"] if user else None,
+        "api_key_prefix": tenant_row["api_key"][:12] + "..." if tenant_row else None,
+        "slug": tenant_row["slug"] if tenant_row and "slug" in tenant_row.keys() else None,
+        "public_dashboard": bool(tenant_row["public_dashboard"]) if tenant_row and "public_dashboard" in tenant_row.keys() else False,
+        "created_at": tenant["created_at"],
+        "activated": activated,
+        "stats": {
+            "total_actions": stats["total"] or 0,
+            "allowed": stats["allowed"] or 0,
+            "denied": stats["denied"] or 0,
+        },
+    }
+
+
+# ── Tenant settings (Sprint 3) ───────────────────────────────────────────
+
+class TenantSettingsRequest(BaseModel):
+    public_dashboard: Optional[bool] = None
+    name: Optional[str] = None
+
+
+@app.patch("/dashboard/settings")
+async def update_tenant_settings(req: TenantSettingsRequest, tenant: dict = Depends(get_session_tenant)):
+    """Update tenant settings."""
+    conn = get_db()
+    try:
+        if req.public_dashboard is not None:
+            conn.execute(
+                "UPDATE tenants SET public_dashboard = ? WHERE tenant_id = ?",
+                (1 if req.public_dashboard else 0, tenant["tenant_id"]),
+            )
+        if req.name is not None:
+            conn.execute(
+                "UPDATE tenants SET name = ? WHERE tenant_id = ?",
+                (req.name, tenant["tenant_id"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _refresh_tenant_cache()
+    return {"status": "updated", "tenant_id": tenant["tenant_id"]}
+
+
+# ── Public dashboard (Sprint 3) ──────────────────────────────────────────
+
+@app.get("/dashboard/public/{slug}")
+async def public_dashboard(slug: str):
+    """Get public dashboard data for a tenant (if enabled). No auth required."""
+    conn = get_db()
+    try:
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE slug = ?", (slug,)
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(404, "Dashboard not found")
+
+        if not tenant_row["public_dashboard"]:
+            raise HTTPException(403, "This dashboard is not public")
+
+        tenant_id = tenant_row["tenant_id"]
+
+        # Get aggregated stats (no PII)
+        stats = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END) as allowed, "
+            "SUM(CASE WHEN decision='deny' THEN 1 ELSE 0 END) as denied "
+            "FROM audit_log WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+
+        # Get recent actions (sanitized — no params, no PII)
+        recent = conn.execute(
+            "SELECT action_id, agent_id, tool, method, decision, severity, "
+            "alert_tier, created_at FROM audit_log WHERE tenant_id = ? "
+            "ORDER BY id DESC LIMIT 20",
+            (tenant_id,),
+        ).fetchall()
+
+        # Chain verification
+        chain_result = verify_chain_integrity(conn, tenant_id=tenant_id)
+
+        # Violation breakdown
+        violation_counts = {}
+        all_records = conn.execute(
+            "SELECT violations FROM audit_log WHERE tenant_id = ? AND decision = 'deny'",
+            (tenant_id,),
+        ).fetchall()
+        for r in all_records:
+            for v in json.loads(r["violations"]):
+                violation_counts[v] = violation_counts.get(v, 0) + 1
+    finally:
+        conn.close()
+
+    return {
+        "tenant_name": tenant_row["name"],
+        "slug": slug,
+        "stats": {
+            "total_actions": stats["total"] or 0,
+            "allowed": stats["allowed"] or 0,
+            "denied": stats["denied"] or 0,
+        },
+        "chain_integrity": chain_result,
+        "violation_breakdown": violation_counts,
+        "recent_actions": [
+            {
+                "action_id": r["action_id"],
+                "agent_id": r["agent_id"],
+                "tool": r["tool"],
+                "method": r["method"],
+                "decision": r["decision"],
+                "severity": r["severity"],
+                "created_at": r["created_at"],
+            }
+            for r in recent
+        ],
     }
 
 

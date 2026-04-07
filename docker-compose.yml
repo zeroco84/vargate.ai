@@ -113,6 +113,14 @@ services:
       # ── Stage 7C: AGCS compliance ──
       - ANCHOR_MODE=${ANCHOR_MODE:-full}
       - MERKLE_ROOT_INTERVAL_SECONDS=${MERKLE_ROOT_INTERVAL_SECONDS:-3600}
+      # ── Sprint 3: Auth & Signup ──
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_REDIRECT_URI=${GITHUB_REDIRECT_URI:-https://demo.vargate.ai/api/auth/github/callback}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL:-Vargate <no-reply@vargate.ai>}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - VARGATE_BASE_URL=${VARGATE_BASE_URL:-https://demo.vargate.ai}
     volumes:
       - audit-data:/data
       - shared-data:/shared:ro
