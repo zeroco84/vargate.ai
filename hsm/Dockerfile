@@ -17,9 +17,8 @@ COPY hsm_service.py /app/hsm_service.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-RUN addgroup --system vargate && adduser --system --ingroup vargate vargate
-RUN mkdir -p /data && chown -R vargate:vargate /data /app /var/lib/softhsm
-USER vargate
+# NOTE: HSM runs as root because SoftHSM2 requires root for token initialization
+# and PKCS#11 library access. A production HSM would use hardware isolation instead.
 
 EXPOSE 8300
 ENTRYPOINT ["/entrypoint.sh"]

@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 RUN addgroup --system vargate && adduser --system --ingroup vargate vargate
-RUN chown -R vargate:vargate /app
+RUN mkdir -p /data/archive && chown -R vargate:vargate /app /data
 USER vargate
 
 EXPOSE 8080

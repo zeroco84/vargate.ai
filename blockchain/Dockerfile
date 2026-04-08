@@ -17,9 +17,8 @@ COPY entrypoint.sh .
 # Compile contracts
 RUN npx hardhat compile
 
-RUN addgroup -S vargate && adduser -S vargate -G vargate
-RUN chown -R vargate:vargate /app
-USER vargate
+# NOTE: Blockchain runs as root because it writes contract addresses to /shared/
+# which is consumed by the gateway. Hardhat's ephemeral chain is demo-grade.
 
 EXPOSE 8545
 
