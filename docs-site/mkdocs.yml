@@ -1,0 +1,96 @@
+site_name: Vargate Developer Docs
+site_url: https://developer.vargate.ai
+site_description: Developer documentation for the Vargate AI agent governance proxy
+repo_url: https://github.com/zeroco84/vargate.ai
+repo_name: zeroco84/vargate.ai
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: quickstart.md
+    - Authentication: auth.md
+    - Your First Governed Action: first-action.md
+  - API Reference:
+    - Overview: api/overview.md
+    - Tool Calls: api/tool-calls.md
+    - Audit Trail: api/audit.md
+    - Blockchain & Merkle: api/blockchain.md
+    - Approval Queue: api/approvals.md
+    - Credentials Vault: api/credentials.md
+    - Webhooks: api/webhooks.md
+  - CLI:
+    - Installation: cli/install.md
+    - Commands: cli/commands.md
+  - Policy Templates:
+    - Overview: policies/overview.md
+    - Financial: policies/financial.md
+    - Email & Outreach: policies/email.md
+    - CRM & Sales: policies/crm.md
+    - Data Access: policies/data-access.md
+    - General Purpose: policies/general.md
+  - Integration Examples:
+    - Python: examples/python.md
+    - Node.js: examples/nodejs.md
+    - cURL: examples/curl.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/zeroco84/vargate.ai
+  generator: false
+
+copyright: Copyright &copy; 2026 Vargate
