@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vargate-cli"
+version = "0.1.0"
+description = "CLI for the Vargate AI agent governance proxy"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Rick Larkin", email = "rlarkin999@gmail.com"}]
+dependencies = [
+    "httpx>=0.24.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+vargate = "vargate_cli.main:app"
