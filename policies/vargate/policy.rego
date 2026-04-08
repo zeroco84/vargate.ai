@@ -20,21 +20,11 @@ default requires_human_approval := false
 
 # ── Violation rules ──────────────────────────────────────────────────────────
 
-# Block high-value transactions without approval
+# Block high-value transactions without approval (EUR)
 violations contains msg if {
     input.action.params.amount >= 5000
     not input.context.approval.granted
-    msg := "high_value_transaction_unapproved"
-}
-
-# Block emails to competitor domains
-violations contains msg if {
-    input.action.tool == "gmail"
-    input.action.method == "send_email"
-    competitor_domains := {"rival.com", "competitor.com", "acmecorp.com"}
-    some domain in competitor_domains
-    endswith(input.action.params.to, domain)
-    msg := "competitor_contact_attempt"
+    msg := "high_value_transaction_unapproved_eur"
 }
 
 # Block unmasked PII leaving EU
@@ -53,20 +43,31 @@ violations contains msg if {
     msg := "anomaly_score_threshold_exceeded"
 }
 
-# Block out-of-hours high-risk actions
+# Block out-of-hours high-risk actions (EUR)
 violations contains msg if {
     input.context.is_business_hours == false
     input.action.params.amount >= 1000
-    msg := "high_value_out_of_hours"
+    msg := "high_value_out_of_hours_eur"
+}
+
+# Temporary block: 3+ violations in 24 hours triggers 1-hour cooldown
+violations contains msg if {
+    input.history.last_24h.policy_violations >= 3
+    input.history.cooldown_active == true
+    msg := "violation_cooldown_active"
 }
 
 # ── Severity derivation (else chain to avoid recursion) ──────────────────────
 
-is_critical if { "competitor_contact_attempt" in violations }
 is_critical if { "gdpr_pii_residency_violation" in violations }
 
 is_high if {
-    "high_value_transaction_unapproved" in violations
+    "high_value_transaction_unapproved_eur" in violations
+    not is_critical
+}
+
+is_high if {
+    "violation_cooldown_active" in violations
     not is_critical
 }
 
@@ -90,4 +91,5 @@ alert_tier := "soc_page" if {
 
 # ── Human approval requirement ───────────────────────────────────────────────
 
+# Transactions over €5,000 require human approval
 requires_human_approval if { input.action.params.amount >= 5000 }

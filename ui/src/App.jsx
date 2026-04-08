@@ -20,6 +20,9 @@ import VaultManage from './components/secondary/VaultManage';
 import Onboarding from './components/Onboarding';
 import SettingsPage from './components/Settings';
 
+// Sprint 4
+import ApprovalQueue from './components/ApprovalQueue';
+
 // API helpers
 import {
   fetchAuditLog,
@@ -118,10 +121,19 @@ export default function App({ session, onLogout }) {
         view={view}
         setView={setView}
         onLogout={onLogout}
+        session={session}
+        onTenantSwitch={() => window.location.reload()}
       />
 
       {view === 'account' ? (
         <SettingsPage onBack={() => setView('dashboard')} />
+      ) : view === 'approvals' ? (
+        <div className="settings-layout">
+          <button className="settings-back" onClick={() => setView('dashboard')}>
+            ← Back to Dashboard
+          </button>
+          <ApprovalQueue />
+        </div>
       ) : view === 'dashboard' ? (
         <div className="main-content">
           {/* Onboarding wizard (Sprint 3) */}

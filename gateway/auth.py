@@ -20,13 +20,13 @@ import jwt
 
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
-GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "https://demo.vargate.ai/api/auth/github/callback")
+GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "https://vargate.ai/api/auth/github/callback")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "Vargate <no-reply@vargate.ai>")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_SECONDS = 86400 * 7  # 7 days
-VARGATE_BASE_URL = os.getenv("VARGATE_BASE_URL", "https://demo.vargate.ai")
+VARGATE_BASE_URL = os.getenv("VARGATE_BASE_URL", "https://vargate.ai")
 
 # Blocked email domains for abuse filtering
 _BLOCKED_DOMAINS = {"mailinator.com", "tempmail.com", "guerrillamail.com", "throwaway.email"}

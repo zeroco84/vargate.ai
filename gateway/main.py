@@ -27,11 +27,15 @@ from typing import Any, Optional
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import execution_engine
 import auth as auth_module
+import approval as approval_module
+import gtm_constraints
+import transparency as transparency_module
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -59,6 +63,8 @@ _PII_NAME_FIELDS = {"name", "customer_name", "full_name", "first_name", "last_na
 # ── Multi-tenancy defaults ─────────────────────────────────────────────────
 DEFAULT_TENANT_ID = "vargate-internal"
 DEFAULT_TENANT_NAME = "Vargate Internal"
+GTM_TENANT_ID = "vargate-gtm-agent"
+GTM_TENANT_NAME = "Vargate GTM Agent"
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -309,6 +315,32 @@ def init_db():
         print(f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (key={default_api_key[:20]}...)", flush=True)
     conn.commit()
     conn.close()
+
+
+def _seed_gtm_tenant(conn: sqlite3.Connection):
+    """Seed the GTM agent tenant with custom rate limits and public dashboard enabled."""
+    existing = conn.execute(
+        "SELECT 1 FROM tenants WHERE tenant_id = ?", (GTM_TENANT_ID,)
+    ).fetchone()
+    if not existing:
+        gtm_api_key = f"vg-gtm-{secrets.token_hex(24)}"
+        conn.execute(
+            """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst, public_dashboard, slug)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                GTM_TENANT_ID,
+                gtm_api_key,
+                GTM_TENANT_NAME,
+                datetime.now(timezone.utc).isoformat(),
+                5,   # conservative rate limit for GTM agent
+                10,
+                1,   # public dashboard enabled
+                "vargate-gtm-agent",
+            ),
+        )
+        conn.commit()
+        print(f"[VARGATE] GTM tenant created: {GTM_TENANT_ID} (key={gtm_api_key[:20]}...)", flush=True)
+        print(f"[VARGATE] GTM public dashboard: /dashboard/vargate-gtm-agent", flush=True)
 
 
 MERKLE_ROOT_INTERVAL_SECONDS = int(os.getenv("MERKLE_ROOT_INTERVAL_SECONDS", "3600"))
@@ -587,18 +619,7 @@ def build_opa_input(
 
     # Default neutral history (Pass 1)
     if history is None:
-        history = {
-            "last_10min": {
-                "action_count": 0,
-                "denied_count": 0,
-            },
-            "last_24h": {
-                "high_value_transactions": 0,
-                "policy_violations": 0,
-            },
-            "anomaly_score": 0.0,
-            "flagged": False,
-        }
+        history = _default_history()
 
     tenant_id = tenant["tenant_id"] if tenant else DEFAULT_TENANT_ID
     tenant_name = tenant["name"] if tenant else DEFAULT_TENANT_NAME
@@ -688,8 +709,25 @@ def resolve_tenant(api_key: Optional[str]) -> dict:
     return tenant
 
 
-async def get_tenant(x_api_key: Optional[str] = Header(default=None)) -> dict:
-    """FastAPI dependency that resolves the tenant from X-API-Key header."""
+async def get_tenant(
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> dict:
+    """FastAPI dependency that resolves the tenant from X-API-Key or Bearer JWT.
+    Falls back to default tenant if neither is provided (backward compat)."""
+    # Try JWT session first (dashboard uses this)
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        payload = auth_module.verify_session_token(token)
+        if payload:
+            tenant = _tenant_by_id.get(payload["tenant_id"])
+            if not tenant:
+                _refresh_tenant_cache()
+                tenant = _tenant_by_id.get(payload["tenant_id"])
+            if tenant:
+                return tenant
+
+    # Try API key
     tenant = resolve_tenant(x_api_key)
     if tenant is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -762,6 +800,14 @@ async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENAN
         high_value_24h = int(counters.get(b"high_value_count_24h", counters.get("high_value_count_24h", 0)))
         violation_24h = int(counters.get(b"violation_count_24h", counters.get("violation_count_24h", 0)))
 
+        # Check 1-hour cooldown: active if 3+ violations in 24h AND last violation < 1h ago
+        cooldown_active = False
+        if violation_24h >= 3:
+            last_violation_ts = counters.get(b"last_violation_ts", counters.get("last_violation_ts", None))
+            if last_violation_ts:
+                elapsed = now_ts - float(last_violation_ts)
+                cooldown_active = elapsed < 3600  # 1 hour cooldown
+
         return {
             "last_10min": {
                 "action_count": action_count_10min,
@@ -770,9 +816,11 @@ async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENAN
             "last_24h": {
                 "high_value_transactions": high_value_24h,
                 "policy_violations": violation_24h,
+                "action_count": action_count_24h,
             },
             "anomaly_score": round(anomaly_score, 4),
             "flagged": anomaly_score > 0.5,
+            "cooldown_active": cooldown_active,
         }
     except Exception as e:
         print(f"[REDIS] Error fetching history for {agent_id}: {e}", flush=True)
@@ -782,9 +830,10 @@ async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENAN
 def _default_history() -> dict:
     return {
         "last_10min": {"action_count": 0, "denied_count": 0},
-        "last_24h": {"high_value_transactions": 0, "policy_violations": 0},
+        "last_24h": {"high_value_transactions": 0, "policy_violations": 0, "action_count": 0},
         "anomaly_score": 0.0,
         "flagged": False,
+        "cooldown_active": False,
     }
 
 
@@ -825,6 +874,7 @@ async def update_behavioral_history(
         if decision == "deny":
             pipe.hincrby(f"{prefix}:counters", "denied_count_10min", 1)
             pipe.hincrby(f"{prefix}:counters", "violation_count_24h", 1)
+            pipe.hset(f"{prefix}:counters", "last_violation_ts", str(now_ts))
 
         if amount is not None and amount >= 1000:
             pipe.hincrby(f"{prefix}:counters", "high_value_count_24h", 1)
@@ -928,6 +978,133 @@ async def get_bundle_revision() -> str:
     except Exception:
         pass
     return DEFAULT_BUNDLE_REVISION
+
+
+@app.get("/policy/rules")
+async def policy_rules():
+    """Parse active OPA policy files and return structured rule descriptions."""
+    import glob as glob_mod
+
+    rules = []
+    policy_dir = "/app/policies" if os.path.isdir("/app/policies") else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "policies"
+    )
+
+    # Find all .rego files
+    rego_files = []
+    for root, dirs, files in os.walk(policy_dir):
+        for f in files:
+            if f.endswith(".rego"):
+                rego_files.append(os.path.join(root, f))
+
+    if not rego_files:
+        # Fallback: try relative to working dir
+        for root, dirs, files in os.walk("policies"):
+            for f in files:
+                if f.endswith(".rego"):
+                    rego_files.append(os.path.join(root, f))
+
+    for fpath in sorted(rego_files):
+        try:
+            with open(fpath, "r") as fh:
+                content = fh.read()
+
+            fname = os.path.basename(fpath)
+
+            # Extract violation rules: "violations contains msg if {"
+            in_violation = False
+            current_comment = ""
+            block_lines = []
+            brace_depth = 0
+
+            for line in content.split("\n"):
+                stripped = line.strip()
+
+                # Capture comments above rules
+                if stripped.startswith("#") and not in_violation:
+                    comment_text = stripped.lstrip("#").strip()
+                    if comment_text and not comment_text.startswith("──") and not comment_text.startswith("═"):
+                        current_comment = comment_text
+                    continue
+
+                # Start of a violation rule
+                if "violations contains msg if" in stripped:
+                    in_violation = True
+                    block_lines = []
+                    brace_depth = stripped.count("{") - stripped.count("}")
+                    continue
+
+                if in_violation:
+                    block_lines.append(stripped)
+                    brace_depth += stripped.count("{") - stripped.count("}")
+                    if brace_depth <= 0:
+                        # Parse the block
+                        rule_body = "\n".join(block_lines)
+                        msg_match = re.search(r'msg\s*:=\s*"([^"]+)"', rule_body)
+                        rule_id = msg_match.group(1) if msg_match else "unknown"
+                        rules.append({
+                            "id": rule_id,
+                            "description": current_comment or _rule_id_to_description(rule_id),
+                            "type": "deny",
+                            "source": fname,
+                        })
+                        in_violation = False
+                        current_comment = ""
+                    continue
+
+                # requires_human_approval rules
+                if "requires_human_approval if" in stripped:
+                    desc = current_comment or "Requires human approval"
+                    rules.append({
+                        "id": f"requires_human_approval:{desc}",
+                        "description": desc,
+                        "type": "approval",
+                        "source": fname,
+                    })
+                    current_comment = ""
+                    continue
+
+                # Reset comment if we hit a non-comment, non-rule line
+                if stripped and not stripped.startswith("#"):
+                    current_comment = ""
+
+        except Exception as e:
+            print(f"[POLICY] Error parsing {fpath}: {e}", flush=True)
+
+    # Deduplicate by id
+    seen = set()
+    unique_rules = []
+    for r in rules:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            unique_rules.append(r)
+
+    # Fetch current revision
+    revision = DEFAULT_BUNDLE_REVISION
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{BUNDLE_SERVER_URL}/bundles/vargate/status")
+            if resp.status_code == 200:
+                revision = resp.json().get("revision", revision)
+    except Exception:
+        pass
+
+    return {"rules": unique_rules, "revision": revision}
+
+
+def _rule_id_to_description(rule_id: str) -> str:
+    """Convert a snake_case rule ID to a human-readable description."""
+    descriptions = {
+        "high_value_transaction_unapproved_eur": "Transactions over €5,000 require approval",
+        "gdpr_pii_residency_violation": "Unmasked PII leaving EU — blocked",
+        "anomaly_score_threshold_exceeded": "Anomaly score above 0.7 — blocked",
+        "high_value_out_of_hours_eur": "High-value actions (€1,000+) outside business hours — blocked",
+        "violation_cooldown_active": "3+ violations in 24h — blocked for 1 hour",
+        "gtm_consumer_email_blocked": "GTM: emails to consumer domains — blocked",
+        "gtm_daily_rate_exceeded": "GTM: daily send limit exceeded — blocked",
+        "no_credential_registered_for_tool": "Uncredentialed tool calls — blocked",
+    }
+    return descriptions.get(rule_id, rule_id.replace("_", " ").capitalize())
 
 
 @app.get("/bundles/vargate/status")
@@ -1044,6 +1221,14 @@ async def startup():
     conn = get_db()
     try:
         auth_module.init_auth_db(conn)
+    finally:
+        conn.close()
+    # Initialize approval queue + GTM tables (Sprint 4)
+    conn = get_db()
+    try:
+        approval_module.init_approval_db(conn)
+        gtm_constraints.init_gtm_db(conn)
+        _seed_gtm_tenant(conn)
     finally:
         conn.close()
     try:
@@ -1206,7 +1391,44 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
     violations = final_result.get("violations", [])
     severity = final_result.get("severity", "none")
     alert_tier = final_result.get("alert_tier", "none")
+    requires_human = final_result.get("requires_human", False)
     decision_str = "allow" if allowed else "deny"
+
+    # ── Sprint 4: GTM safety constraints (checked before execution) ──
+    gtm_violations = []
+    if allowed and tenant_id == GTM_TENANT_ID:
+        gtm_conn = get_db()
+        try:
+            gtm_violations = gtm_constraints.check_gtm_constraints(
+                gtm_conn, tenant_id, req.tool, req.method, req.params, action_id,
+            )
+        finally:
+            gtm_conn.close()
+        if gtm_violations:
+            allowed = False
+            decision_str = "deny"
+            violations = violations + [v["rule"] for v in gtm_violations]
+            severity = max(
+                [severity] + [v["severity"] for v in gtm_violations],
+                key=lambda s: {"critical": 3, "high": 2, "medium": 1, "none": 0}.get(s, 0),
+            )
+            requires_human = False  # blocked outright, no approval queue
+
+    # ── Sprint 4: Human-approval queue ────────────────────────────
+    if allowed and requires_human:
+        # Enqueue action instead of executing it
+        approval_conn = get_db()
+        try:
+            queued = approval_module.enqueue_action(
+                approval_conn, action_id, tenant_id, req.agent_id,
+                req.tool, req.method, req.params, final_result,
+            )
+        finally:
+            approval_conn.close()
+
+        # Still log to audit trail as "pending_approval"
+        decision_str = "pending_approval"
+        allowed = False  # don't execute yet
 
     # Determine the final opa_input used for the decision
     if evaluation_pass == 2:
@@ -2898,12 +3120,9 @@ async def github_callback(code: str = Query(...), state: str = Query(default="")
             # Existing user — just create a session
             tenant_id = existing["tenant_id"]
             session_token = auth_module.create_session_token(tenant_id, profile["email"])
-            return {
-                "status": "authenticated",
-                "tenant_id": tenant_id,
-                "session_token": session_token,
-                "new_user": False,
-            }
+            from urllib.parse import urlencode
+            params = urlencode({"token": session_token, "tenant_id": tenant_id, "new_user": "false"})
+            return RedirectResponse(url=f"/dashboard/?{params}", status_code=302)
 
         # New user — provision tenant
         slug = auth_module.generate_tenant_slug(profile["name"])
@@ -2930,14 +3149,9 @@ async def github_callback(code: str = Query(...), state: str = Query(default="")
         _refresh_tenant_cache()
 
         session_token = auth_module.create_session_token(slug, profile["email"])
-        return {
-            "status": "authenticated",
-            "tenant_id": result["tenant_id"],
-            "api_key": result["api_key"],
-            "session_token": session_token,
-            "new_user": True,
-            "dashboard_url": f"/dashboard/{slug}",
-        }
+        from urllib.parse import urlencode
+        params = urlencode({"token": session_token, "tenant_id": result["tenant_id"], "new_user": "true"})
+        return RedirectResponse(url=f"/dashboard/?{params}", status_code=302)
     finally:
         conn.close()
 
@@ -3176,3 +3390,259 @@ async def health():
         "blockchain": blockchain_ok,
         "sepolia_merkle": sepolia_ok,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sprint 4: Human-Approval Queue, GTM Constraints, Transparency
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ── Approval Queue API ─────────────────────────────────────────────────────────
+
+@app.get("/approvals")
+async def list_pending_approvals(tenant: dict = Depends(get_session_tenant)):
+    """List all pending actions awaiting human approval."""
+    conn = get_db()
+    try:
+        pending = approval_module.get_pending_actions(conn, tenant["tenant_id"])
+        stats = approval_module.get_queue_stats(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return {"pending": pending, "stats": stats}
+
+
+@app.get("/approvals/history")
+async def approval_history(tenant: dict = Depends(get_session_tenant)):
+    """List past approvals/rejections/expirations."""
+    conn = get_db()
+    try:
+        history = approval_module.get_approval_history(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return {"history": history}
+
+
+class ApprovalRequest(BaseModel):
+    note: Optional[str] = ""
+
+
+@app.post("/approve/{action_id}")
+async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(), tenant: dict = Depends(get_session_tenant)):
+    """Approve a pending action."""
+    conn = get_db()
+    try:
+        # Get reviewer email
+        user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        reviewer = user["email"] if user else "unknown"
+
+        result = approval_module.approve_action(
+            conn, action_id, tenant["tenant_id"],
+            reviewer_email=reviewer, review_note=req.note or "",
+        )
+    finally:
+        conn.close()
+
+    if result is None:
+        raise HTTPException(404, "Action not found")
+    if "error" in result:
+        raise HTTPException(409, result["error"])
+
+    # Log the approval in the audit trail
+    conn = get_db()
+    try:
+        approval_action_id = f"approval-{action_id}"
+        prev_hash = get_prev_hash(conn, tenant["tenant_id"])
+        record_data = f"{approval_action_id}|approve|{action_id}|{reviewer}|{prev_hash}"
+        record_hash = hashlib.sha256(record_data.encode()).hexdigest()
+        conn.execute(
+            """INSERT OR IGNORE INTO audit_log
+               (action_id, tenant_id, agent_id, tool, method, params,
+                decision, violations, severity, alert_tier,
+                prev_hash, record_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                approval_action_id, tenant["tenant_id"], "human-reviewer",
+                "approval_queue", "approve", json.dumps({"target_action": action_id, "note": req.note}),
+                "allow", "[]", "none", "none",
+                prev_hash, record_hash, datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"status": "approved", **result}
+
+
+@app.post("/reject/{action_id}")
+async def reject_action(action_id: str, req: ApprovalRequest = ApprovalRequest(), tenant: dict = Depends(get_session_tenant)):
+    """Reject a pending action."""
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        reviewer = user["email"] if user else "unknown"
+
+        result = approval_module.reject_action(
+            conn, action_id, tenant["tenant_id"],
+            reviewer_email=reviewer, review_note=req.note or "",
+        )
+    finally:
+        conn.close()
+
+    if result is None:
+        raise HTTPException(404, "Action not found")
+    if "error" in result:
+        raise HTTPException(409, result["error"])
+
+    # Log the rejection in the audit trail
+    conn = get_db()
+    try:
+        rejection_action_id = f"rejection-{action_id}"
+        prev_hash = get_prev_hash(conn, tenant["tenant_id"])
+        record_data = f"{rejection_action_id}|reject|{action_id}|{reviewer}|{prev_hash}"
+        record_hash = hashlib.sha256(record_data.encode()).hexdigest()
+        conn.execute(
+            """INSERT OR IGNORE INTO audit_log
+               (action_id, tenant_id, agent_id, tool, method, params,
+                decision, violations, severity, alert_tier,
+                prev_hash, record_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                rejection_action_id, tenant["tenant_id"], "human-reviewer",
+                "approval_queue", "reject", json.dumps({"target_action": action_id, "note": req.note}),
+                "deny", "[]", "none", "none",
+                prev_hash, record_hash, datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"status": "rejected", **result}
+
+
+# ── Transparency endpoint (public, no auth) ────────────────────────────────
+
+@app.get("/transparency")
+async def transparency_global():
+    """Public transparency endpoint — aggregated stats across all public tenants. No PII."""
+    conn = get_db()
+    try:
+        data = transparency_module.get_transparency_data(conn, tenant_id=None)
+    finally:
+        conn.close()
+    return data
+
+
+@app.get("/transparency/{tenant_id}")
+async def transparency_tenant(tenant_id: str):
+    """Public transparency endpoint for a specific tenant (if public dashboard enabled)."""
+    conn = get_db()
+    try:
+        # Check tenant exists and has public dashboard enabled
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE tenant_id = ? OR slug = ?",
+            (tenant_id, tenant_id),
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(404, "Tenant not found")
+        if not tenant_row["public_dashboard"]:
+            raise HTTPException(403, "Transparency data not public for this tenant")
+
+        data = transparency_module.get_transparency_data(conn, tenant_id=tenant_row["tenant_id"])
+    finally:
+        conn.close()
+    return data
+
+
+# ── GTM constraints check endpoint ────────────────────────────────────────
+
+@app.get("/gtm/stats")
+async def gtm_stats(tenant: dict = Depends(get_session_tenant)):
+    """Get GTM agent constraint statistics."""
+    conn = get_db()
+    try:
+        stats = gtm_constraints.get_gtm_stats(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return stats
+
+
+# ── Tenant switching ──────────────────────────────────────────────────────
+
+@app.get("/auth/my-tenants")
+async def list_my_tenants(tenant: dict = Depends(get_session_tenant)):
+    """List all tenants the current user has access to (by github_id)."""
+    conn = get_db()
+    try:
+        # Find the current user's github_id
+        current_user = conn.execute(
+            "SELECT github_id FROM users WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+
+        if not current_user or not current_user["github_id"]:
+            # No GitHub link — just return the current tenant
+            return {"tenants": [{"tenant_id": tenant["tenant_id"], "name": tenant["name"], "current": True}]}
+
+        # Find all tenants this github_id has access to
+        user_rows = conn.execute(
+            "SELECT u.tenant_id, t.name, t.slug FROM users u JOIN tenants t ON u.tenant_id = t.tenant_id WHERE u.github_id = ?",
+            (current_user["github_id"],),
+        ).fetchall()
+
+        tenants = [
+            {
+                "tenant_id": r["tenant_id"],
+                "name": r["name"],
+                "slug": r["slug"],
+                "current": r["tenant_id"] == tenant["tenant_id"],
+            }
+            for r in user_rows
+        ]
+    finally:
+        conn.close()
+
+    return {"tenants": tenants}
+
+
+@app.post("/auth/switch-tenant")
+async def switch_tenant(
+    request: Request,
+    tenant: dict = Depends(get_session_tenant),
+):
+    """Switch to a different tenant. Returns a new JWT for that tenant."""
+    body = await request.json()
+    target_tenant_id = body.get("tenant_id")
+    if not target_tenant_id:
+        raise HTTPException(400, "tenant_id required")
+
+    conn = get_db()
+    try:
+        # Verify current user has access to target tenant (same github_id)
+        current_user = conn.execute(
+            "SELECT github_id, email FROM users WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+
+        if not current_user or not current_user["github_id"]:
+            raise HTTPException(403, "Cannot switch tenants without GitHub authentication")
+
+        target_user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ? AND github_id = ?",
+            (target_tenant_id, current_user["github_id"]),
+        ).fetchone()
+
+        if not target_user:
+            raise HTTPException(403, "You don't have access to that tenant")
+
+        # Mint new JWT for target tenant
+        new_token = auth_module.create_session_token(target_tenant_id, target_user["email"])
+    finally:
+        conn.close()
+
+    return {"session_token": new_token, "tenant_id": target_tenant_id}

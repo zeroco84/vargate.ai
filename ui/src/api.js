@@ -13,7 +13,7 @@ function getAuthHeaders() {
   return {};
 }
 
-async function fetchJSON(path, options = {}) {
+export async function fetchJSON(path, options = {}) {
   try {
     const headers = { ...getAuthHeaders(), ...(options.headers || {}) };
     const resp = await fetch(`${API}${path}`, { ...options, headers });
@@ -71,6 +71,10 @@ export async function verifyErasure(subjectId) {
 
 export async function fetchBundleStatus() {
   return fetchJSON('/bundles/vargate/status');
+}
+
+export async function fetchPolicyRules() {
+  return fetchJSON('/policy/rules');
 }
 
 // ── Blockchain ───────────────────────────────────────────────────────────────
@@ -141,6 +145,20 @@ export async function updateSettings(settings) {
 
 export async function rotateApiKey() {
   return fetchJSON('/api-keys/rotate', { method: 'POST' });
+}
+
+// ── Tenant switching ────────────────────────────────────────────────────────
+
+export async function fetchMyTenants() {
+  return fetchJSON('/auth/my-tenants');
+}
+
+export async function switchTenant(tenantId) {
+  return fetchJSON('/auth/switch-tenant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant_id: tenantId }),
+  });
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

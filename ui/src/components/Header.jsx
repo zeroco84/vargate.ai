@@ -1,12 +1,58 @@
-import React from 'react';
-import { parseBundleRevision } from '../api';
+import React, { useState, useEffect, useRef } from 'react';
+import { parseBundleRevision, fetchMyTenants, switchTenant } from '../api';
 
-export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView, onLogout }) {
+export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView, onLogout, session, onTenantSwitch }) {
   const valid = chain?.valid;
   const count = chain?.record_count ?? 0;
   const failedId = chain?.failed_at_action_id;
   const anchorConnected = anchorStatus?.blockchain_connected;
   const bundleRev = parseBundleRevision(policy?.revision);
+
+  // Tenant switcher state
+  const [tenants, setTenants] = useState([]);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    fetchMyTenants()
+      .then(data => setTenants(data?.tenants || []))
+      .catch(() => {});
+  }, [session?.tenantId]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleSwitch = async (tenantId) => {
+    if (tenantId === session?.tenantId) {
+      setDropdownOpen(false);
+      return;
+    }
+    setSwitching(true);
+    try {
+      const result = await switchTenant(tenantId);
+      if (result?.session_token && result?.tenant_id) {
+        localStorage.setItem('vargate_session', result.session_token);
+        localStorage.setItem('vargate_tenant_id', result.tenant_id);
+        if (onTenantSwitch) onTenantSwitch(result);
+        setDropdownOpen(false);
+      }
+    } catch (err) {
+      console.error('Tenant switch failed:', err);
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const currentTenant = tenants.find(t => t.current) || { name: session?.tenantId || '—' };
 
   // Build status line
   let statusText, statusClass;
@@ -41,11 +87,89 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
       </div>
 
       <div className="header-right">
+        {/* Tenant switcher */}
+        {tenants.length > 1 && (
+          <div ref={dropdownRef} style={{ position: 'relative' }}>
+            <button
+              className="header-nav-btn"
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                borderColor: dropdownOpen ? 'var(--accent-blue-border)' : undefined,
+                background: dropdownOpen ? 'var(--bg-card)' : undefined,
+              }}
+            >
+              <span style={{
+                width: '6px', height: '6px', borderRadius: '50%',
+                background: 'var(--accent-green)', flexShrink: 0,
+              }} />
+              <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {currentTenant.name || currentTenant.tenant_id}
+              </span>
+              <span style={{ fontSize: '.6rem', color: 'var(--text-faint)' }}>▾</span>
+            </button>
+
+            {dropdownOpen && (
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 4px)', right: 0,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border-medium)',
+                borderRadius: 'var(--radius-md)', padding: '4px', minWidth: '200px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 200,
+              }}>
+                <div style={{
+                  padding: '6px 10px', fontSize: '.65rem', fontWeight: 600,
+                  color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.08em',
+                }}>
+                  Switch tenant
+                </div>
+                {tenants.map(t => (
+                  <button
+                    key={t.tenant_id}
+                    onClick={() => handleSwitch(t.tenant_id)}
+                    disabled={switching}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      width: '100%', padding: '8px 10px', border: 'none',
+                      background: t.current ? 'var(--bg-hover)' : 'transparent',
+                      color: t.current ? 'var(--text-primary)' : 'var(--text-secondary)',
+                      borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                      fontSize: '.78rem', fontFamily: 'var(--font-body)',
+                      textAlign: 'left',
+                    }}
+                    onMouseEnter={e => { if (!t.current) e.target.style.background = 'var(--bg-hover)'; }}
+                    onMouseLeave={e => { if (!t.current) e.target.style.background = 'transparent'; }}
+                  >
+                    <span style={{
+                      width: '6px', height: '6px', borderRadius: '50%',
+                      background: t.current ? 'var(--accent-green)' : 'var(--border-medium)',
+                      flexShrink: 0,
+                    }} />
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.name}
+                    </span>
+                    {t.current && (
+                      <span style={{ fontSize: '.65rem', color: 'var(--accent-green)', fontWeight: 600 }}>
+                        active
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <button
           className={`header-nav-btn ${view === 'dashboard' ? 'active' : ''}`}
           onClick={() => setView('dashboard')}
         >
           Dashboard
+        </button>
+        <button
+          className={`header-nav-btn ${view === 'approvals' ? 'active' : ''}`}
+          onClick={() => setView('approvals')}
+        >
+          Approvals
         </button>
         <button
           className={`header-nav-btn ${view === 'settings' ? 'active' : ''}`}

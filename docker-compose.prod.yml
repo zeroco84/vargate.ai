@@ -1,117 +1,91 @@
-version: "3.9"
-
 # Production overlay for Hetzner deployment.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # This file overrides the base docker-compose.yml to:
-#   - Expose only the gateway and UI publicly (via nginx)
-#   - Lock all other services to the internal Docker network
-#   - Add restart policies
-#   - Mount named volumes for persistence across restarts
+#   - Remove public port bindings for all internal services
+#   - Bind gateway + UI to localhost only (host nginx proxies to them)
+#   - Add restart policies and persistence volumes
 #   - Set production environment variables
+#
+# TLS is handled by host nginx + certbot (not Docker).
 
 services:
 
   # ── Bundle Server ────────────────────────────────────────────────────────────
   bundle-server:
     restart: unless-stopped
-    # NOT exposed externally — OPA reaches it via internal network only
-    ports: []
+    ports: !override []
     networks:
       - vargate-internal
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     restart: unless-stopped
-    ports: []                          # Never expose Redis publicly
+    ports: !override []
     networks:
       - vargate-internal
     volumes:
-      - redis-data:/data               # Persist behavioral history across restarts
+      - redis-data:/data
     command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
 
   # ── OPA ──────────────────────────────────────────────────────────────────────
   opa:
     restart: unless-stopped
-    ports: []                          # Internal only
+    ports: !override []
     networks:
       - vargate-internal
 
   # ── Gateway ──────────────────────────────────────────────────────────────────
   gateway:
     restart: unless-stopped
-    ports: []                          # nginx proxies /api/ to this — not exposed directly
+    ports: !override
+      - "127.0.0.1:8000:8000"
     networks:
       - vargate-internal
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - ANCHOR_INTERVAL_SECONDS=300    # 5 min anchor interval for demo (reduce blockchain noise)
+      - ANCHOR_INTERVAL_SECONDS=300
     volumes:
-      - audit-data:/data               # Persist SQLite across restarts
-      - shared-data:/shared:ro         # Contract ABI/address from blockchain service
+      - audit-data:/data
+      - shared-data:/shared:ro
 
   # ── HSM ──────────────────────────────────────────────────────────────────────
   hsm:
     restart: unless-stopped
-    ports: []                          # Internal only — gateway calls it directly
+    ports: !override []
     networks:
       - vargate-internal
     volumes:
-      - hsm-tokens:/var/lib/softhsm/tokens   # CRITICAL: persist HSM token storage
-                                              # Losing this = losing all encryption keys
-                                              # = encrypted audit records unrecoverable
+      - hsm-tokens:/var/lib/softhsm/tokens
+
+  # ── Mock Tools ───────────────────────────────────────────────────────────────
+  mock-tools:
+    restart: unless-stopped
+    ports: !override []
+    networks:
+      - vargate-internal
 
   # ── Blockchain (Hardhat) ─────────────────────────────────────────────────────
   blockchain:
     restart: unless-stopped
-    ports: []                          # Internal only
+    ports: !override []
     networks:
       - vargate-internal
     volumes:
-      - hardhat-data:/app/data         # Persist chain state across restarts
-      - shared-data:/shared            # Write contract address/ABI here for gateway
+      - hardhat-data:/app/data
+      - shared-data:/shared
 
   # ── UI (React dashboard) ─────────────────────────────────────────────────────
   ui:
     restart: unless-stopped
-    ports: []                          # nginx handles TLS and proxies to this
+    ports: !override
+      - "127.0.0.1:3000:80"
     networks:
       - vargate-internal
-
-  # ── nginx reverse proxy (NEW — not in base compose) ─────────────────────────
-  nginx:
-    image: nginx:1.25-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./site:/var/www/vargate-marketing:ro
-      - certbot-www:/var/www/certbot:ro
-      - certbot-certs:/etc/letsencrypt:ro
-    networks:
-      - vargate-internal
-    depends_on:
-      - gateway
-      - ui
-
-  # ── Certbot (Let's Encrypt — run manually, not as long-running service) ──────
-  certbot:
-    image: certbot/certbot:latest
-    volumes:
-      - certbot-www:/var/www/certbot
-      - certbot-certs:/etc/letsencrypt
-    profiles:
-      - certbot              # Only runs when explicitly invoked:
-                             # docker compose --profile certbot run certbot certonly ...
 
 networks:
   vargate-internal:
     driver: bridge
-    internal: false          # Gateway needs outbound for blockchain anchoring to public chains
-                             # when you eventually switch from Hardhat to Polygon/Arbitrum
 
 volumes:
   audit-data:
@@ -120,5 +94,3 @@ volumes:
   shared-data:
   redis-data:
   hardhat-data:
-  certbot-www:
-  certbot-certs:
