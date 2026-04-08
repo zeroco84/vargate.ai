@@ -1,0 +1,55 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"  # Weekly Monday 06:00 UTC
+
+jobs:
+  trivy-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner (gateway)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ./gateway
+          format: sarif
+          output: trivy-gateway.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Run Trivy vulnerability scanner (blockchain)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ./blockchain
+          format: sarif
+          output: trivy-blockchain.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload gateway results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-gateway.sarif
+          category: trivy-gateway
+
+      - name: Upload blockchain results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-blockchain.sarif
+          category: trivy-blockchain
+
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: ./gateway
+          severity: CRITICAL
+          exit-code: 1
