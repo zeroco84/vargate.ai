@@ -1474,7 +1474,22 @@ async def startup():
     _refresh_tenant_cache()
     print(f"[VARGATE] Tenant cache loaded: {len(_tenant_cache)} tenant(s).", flush=True)
 
+    # Start daily SQLite backup task
+    asyncio.create_task(_backup_loop())
+    print("[VARGATE] SQLite backup task started (interval: 24h).", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
+
+
+async def _backup_loop():
+    """Run SQLite backup once per 24 hours."""
+    import backup as backup_module
+    while True:
+        await asyncio.sleep(86400)  # 24 hours
+        try:
+            await asyncio.to_thread(backup_module.backup_database)
+        except Exception as e:
+            print(f"[BACKUP] Scheduled backup failed: {e}", flush=True)
 
 
 @app.on_event("shutdown")
@@ -2133,6 +2148,15 @@ async def health():
     }
 
 
+@app.post("/backup/trigger")
+async def trigger_backup(tenant: dict = Depends(get_session_tenant)):
+    """Admin endpoint to trigger an immediate SQLite backup."""
+    import backup as backup_module
+    try:
+        result = await asyncio.to_thread(backup_module.backup_database)
+        return {"status": "ok", "backup": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
 
 
 

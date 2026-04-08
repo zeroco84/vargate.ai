@@ -131,6 +131,7 @@ services:
       - VARGATE_BASE_URL=${VARGATE_BASE_URL:-https://vargate.ai}
     volumes:
       - audit-data:/data
+      - backup-data:/backup
       - shared-data:/shared:ro
       - ./policies:/app/policies:ro
     depends_on:
@@ -163,6 +164,7 @@ services:
 
 volumes:
   audit-data:
+  backup-data:
   bundle-archive:
   hsm-tokens:
   cred-data:

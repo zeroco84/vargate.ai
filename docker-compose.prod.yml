@@ -47,6 +47,7 @@ services:
       - ANCHOR_INTERVAL_SECONDS=300
     volumes:
       - audit-data:/data
+      - backup-data:/backup
       - shared-data:/shared:ro
 
   # ── HSM ──────────────────────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ networks:
 
 volumes:
   audit-data:
+  backup-data:
   bundle-archive:
   hsm-tokens:
   cred-data:
