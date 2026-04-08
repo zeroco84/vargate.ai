@@ -114,6 +114,13 @@ services:
       # ── Stage 7C: AGCS compliance ──
       - ANCHOR_MODE=${ANCHOR_MODE:-full}
       - MERKLE_ROOT_INTERVAL_SECONDS=${MERKLE_ROOT_INTERVAL_SECONDS:-3600}
+      # ── Sprint 5: Multi-chain blockchain anchoring ──
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL:-}
+      - POLYGON_PRIVATE_KEY=${POLYGON_PRIVATE_KEY:-}
+      - POLYGON_CONTRACT_FILE=/shared/PolygonMerkleAuditAnchor.json
+      - ETH_MAINNET_RPC_URL=${ETH_MAINNET_RPC_URL:-}
+      - ETH_MAINNET_PRIVATE_KEY=${ETH_MAINNET_PRIVATE_KEY:-}
+      - ETH_CONTRACT_FILE=/shared/EthMerkleAuditAnchor.json
       # ── Sprint 3: Auth & Signup ──
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}

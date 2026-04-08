@@ -90,9 +90,13 @@ redis_pool: Optional[aioredis.Redis] = None
 blockchain_client = None
 _anchor_task = None
 
-# New Sepolia Merkle anchor client
+# New Sepolia Merkle anchor client (backward compat)
 merkle_blockchain_client = None
 _merkle_anchor_task = None
+
+# Sprint 5: Multi-chain manager
+chain_manager = None
+_tree_anchor_task = None
 
 # Merkle tree cache (Fix 2 — avoids full rebuild on every proof/verify request)
 from tree_cache import tree_cache
@@ -291,11 +295,20 @@ def init_db():
     for col_sql in [
         "ALTER TABLE merkle_anchor_log ADD COLUMN prev_merkle_root TEXT",
         "ALTER TABLE merkle_anchor_log ADD COLUMN root_chain_hash TEXT",
+        "ALTER TABLE merkle_anchor_log ADD COLUMN anchor_chain TEXT DEFAULT 'sepolia'",
     ]:
         try:
             conn.execute(col_sql)
         except sqlite3.OperationalError:
             pass  # Column already exists
+    # Sprint 5: Add anchor_chain preference to tenants
+    for col_sql in [
+        "ALTER TABLE tenants ADD COLUMN anchor_chain TEXT DEFAULT 'polygon'",
+    ]:
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass
     # Fix 5 (AG-2.2): Local Merkle root recording table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS merkle_root_log (
@@ -1297,31 +1310,98 @@ async def startup():
         _anchor_task = asyncio.create_task(_anchor_loop())
         print(f"[VARGATE] Legacy anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
 
-    # Initialize Sepolia Merkle anchor client (Stage 7B)
+    # Sprint 5: Initialize multi-chain blockchain anchoring
     try:
-        from blockchain_client import BlockchainClient as MerkleBlockchainClient
-        from blockchain_client import run_anchor_loop as merkle_anchor_loop
-        merkle_blockchain_client = MerkleBlockchainClient()
-        if merkle_blockchain_client.connect():
-            # Fix 3: pass callback to write AG-3.2 audit records after each anchor
-            def _post_anchor(conn, result):
-                write_anchor_audit_record(
-                    conn, result,
-                    contract_address=merkle_blockchain_client.contract_address,
-                )
-            _merkle_anchor_task = asyncio.create_task(
-                merkle_anchor_loop(merkle_blockchain_client, get_db, post_anchor_fn=_post_anchor)
+        from blockchain_client import (
+            BlockchainClient as MerkleBlockchainClient,
+            ChainManager,
+            EnvVarSigner,
+            run_anchor_loop as merkle_anchor_loop,
+            run_tree_anchor_loop,
+            SEPOLIA_RPC_URL as _SEPOLIA_RPC,
+            POLYGON_RPC_URL as _POLYGON_RPC,
+            ETH_MAINNET_RPC_URL as _ETH_RPC,
+            POLYGON_PRIVATE_KEY as _POLYGON_KEY,
+            ETH_MAINNET_PRIVATE_KEY as _ETH_KEY,
+            DEPLOYER_PRIVATE_KEY as _DEPLOYER_KEY,
+            CONTRACT_INFO_FILE as _SEPOLIA_CONTRACT,
+            POLYGON_CONTRACT_FILE as _POLYGON_CONTRACT,
+            ETH_CONTRACT_FILE as _ETH_CONTRACT,
+        )
+
+        chain_manager = ChainManager()
+
+        # Initialize Sepolia (backward compat / development)
+        if _SEPOLIA_RPC and _DEPLOYER_KEY:
+            sepolia_client = MerkleBlockchainClient(
+                chain_name="sepolia",
+                rpc_url=_SEPOLIA_RPC,
+                contract_file=_SEPOLIA_CONTRACT,
+                signer=EnvVarSigner(_DEPLOYER_KEY),
             )
+            if sepolia_client.connect():
+                chain_manager.add_client("sepolia", sepolia_client)
+                merkle_blockchain_client = sepolia_client  # backward compat
+
+        # Initialize Polygon PoS (primary production chain)
+        if _POLYGON_RPC and _POLYGON_KEY:
+            polygon_client = MerkleBlockchainClient(
+                chain_name="polygon",
+                rpc_url=_POLYGON_RPC,
+                contract_file=_POLYGON_CONTRACT,
+                signer=EnvVarSigner(_POLYGON_KEY),
+            )
+            if polygon_client.connect():
+                chain_manager.add_client("polygon", polygon_client)
+                if not merkle_blockchain_client:
+                    merkle_blockchain_client = polygon_client
+
+        # Initialize Polygon Amoy testnet
+        if _POLYGON_RPC and _POLYGON_KEY and "amoy" in _POLYGON_RPC.lower():
+            # Already connected above as "polygon", re-label
+            if "polygon" in chain_manager.clients:
+                chain_manager.clients["polygon_amoy"] = chain_manager.clients.pop("polygon")
+
+        # Initialize Ethereum mainnet (institutional tier)
+        if _ETH_RPC and _ETH_KEY:
+            eth_client = MerkleBlockchainClient(
+                chain_name="ethereum",
+                rpc_url=_ETH_RPC,
+                contract_file=_ETH_CONTRACT,
+                signer=EnvVarSigner(_ETH_KEY),
+            )
+            if eth_client.connect():
+                chain_manager.add_client("ethereum", eth_client)
+
+        connected = chain_manager.connected_chains
+        if connected:
+            # Start cumulative anchor loop on primary client
+            primary = chain_manager.get_default_client()
+            if primary:
+                def _post_anchor(conn, result):
+                    write_anchor_audit_record(
+                        conn, result,
+                        contract_address=primary.contract_address,
+                    )
+                _merkle_anchor_task = asyncio.create_task(
+                    merkle_anchor_loop(primary, get_db, post_anchor_fn=_post_anchor)
+                )
+
+            # Start hourly tree anchor loop
+            _tree_anchor_task = asyncio.create_task(
+                run_tree_anchor_loop(chain_manager, get_db)
+            )
+
             print(
-                f"[VARGATE] Sepolia Merkle anchor connected. "
-                f"Contract: {merkle_blockchain_client.contract_address}",
+                f"[VARGATE] Blockchain anchoring connected: {', '.join(connected)}",
                 flush=True,
             )
         else:
-            print("[VARGATE] Sepolia not configured — Merkle anchoring disabled.", flush=True)
+            print("[VARGATE] No blockchain chains configured — anchoring disabled.", flush=True)
     except Exception as e:
-        print(f"[VARGATE] Merkle blockchain init failed: {e}", flush=True)
+        print(f"[VARGATE] Blockchain init failed: {e}", flush=True)
         merkle_blockchain_client = None
+        chain_manager = None
 
     # Fix 5 (AG-2.2): Start background Merkle root recording loop
     _merkle_root_task = asyncio.create_task(run_merkle_root_loop(get_db))
@@ -3012,15 +3092,15 @@ async def get_anchor_log():
 
 @app.get("/anchor/status")
 async def anchor_status():
-    """Status of both legacy and Sepolia Merkle anchoring systems."""
-    global merkle_blockchain_client
+    """Status of blockchain anchoring systems (multi-chain)."""
+    global merkle_blockchain_client, chain_manager
 
     # Legacy Hardhat info
     legacy_connected = blockchain_client is not None
     legacy_addr = blockchain_client.contract_address if blockchain_client else None
     legacy_count = blockchain_client.get_anchor_count() if blockchain_client else 0
 
-    # Sepolia Merkle info
+    # Primary Merkle client info (backward compat)
     sepolia_connected = (
         merkle_blockchain_client is not None
         and merkle_blockchain_client.connected
@@ -3053,24 +3133,43 @@ async def anchor_status():
             "SELECT anchored_at FROM anchor_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
         last_anchor_time = last_anchor_row["anchored_at"] if last_anchor_row else None
+
+        # Sprint 5: Hourly tree anchor stats
+        tree_stats = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN anchor_tx_hash IS NOT NULL THEN 1 ELSE 0 END) as anchored "
+            "FROM merkle_trees"
+        ).fetchone()
     finally:
         conn.close()
 
-    # Fix 7: import anchor mode
     from blockchain_client import ANCHOR_MODE
 
+    # Sprint 5: Multi-chain status
+    chains_status = chain_manager.status() if chain_manager else {}
+    connected_chains = chain_manager.connected_chains if chain_manager else []
+
     return {
-        "network": "sepolia" if sepolia_connected else ("hardhat" if legacy_connected else None),
+        "network": connected_chains[0] if connected_chains else (
+            "hardhat" if legacy_connected else None
+        ),
+        "connected_chains": connected_chains,
         "contract_address": sepolia_addr or legacy_addr,
         "deployer_address": sepolia_deployer,
         "anchor_count": sepolia_count or legacy_count,
         "latest_merkle_root": latest_merkle["merkle_root"] if latest_merkle else None,
         "last_anchor_time": last_anchor_time,
-        "web3_connected": sepolia_connected or legacy_connected,
+        "web3_connected": sepolia_connected or legacy_connected or bool(connected_chains),
         "anchor_interval_seconds": ANCHOR_INTERVAL_SECONDS,
         "anchor_mode": ANCHOR_MODE,
-        # Legacy info for backward compatibility
-        "blockchain_connected": legacy_connected or sepolia_connected,
+        "blockchain_connected": legacy_connected or sepolia_connected or bool(connected_chains),
+        # Sprint 5: Hourly tree stats
+        "merkle_trees": {
+            "total": tree_stats["total"] if tree_stats else 0,
+            "anchored": tree_stats["anchored"] if tree_stats else 0,
+        },
+        # Multi-chain detail
+        "chains": chains_status,
         "legacy_hardhat": {
             "connected": legacy_connected,
             "contract_address": legacy_addr,
@@ -3455,6 +3554,7 @@ async def dashboard_me(tenant: dict = Depends(get_session_tenant)):
         "api_key_prefix": tenant_row["api_key"][:12] + "..." if tenant_row else None,
         "slug": tenant_row["slug"] if tenant_row and "slug" in tenant_row.keys() else None,
         "public_dashboard": bool(tenant_row["public_dashboard"]) if tenant_row and "public_dashboard" in tenant_row.keys() else False,
+        "anchor_chain": tenant_row["anchor_chain"] if tenant_row and "anchor_chain" in tenant_row.keys() else "polygon",
         "created_at": tenant["created_at"],
         "activated": activated,
         "stats": {
@@ -3470,6 +3570,7 @@ async def dashboard_me(tenant: dict = Depends(get_session_tenant)):
 class TenantSettingsRequest(BaseModel):
     public_dashboard: Optional[bool] = None
     name: Optional[str] = None
+    anchor_chain: Optional[str] = None  # Sprint 5: polygon, ethereum, sepolia
 
 
 @app.patch("/dashboard/settings")
@@ -3487,6 +3588,13 @@ async def update_tenant_settings(req: TenantSettingsRequest, tenant: dict = Depe
                 "UPDATE tenants SET name = ? WHERE tenant_id = ?",
                 (req.name, tenant["tenant_id"]),
             )
+        if req.anchor_chain is not None:
+            valid_chains = {"polygon", "ethereum", "sepolia", "polygon_amoy"}
+            if req.anchor_chain in valid_chains:
+                conn.execute(
+                    "UPDATE tenants SET anchor_chain = ? WHERE tenant_id = ?",
+                    (req.anchor_chain, tenant["tenant_id"]),
+                )
         conn.commit()
     finally:
         conn.close()

@@ -15,6 +15,11 @@ require("@nomicfoundation/hardhat-toolbox");
 const SEPOLIA_RPC_URL      = process.env.SEPOLIA_RPC_URL      || "";
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY || "";
 const ETHERSCAN_API_KEY    = process.env.ETHERSCAN_API_KEY    || "";
+const POLYGON_RPC_URL      = process.env.POLYGON_RPC_URL      || "";
+const POLYGON_PRIVATE_KEY  = process.env.POLYGON_PRIVATE_KEY  || "";
+const POLYGONSCAN_API_KEY  = process.env.POLYGONSCAN_API_KEY  || "";
+const ETH_MAINNET_RPC_URL  = process.env.ETH_MAINNET_RPC_URL  || "";
+const ETH_MAINNET_PRIVATE_KEY = process.env.ETH_MAINNET_PRIVATE_KEY || "";
 
 const networks = {
   hardhat: {
@@ -23,18 +28,46 @@ const networks = {
   },
 };
 
-// Only add Sepolia if credentials are configured
-if (SEPOLIA_RPC_URL && DEPLOYER_PRIVATE_KEY) {
-  // Ensure key has 0x prefix for ethers
-  const key = DEPLOYER_PRIVATE_KEY.startsWith("0x")
-    ? DEPLOYER_PRIVATE_KEY
-    : `0x${DEPLOYER_PRIVATE_KEY}`;
+function ensureKey(key) {
+  return key.startsWith("0x") ? key : `0x${key}`;
+}
 
+// Sepolia testnet
+if (SEPOLIA_RPC_URL && DEPLOYER_PRIVATE_KEY) {
   networks.sepolia = {
     url: SEPOLIA_RPC_URL,
     chainId: 11155111,
-    accounts: [key],
-    // Reasonable gas settings for Sepolia
+    accounts: [ensureKey(DEPLOYER_PRIVATE_KEY)],
+    gasMultiplier: 1.2,
+  };
+}
+
+// Polygon Amoy testnet (chainId 80002)
+if (POLYGON_RPC_URL && POLYGON_PRIVATE_KEY) {
+  networks.polygon_amoy = {
+    url: POLYGON_RPC_URL,
+    chainId: 80002,
+    accounts: [ensureKey(POLYGON_PRIVATE_KEY)],
+    gasMultiplier: 1.2,
+  };
+}
+
+// Polygon PoS mainnet (chainId 137)
+if (POLYGON_RPC_URL && POLYGON_PRIVATE_KEY && !POLYGON_RPC_URL.includes("amoy")) {
+  networks.polygon = {
+    url: POLYGON_RPC_URL,
+    chainId: 137,
+    accounts: [ensureKey(POLYGON_PRIVATE_KEY)],
+    gasMultiplier: 1.2,
+  };
+}
+
+// Ethereum mainnet (chainId 1)
+if (ETH_MAINNET_RPC_URL && ETH_MAINNET_PRIVATE_KEY) {
+  networks.ethereum = {
+    url: ETH_MAINNET_RPC_URL,
+    chainId: 1,
+    accounts: [ensureKey(ETH_MAINNET_PRIVATE_KEY)],
     gasMultiplier: 1.2,
   };
 }
@@ -48,6 +81,11 @@ module.exports = {
   },
   networks,
   etherscan: {
-    apiKey: ETHERSCAN_API_KEY,
+    apiKey: {
+      sepolia: ETHERSCAN_API_KEY,
+      polygon: POLYGONSCAN_API_KEY,
+      polygonAmoy: POLYGONSCAN_API_KEY,
+      mainnet: ETHERSCAN_API_KEY,
+    },
   },
 };
