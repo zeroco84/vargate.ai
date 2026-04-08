@@ -72,7 +72,7 @@ def _build_compliance_package(
     rows = conn.execute(
         """SELECT id, action_id, agent_id, tool, method, decision,
                   violations, severity, record_hash, prev_hash,
-                  requested_at, decided_at, bundle_revision,
+                  requested_at, created_at, bundle_revision,
                   evaluation_pass, anomaly_score_at_eval,
                   execution_mode, tenant_id
            FROM audit_log

@@ -27,6 +27,8 @@ import time
 import requests
 
 GATEWAY_URL = os.environ.get("VARGATE_URL", "http://localhost:8000")
+API_KEY = os.environ.get("VARGATE_API_KEY", "")
+AUTH_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 # ANSI colours
 GREEN = "\033[92m"
@@ -173,6 +175,7 @@ def test_08_compliance_export():
     """Export a compliance package (JSON)."""
     r = requests.get(
         f"{GATEWAY_URL}/compliance/export/vargate-internal?from=2020-01-01&to=2030-12-31",
+        headers=AUTH_HEADERS,
         timeout=30,
     )
     assert r.status_code == 200, f"Compliance export returned {r.status_code}: {r.text}"
@@ -200,7 +203,7 @@ def test_09_policy_templates():
 
 def test_10_erasure():
     """GDPR erasure of the test agent's data."""
-    r = requests.post(f"{GATEWAY_URL}/audit/erase/e2e-test-agent", timeout=15)
+    r = requests.post(f"{GATEWAY_URL}/audit/erase/e2e-test-agent", headers=AUTH_HEADERS, timeout=15)
     # May succeed or return 404/422 if no PII or no such subject
     assert r.status_code in [200, 404, 422], f"Erasure returned {r.status_code}: {r.text}"
     if r.status_code == 200:
@@ -211,7 +214,7 @@ def test_10_erasure():
 
 def test_11_verify_erasure():
     """Verify erasure status."""
-    r = requests.get(f"{GATEWAY_URL}/audit/erase/e2e-test-agent/verify", timeout=15)
+    r = requests.get(f"{GATEWAY_URL}/audit/erase/e2e-test-agent/verify", headers=AUTH_HEADERS, timeout=15)
     assert r.status_code in [200, 404], f"Verify erasure returned {r.status_code}"
     if r.status_code == 200:
         print(f"  {DIM}Erasure verification: {r.json()}{RESET}")
