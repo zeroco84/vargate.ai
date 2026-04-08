@@ -1,4 +1,4 @@
-package vargate.policy
+package vargate.templates.general
 
 import future.keywords.if
 import future.keywords.contains
