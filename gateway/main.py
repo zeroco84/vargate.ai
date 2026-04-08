@@ -192,6 +192,14 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def get_db_threadsafe() -> sqlite3.Connection:
+    """Get a SQLite connection safe for use in background worker threads."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def init_db():
     conn = get_db()
     # ── Tenants table (Sprint 2) ────────────────────────────────────
@@ -1277,7 +1285,7 @@ async def decrypt_field_value(value: str) -> dict:
 
 @app.on_event("startup")
 async def startup():
-    global redis_pool, _anchor_task, merkle_blockchain_client, _merkle_anchor_task
+    global redis_pool, _anchor_task, merkle_blockchain_client, _merkle_anchor_task, chain_manager, _tree_anchor_task
     init_db()
     # Initialize auth tables (Sprint 3)
     conn = get_db()
@@ -1384,12 +1392,12 @@ async def startup():
                         contract_address=primary.contract_address,
                     )
                 _merkle_anchor_task = asyncio.create_task(
-                    merkle_anchor_loop(primary, get_db, post_anchor_fn=_post_anchor)
+                    merkle_anchor_loop(primary, get_db_threadsafe, post_anchor_fn=_post_anchor)
                 )
 
             # Start hourly tree anchor loop
             _tree_anchor_task = asyncio.create_task(
-                run_tree_anchor_loop(chain_manager, get_db)
+                run_tree_anchor_loop(chain_manager, get_db_threadsafe)
             )
 
             print(
