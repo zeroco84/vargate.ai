@@ -1942,6 +1942,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         "decision": decision_str,
         "violations": sorted(violations) if violations else [],
         "severity": severity,
+        "requires_human": requires_human,
     }
     if decision_str == "deny":
         await webhooks_module.dispatch_webhook(tenant, "action.denied", webhook_payload)
