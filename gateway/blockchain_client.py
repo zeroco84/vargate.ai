@@ -395,8 +395,17 @@ class BlockchainClient:
             "explorer_url": self.explorer_tx_url(tx_hash_hex),
         }
 
-    async def anchor_now(self, conn: sqlite3.Connection) -> dict:
-        return await asyncio.to_thread(self._anchor_now_sync, conn)
+    async def anchor_now(self, conn_or_fn) -> dict:
+        """Async wrapper. Accepts a connection (legacy) or get_db callable."""
+        if callable(conn_or_fn):
+            def _run():
+                conn = conn_or_fn()
+                try:
+                    return self._anchor_now_sync(conn)
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_run)
+        return await asyncio.to_thread(self._anchor_now_sync, conn_or_fn)
 
     # ── Anchor hourly trees ─────────────────────────────────────────────
 
@@ -520,8 +529,17 @@ class BlockchainClient:
 
         return results
 
-    async def anchor_trees(self, conn: sqlite3.Connection, tenant_id: str) -> list[dict]:
-        return await asyncio.to_thread(self._anchor_trees_sync, conn, tenant_id)
+    async def anchor_trees(self, conn_or_fn, tenant_id: str) -> list[dict]:
+        """Async wrapper. Accepts a connection (legacy) or get_db callable."""
+        if callable(conn_or_fn):
+            def _run():
+                conn = conn_or_fn()
+                try:
+                    return self._anchor_trees_sync(conn, tenant_id)
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_run)
+        return await asyncio.to_thread(self._anchor_trees_sync, conn_or_fn, tenant_id)
 
     # ── Verification ─────────────────────────────────────────────────────
 
@@ -579,8 +597,17 @@ class BlockchainClient:
             "last_anchor_time": last_anchor["anchored_at"] if last_anchor else None,
         }
 
-    async def verify_latest(self, conn: sqlite3.Connection) -> dict:
-        return await asyncio.to_thread(self._verify_latest_sync, conn)
+    async def verify_latest(self, conn_or_fn) -> dict:
+        """Async wrapper. Accepts a connection (legacy) or get_db callable."""
+        if callable(conn_or_fn):
+            def _run():
+                conn = conn_or_fn()
+                try:
+                    return self._verify_latest_sync(conn)
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_run)
+        return await asyncio.to_thread(self._verify_latest_sync, conn_or_fn)
 
     # ── View helpers ─────────────────────────────────────────────────────
 
@@ -688,14 +715,19 @@ async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=No
                 conn = get_db_fn()
                 try:
                     count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
-                    if count > 0:
-                        result = await client.anchor_now(conn)
-                        if post_anchor_fn and result:
-                            post_anchor_fn(conn, result)
-                    else:
-                        print(f"[ANCHOR-{client.chain_name}] No records to anchor yet.", flush=True)
                 finally:
                     conn.close()
+                if count > 0:
+                    # Pass get_db_fn so the sync thread creates its own connection
+                    result = await client.anchor_now(get_db_fn)
+                    if post_anchor_fn and result:
+                        cb_conn = get_db_fn()
+                        try:
+                            post_anchor_fn(cb_conn, result)
+                        finally:
+                            cb_conn.close()
+                else:
+                    print(f"[ANCHOR-{client.chain_name}] No records to anchor yet.", flush=True)
         except Exception as e:
             print(f"[ANCHOR-{client.chain_name}] Background loop error: {e}", flush=True)
 
@@ -711,25 +743,27 @@ async def run_tree_anchor_loop(chain_manager: "ChainManager", get_db_fn):
 
     while True:
         try:
+            # Read tenant list in the event loop thread
             conn = get_db_fn()
             try:
-                tenants = conn.execute("SELECT * FROM tenants").fetchall()
-                for t in tenants:
-                    tenant = dict(t)
-                    client = chain_manager.get_tenant_client(tenant)
-                    if not client:
-                        continue
-
-                    results = await client.anchor_trees(conn, tenant["tenant_id"])
-                    for r in results:
-                        print(
-                            f"[TREE-ANCHOR] tenant={tenant['tenant_id']} "
-                            f"tree[{r['tree_index']}] chain={r['chain']} "
-                            f"tx={r['tx_hash'][:18]}...",
-                            flush=True,
-                        )
+                tenants = [dict(t) for t in conn.execute("SELECT * FROM tenants").fetchall()]
             finally:
                 conn.close()
+
+            for tenant in tenants:
+                client = chain_manager.get_tenant_client(tenant)
+                if not client:
+                    continue
+
+                # Pass get_db_fn so the sync thread creates its own connection
+                results = await client.anchor_trees(get_db_fn, tenant["tenant_id"])
+                for r in results:
+                    print(
+                        f"[TREE-ANCHOR] tenant={tenant['tenant_id']} "
+                        f"tree[{r['tree_index']}] chain={r['chain']} "
+                        f"tx={r['tx_hash'][:18]}...",
+                        flush=True,
+                    )
         except Exception as e:
             print(f"[TREE-ANCHOR] Background loop error: {e}", flush=True)
 
