@@ -2750,6 +2750,115 @@ async def get_merkle_roots():
         conn.close()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sprint 5: Hourly Merkle Tree API (AG-2.2 / AG-2.3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/audit/merkle/roots")
+async def audit_merkle_roots(
+    tenant: dict = Depends(get_tenant),
+    limit: int = Query(default=100, le=500),
+):
+    """List hourly Merkle tree roots for a tenant. Works for public tenants without auth."""
+    from merkle import build_hourly_trees
+
+    conn = get_db()
+    try:
+        # Build any pending trees first
+        build_hourly_trees(conn, tenant["tenant_id"])
+
+        rows = conn.execute(
+            "SELECT id, tree_index, merkle_root, record_count, tree_height, "
+            "from_record_id, to_record_id, period_start, period_end, created_at, "
+            "prev_tree_root, anchor_tx_hash, anchor_chain, anchor_block "
+            "FROM merkle_trees WHERE tenant_id = ? ORDER BY tree_index DESC LIMIT ?",
+            (tenant["tenant_id"], limit),
+        ).fetchall()
+
+        return {
+            "trees": [
+                {
+                    "tree_index": r["tree_index"],
+                    "merkle_root": r["merkle_root"],
+                    "record_count": r["record_count"],
+                    "tree_height": r["tree_height"],
+                    "from_record_id": r["from_record_id"],
+                    "to_record_id": r["to_record_id"],
+                    "period_start": r["period_start"],
+                    "period_end": r["period_end"],
+                    "created_at": r["created_at"],
+                    "prev_tree_root": r["prev_tree_root"],
+                    "anchor_tx_hash": r["anchor_tx_hash"],
+                    "anchor_chain": r["anchor_chain"],
+                    "anchor_block": r["anchor_block"],
+                    "anchored": r["anchor_tx_hash"] is not None,
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+            "tenant_id": tenant["tenant_id"],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/audit/merkle/proof/{record_hash}")
+async def audit_merkle_proof(
+    record_hash: str,
+    tenant: dict = Depends(get_tenant),
+):
+    """Return inclusion proof for a specific record in its hourly Merkle tree."""
+    from merkle import get_inclusion_proof, build_hourly_trees
+
+    conn = get_db()
+    try:
+        # Build any pending trees first
+        build_hourly_trees(conn, tenant["tenant_id"])
+
+        result = get_inclusion_proof(conn, record_hash, tenant["tenant_id"])
+        if not result:
+            raise HTTPException(404, f"Record not found or not yet in a completed hourly tree")
+        return result
+    finally:
+        conn.close()
+
+
+@app.get("/audit/merkle/consistency/{tree_n}/{tree_m}")
+async def audit_merkle_consistency(
+    tree_n: int,
+    tree_m: int,
+    tenant: dict = Depends(get_tenant),
+):
+    """Return consistency proof between two hourly Merkle trees."""
+    from merkle import get_consistency_proof
+
+    conn = get_db()
+    try:
+        result = get_consistency_proof(conn, tenant["tenant_id"], tree_n, tree_m)
+        if "error" in result:
+            raise HTTPException(400 if "must be less" in result["error"] else 404, result["error"])
+        return result
+    finally:
+        conn.close()
+
+
+@app.get("/audit/merkle/verify")
+async def audit_merkle_verify(tenant: dict = Depends(get_tenant)):
+    """Verify the complete Merkle tree chain for a tenant."""
+    from merkle import verify_merkle_chain, build_hourly_trees
+
+    conn = get_db()
+    try:
+        # Build any pending trees first
+        build_hourly_trees(conn, tenant["tenant_id"])
+
+        result = verify_merkle_chain(conn, tenant["tenant_id"])
+        return result
+    finally:
+        conn.close()
+
+
 @app.get("/anchor/consistency-proof")
 async def consistency_proof(from_anchor_index: int, to_anchor_index: int):
     """
