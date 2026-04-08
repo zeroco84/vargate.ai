@@ -29,7 +29,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 import execution_engine
 import auth as auth_module
@@ -82,6 +82,15 @@ app.add_middleware(
 # ── Prometheus metrics ─────────────────────────────────────────────────────
 
 import metrics as prom
+
+# ── Request body size limit middleware ─────────────────────────────────────
+
+@app.middleware("http")
+async def limit_request_size(request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 1_048_576:  # 1MB
+        return JSONResponse(status_code=413, content={"detail": "Request body too large"})
+    return await call_next(request)
 
 # ── Request logging + metrics middleware ───────────────────────────────────
 
@@ -196,13 +205,22 @@ class ContextOverride(BaseModel):
 
 
 class ToolCallRequest(BaseModel):
-    agent_id: str
-    agent_type: str = "unknown"
-    agent_version: str = "0.0.0"
-    tool: str
-    method: str
-    params: dict[str, Any] = {}
+    agent_id: str = Field(..., min_length=1, max_length=256, pattern=r'^[a-zA-Z0-9_\-\.]+$')
+    agent_type: str = Field(default="unknown", max_length=64)
+    agent_version: str = Field(default="0.0.0", max_length=32, pattern=r'^\d+\.\d+\.\d+.*$')
+    tool: str = Field(..., min_length=1, max_length=256, pattern=r'^[a-zA-Z0-9_\-\.:/]+$')
+    method: str = Field(..., min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9_\-\.]+$')
+    params: dict[str, Any] = Field(default={})
     context_override: Optional[ContextOverride] = None
+
+    @field_validator('params')
+    @classmethod
+    def validate_params_size(cls, v):
+        """Reject oversized params to prevent abuse."""
+        serialized = json.dumps(v)
+        if len(serialized) > 65536:  # 64KB max
+            raise ValueError('params payload exceeds 64KB limit')
+        return v
 
 
 class AllowedResponse(BaseModel):
