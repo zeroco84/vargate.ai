@@ -100,6 +100,13 @@ services:
     networks:
       - vargate-internal
 
+  # ── Alertmanager ────────────────────────────────────────────────────────────
+  alertmanager:
+    restart: unless-stopped
+    ports: !override []
+    networks:
+      - vargate-internal
+
 networks:
   vargate-internal:
     driver: bridge

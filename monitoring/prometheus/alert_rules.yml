@@ -1,0 +1,43 @@
+groups:
+  - name: vargate-alerts
+    rules:
+      - alert: HighP99Latency
+        expr: histogram_quantile(0.99, rate(gateway_request_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway p99 latency above 100ms"
+          description: "p99 latency is {{ $value }}s over the last 5 minutes."
+
+      - alert: HighErrorRate
+        expr: rate(gateway_errors_total[5m]) / rate(gateway_requests_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Error rate above 1%"
+
+      - alert: DiskSpaceHigh
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage above 80%"
+
+      - alert: ChainVerificationStale
+        expr: (time() - gateway_anchor_last_success_timestamp) > 7200
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful blockchain anchor in 2+ hours"
+
+      - alert: GatewayDown
+        expr: up{job="vargate-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vargate gateway is unreachable"

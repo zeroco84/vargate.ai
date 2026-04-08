@@ -1,0 +1,19 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: vargate-notify
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: vargate-notify
+    email_configs:
+      - to: "${ALERT_EMAIL:-rlarkin999@gmail.com}"
+        from: "alerts@vargate.ai"
+        smarthost: "${SMTP_HOST:-smtp.resend.com:587}"
+        auth_username: "${SMTP_USER:-resend}"
+        auth_password: "${SMTP_PASSWORD}"
+        require_tls: true
