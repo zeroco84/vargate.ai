@@ -2360,8 +2360,10 @@ from routes_audit import router as audit_router
 from routes_anchor import router as anchor_router
 from routes_tenant import router as tenant_router
 from routes_auth import router as auth_router
+from compliance_export import router as compliance_router
 
 app.include_router(audit_router)
 app.include_router(anchor_router)
 app.include_router(tenant_router)
 app.include_router(auth_router)
+app.include_router(compliance_router)
