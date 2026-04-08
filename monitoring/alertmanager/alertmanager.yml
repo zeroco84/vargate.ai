@@ -11,9 +11,9 @@ route:
 receivers:
   - name: vargate-notify
     email_configs:
-      - to: "${ALERT_EMAIL:-rlarkin999@gmail.com}"
+      - to: "rlarkin999@gmail.com"
         from: "alerts@vargate.ai"
-        smarthost: "${SMTP_HOST:-smtp.resend.com:587}"
-        auth_username: "${SMTP_USER:-resend}"
-        auth_password: "${SMTP_PASSWORD}"
+        smarthost: "smtp.resend.com:587"
+        auth_username: "resend"
+        auth_password_file: /etc/alertmanager/smtp_password
         require_tls: true
