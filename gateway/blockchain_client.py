@@ -263,13 +263,7 @@ class BlockchainClient:
         tree = MerkleTree(leaves)
         merkle_root_hex = tree.root
 
-        root_bytes = bytes.fromhex(merkle_root_hex)
-        if len(root_bytes) < 32:
-            root_bytes = root_bytes.ljust(32, b"\x00")
-        elif len(root_bytes) > 32:
-            root_bytes = root_bytes[:32]
-
-        # Look up previous Merkle root for hash-chaining
+        # Look up previous Merkle root for hash-chaining and skip check
         prev_row = conn.execute(
             "SELECT merkle_root FROM merkle_anchor_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -277,6 +271,17 @@ class BlockchainClient:
             (prev_row["merkle_root"] if isinstance(prev_row, sqlite3.Row) else prev_row[0])
             if prev_row else GENESIS_ROOT
         )
+
+        # Skip if root hasn't changed since last anchor
+        if prev_row and prev_merkle_root_hex == merkle_root_hex:
+            print(f"[ANCHOR-{self.chain_name}] Root unchanged, skipping anchor.", flush=True)
+            return {"skipped": True, "reason": "root_unchanged", "merkle_root": merkle_root_hex}
+
+        root_bytes = bytes.fromhex(merkle_root_hex)
+        if len(root_bytes) < 32:
+            root_bytes = root_bytes.ljust(32, b"\x00")
+        elif len(root_bytes) > 32:
+            root_bytes = root_bytes[:32]
 
         root_chain_hash = hashlib.sha256(
             bytes.fromhex(prev_merkle_root_hex) + bytes.fromhex(merkle_root_hex)
