@@ -17,6 +17,10 @@ COPY entrypoint.sh .
 # Compile contracts
 RUN npx hardhat compile
 
+RUN addgroup -S vargate && adduser -S vargate -G vargate
+RUN chown -R vargate:vargate /app
+USER vargate
+
 EXPOSE 8545
 
 ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]

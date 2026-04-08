@@ -17,5 +17,9 @@ COPY hsm_service.py /app/hsm_service.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+RUN addgroup --system vargate && adduser --system --ingroup vargate vargate
+RUN mkdir -p /data && chown -R vargate:vargate /data /app /var/lib/softhsm
+USER vargate
+
 EXPOSE 8300
 ENTRYPOINT ["/entrypoint.sh"]

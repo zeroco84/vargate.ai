@@ -16,6 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py .
 
+RUN addgroup --system vargate && adduser --system --ingroup vargate vargate
+RUN mkdir -p /data /backup && chown -R vargate:vargate /data /backup /app
+USER vargate
+
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
