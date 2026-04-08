@@ -2189,8 +2189,10 @@ async def metrics_endpoint():
 
 
 @app.post("/backup/trigger")
-async def trigger_backup(tenant: dict = Depends(get_session_tenant)):
+async def trigger_backup(request: Request, tenant: dict = Depends(get_session_tenant)):
     """Admin endpoint to trigger an immediate SQLite backup."""
+    from rate_limit import enforce_ip_rate_limit
+    await enforce_ip_rate_limit(redis_pool, request, "backup", max_requests=2, window_seconds=60)
     import backup as backup_module
     try:
         result = await asyncio.to_thread(backup_module.backup_database)

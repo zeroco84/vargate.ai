@@ -25,8 +25,10 @@ class EmailSignupRequest(BaseModel):
 # ── Auth & Signup endpoints (Sprint 3) ──────────────────────────────────────
 
 @router.post("/auth/signup")
-async def email_signup(req: EmailSignupRequest):
+async def email_signup(req: EmailSignupRequest, request: Request):
     import main
+    from rate_limit import enforce_ip_rate_limit
+    await enforce_ip_rate_limit(main.redis_pool, request, "signup", max_requests=5, window_seconds=60)
     import auth as auth_module
     error = auth_module.validate_email(req.email)
     if error:
@@ -59,8 +61,10 @@ async def email_signup(req: EmailSignupRequest):
 
 
 @router.get("/auth/verify-email")
-async def verify_email(token: str = Query(...)):
+async def verify_email(request: Request, token: str = Query(...)):
     import main
+    from rate_limit import enforce_ip_rate_limit
+    await enforce_ip_rate_limit(main.redis_pool, request, "verify-email", max_requests=10, window_seconds=60)
     import auth as auth_module
     token_hash = auth_module._hash_verification_token(token)
     conn = main.get_db()
@@ -123,8 +127,10 @@ async def github_login():
 
 
 @router.get("/auth/github/callback")
-async def github_callback(code: str = Query(...), state: str = Query(default="")):
+async def github_callback(request: Request, code: str = Query(...), state: str = Query(default="")):
     import main
+    from rate_limit import enforce_ip_rate_limit
+    await enforce_ip_rate_limit(main.redis_pool, request, "github-callback", max_requests=10, window_seconds=60)
     import auth as auth_module
     if not auth_module.GITHUB_CLIENT_ID:
         raise HTTPException(501, "GitHub OAuth not configured")

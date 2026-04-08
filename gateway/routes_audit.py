@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -189,11 +189,14 @@ async def tamper_restore(
 @router.post("/audit/erase/{subject_id}")
 async def erase_subject(
     subject_id: str,
+    request: Request,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     import main
+    from rate_limit import enforce_ip_rate_limit
+    await enforce_ip_rate_limit(main.redis_pool, request, "erasure", max_requests=5, window_seconds=60)
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     """GDPR right-to-erasure: delete the subject's HSM key and mark records."""
     async with httpx.AsyncClient(timeout=10.0) as client:
