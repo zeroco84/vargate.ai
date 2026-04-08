@@ -443,7 +443,7 @@ async def register_credential(
         return resp.json()
 
 
-@router.get("/credentials")
+@router.get("/credentials", tags=["Credentials"])
 async def list_credentials(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
