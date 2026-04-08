@@ -70,10 +70,10 @@ GTM_TENANT_NAME = "Vargate GTM Agent"
 
 app = FastAPI(title="Vargate Gateway", version="0.5.0")
 
-# DEMO ONLY — remove in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://vargate.ai"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1875,7 +1875,7 @@ class TamperRequest(BaseModel):
 
 
 @app.post("/audit/tamper-simulate")  # DEMO ONLY
-async def tamper_simulate(req: TamperRequest):
+async def tamper_simulate(req: TamperRequest, tenant: dict = Depends(get_session_tenant)):
     """Simulate an insider modifying an audit record hash."""
     conn = get_db()
     try:
@@ -1917,7 +1917,7 @@ async def tamper_simulate(req: TamperRequest):
 
 
 @app.post("/audit/tamper-restore")  # DEMO ONLY
-async def tamper_restore():
+async def tamper_restore(tenant: dict = Depends(get_session_tenant)):
     """Restore all tampered records to their original hashes."""
     conn = get_db()
     try:
@@ -1942,7 +1942,7 @@ async def tamper_restore():
 # ── Crypto-shredding / Erasure endpoints ────────────────────────────────────
 
 @app.post("/audit/erase/{subject_id}")
-async def erase_subject(subject_id: str):
+async def erase_subject(subject_id: str, tenant: dict = Depends(get_session_tenant)):
     """GDPR right-to-erasure: delete the subject's HSM key and mark records."""
     # 1. Delete the key in HSM
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -2069,42 +2069,42 @@ async def list_subjects():
 # ── HSM proxy endpoints (for UI and test scripts) ───────────────────────────
 
 @app.post("/hsm/keys")
-async def proxy_hsm_create_key(req: dict):
+async def proxy_hsm_create_key(req: dict, tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{HSM_URL}/keys", json=req)
         return resp.json()
 
 
 @app.post("/hsm/encrypt")
-async def proxy_hsm_encrypt(req: dict):
+async def proxy_hsm_encrypt(req: dict, tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{HSM_URL}/encrypt", json=req)
         return resp.json()
 
 
 @app.post("/hsm/decrypt")
-async def proxy_hsm_decrypt(req: dict):
+async def proxy_hsm_decrypt(req: dict, tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{HSM_URL}/decrypt", json=req)
         return resp.json()
 
 
 @app.get("/hsm/keys/{subject_id}/status")
-async def proxy_hsm_key_status(subject_id: str):
+async def proxy_hsm_key_status(subject_id: str, tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{HSM_URL}/keys/{subject_id}/status")
         return resp.json()
 
 
 @app.get("/hsm/keys")
-async def proxy_hsm_list_keys():
+async def proxy_hsm_list_keys(tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{HSM_URL}/keys")
         return resp.json()
 
 
 @app.delete("/hsm/keys/{subject_id}")
-async def proxy_hsm_delete_key(subject_id: str):
+async def proxy_hsm_delete_key(subject_id: str, tenant: dict = Depends(get_session_tenant)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{HSM_URL}/keys/{subject_id}")
         if resp.status_code == 404:
@@ -2121,7 +2121,7 @@ class RegisterCredentialRequest(BaseModel):
 
 
 @app.post("/credentials/register")
-async def register_credential(req: RegisterCredentialRequest):
+async def register_credential(req: RegisterCredentialRequest, tenant: dict = Depends(get_session_tenant)):
     """Register a tool credential in the HSM vault."""
     # SECURITY: value passes through to HSM immediately, never logged by gateway
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -2133,7 +2133,7 @@ async def register_credential(req: RegisterCredentialRequest):
 
 
 @app.get("/credentials")
-async def list_credentials():
+async def list_credentials(tenant: dict = Depends(get_session_tenant)):
     """List registered tool credentials (no values returned)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{HSM_URL}/credentials")
@@ -2141,7 +2141,7 @@ async def list_credentials():
 
 
 @app.delete("/credentials/{tool_id}/{name}")
-async def delete_credential(tool_id: str, name: str):
+async def delete_credential(tool_id: str, name: str, tenant: dict = Depends(get_session_tenant)):
     """Delete a tool credential from the vault."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{HSM_URL}/credentials/{tool_id}/{name}")
@@ -2151,7 +2151,7 @@ async def delete_credential(tool_id: str, name: str):
 
 
 @app.get("/credentials/{tool_id}/status")
-async def credential_status(tool_id: str):
+async def credential_status(tool_id: str, tenant: dict = Depends(get_session_tenant)):
     """Check credential registration status for a tool."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{HSM_URL}/credentials/{tool_id}/status")
@@ -2159,7 +2159,7 @@ async def credential_status(tool_id: str):
 
 
 @app.get("/credentials/access-log")
-async def credential_access_log():
+async def credential_access_log(tenant: dict = Depends(get_session_tenant)):
     """Get the credential access log (no values ever returned)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{HSM_URL}/credentials/access-log")
@@ -3196,7 +3196,7 @@ class CreateTenantRequest(BaseModel):
 
 
 @app.post("/tenants")
-async def create_tenant(req: CreateTenantRequest):
+async def create_tenant(req: CreateTenantRequest, tenant: dict = Depends(get_session_tenant)):
     """Create a new tenant. Returns the generated API key."""
     api_key = f"vg-{secrets.token_hex(24)}"
     now = datetime.now(timezone.utc).isoformat()
@@ -3226,7 +3226,7 @@ async def create_tenant(req: CreateTenantRequest):
 
 
 @app.get("/tenants")
-async def list_tenants():
+async def list_tenants(tenant: dict = Depends(get_session_tenant)):
     """List all tenants (API keys are masked)."""
     conn = get_db()
     try:
@@ -3249,7 +3249,7 @@ async def list_tenants():
 
 
 @app.get("/tenants/{tenant_id}")
-async def get_tenant_info(tenant_id: str):
+async def get_tenant_info(tenant_id: str, tenant: dict = Depends(get_session_tenant)):
     """Get tenant info (API key masked)."""
     conn = get_db()
     try:
@@ -3327,8 +3327,9 @@ async def verify_email(token: str = Query(...)):
         if not row:
             raise HTTPException(400, "Invalid or expired verification token")
 
-        now = datetime.now(timezone.utc).isoformat()
-        if row["expires_at"] < now:
+        now = datetime.now(timezone.utc)
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if expires_at < now:
             conn.execute("DELETE FROM pending_signups WHERE id = ?", (row["id"],))
             conn.commit()
             raise HTTPException(400, "Verification token expired")

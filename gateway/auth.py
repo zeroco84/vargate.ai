@@ -34,11 +34,13 @@ _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 
 def _ensure_jwt_secret():
-    """Ensure JWT_SECRET is set; generate one if not."""
+    """Ensure JWT_SECRET is set; raise if missing in production."""
     global JWT_SECRET
     if not JWT_SECRET:
-        JWT_SECRET = secrets.token_hex(32)
-        print("[AUTH] JWT_SECRET not set — generated ephemeral secret (will change on restart).", flush=True)
+        raise RuntimeError(
+            "JWT_SECRET environment variable is not set. "
+            "Set a stable secret in .env to prevent session invalidation on restart."
+        )
 
 
 # ── JWT helpers ────────────────────────────────────────────────────────────
