@@ -57,6 +57,7 @@ services:
       - vargate-internal
     volumes:
       - hsm-tokens:/var/lib/softhsm/tokens
+      - cred-data:/data
 
   # ── Mock Tools ───────────────────────────────────────────────────────────────
   mock-tools:
@@ -91,6 +92,7 @@ volumes:
   audit-data:
   bundle-archive:
   hsm-tokens:
+  cred-data:
   shared-data:
   redis-data:
   hardhat-data:
