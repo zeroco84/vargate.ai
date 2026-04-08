@@ -85,6 +85,21 @@ services:
     networks:
       - vargate-internal
 
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    restart: unless-stopped
+    ports: !override []
+    networks:
+      - vargate-internal
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:3001:3000"
+    networks:
+      - vargate-internal
+
 networks:
   vargate-internal:
     driver: bridge
@@ -98,3 +113,5 @@ volumes:
   shared-data:
   redis-data:
   hardhat-data:
+  prometheus-data:
+  grafana-data:
