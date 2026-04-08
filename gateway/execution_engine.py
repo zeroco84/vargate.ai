@@ -11,7 +11,7 @@ import time
 import httpx
 
 MOCK_TOOLS_URL = None  # Set during gateway startup
-RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", "Sera <sera@vargate.ai>")
+RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>")
 
 
 def init(mock_tools_url: str):
