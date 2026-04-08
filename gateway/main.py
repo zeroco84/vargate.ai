@@ -792,10 +792,19 @@ def build_opa_input(
     tenant_id = tenant["tenant_id"] if tenant else DEFAULT_TENANT_ID
     tenant_name = tenant["name"] if tenant else DEFAULT_TENANT_NAME
 
+    # Include policy_config from tenant record if available
+    policy_config = {}
+    if tenant and tenant.get("policy_config"):
+        try:
+            policy_config = json.loads(tenant["policy_config"]) if isinstance(tenant["policy_config"], str) else tenant["policy_config"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return {
         "tenant": {
             "id": tenant_id,
             "name": tenant_name,
+            "policy_config": policy_config,
         },
         "agent": {
             "id": req.agent_id,
@@ -1182,6 +1191,41 @@ async def get_bundle_revision() -> str:
     except Exception:
         pass
     return DEFAULT_BUNDLE_REVISION
+
+
+POLICY_TEMPLATES = {
+    "general": {
+        "name": "General Purpose",
+        "description": "Sensible defaults for any agent type — rate limits, anomaly detection, destructive action approval",
+        "config_keys": ["daily_action_limit", "anomaly_threshold", "cooldown_violations", "approve_destructive"],
+    },
+    "financial": {
+        "name": "Financial Services",
+        "description": "Transaction limits, currency enforcement, business-hours controls, mandatory approval above threshold",
+        "config_keys": ["transaction_limit", "currency", "business_hours_only", "approval_threshold", "daily_transaction_cap"],
+    },
+    "email": {
+        "name": "Email & Outreach",
+        "description": "Blocked recipient domains, daily send limits, AI disclosure mandates, first-contact approval",
+        "config_keys": ["daily_send_limit", "require_disclosure", "first_contact_approval", "blocked_domains"],
+    },
+    "crm": {
+        "name": "CRM & Sales",
+        "description": "Record modification limits, field-level access control, bulk operation approval, export restrictions",
+        "config_keys": ["bulk_threshold", "allow_delete", "export_approval", "restricted_fields"],
+    },
+    "data_access": {
+        "name": "Data Access",
+        "description": "PII handling, data residency controls, query scope limits, masking requirements",
+        "config_keys": ["max_row_limit", "pii_allowed", "allowed_regions", "require_masking", "daily_query_limit"],
+    },
+}
+
+
+@app.get("/policy/templates", tags=["Policy"])
+async def list_policy_templates():
+    """List available policy templates with their configurable parameters."""
+    return {"templates": [{"id": k, **v} for k, v in POLICY_TEMPLATES.items()]}
 
 
 @app.get("/policy/rules", tags=["Policy"])

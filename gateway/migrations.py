@@ -82,6 +82,18 @@ def _migration_4_anchor_log_columns(conn: sqlite3.Connection):
             pass
 
 
+def _migration_5_policy_template(conn: sqlite3.Connection):
+    """Add policy_template and policy_config columns to tenants."""
+    for sql in [
+        "ALTER TABLE tenants ADD COLUMN policy_template TEXT DEFAULT 'general'",
+        "ALTER TABLE tenants ADD COLUMN policy_config TEXT DEFAULT '{}'",
+    ]:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+
 # Ordered list of migrations. Version 1 is the baseline (all existing tables).
 # Each entry: (version, description, migration_fn)
 MIGRATIONS = [
@@ -89,6 +101,7 @@ MIGRATIONS = [
     (2, "Sprint 5: anchor_chain, merkle_anchor_log columns", _migration_2_sprint5_columns),
     (3, "Sessions 2-8: audit_log additional columns", _migration_3_audit_columns),
     (4, "Merkle columns on legacy anchor_log", _migration_4_anchor_log_columns),
+    (5, "Sprint 7: policy_template and policy_config on tenants", _migration_5_policy_template),
 ]
 
 
