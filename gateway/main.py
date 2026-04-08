@@ -79,16 +79,31 @@ app.add_middleware(
 )
 
 
-# ── Request logging middleware ──────────────────────────────────────────────
+# ── Prometheus metrics ─────────────────────────────────────────────────────
+
+import metrics as prom
+
+# ── Request logging + metrics middleware ───────────────────────────────────
 
 @app.middleware("http")
 async def request_logging_middleware(request, call_next):
-    """Log method, path, status, duration, and client IP for every request (skip /health)."""
-    if request.url.path == "/health":
+    """Log method/path/status/duration/client_ip and record Prometheus metrics."""
+    if request.url.path in ("/health", "/metrics"):
         return await call_next(request)
+    prom.ACTIVE_REQUESTS.inc()
     start = time.monotonic()
-    response = await call_next(request)
-    duration_ms = int((time.monotonic() - start) * 1000)
+    try:
+        response = await call_next(request)
+    except Exception:
+        prom.ACTIVE_REQUESTS.dec()
+        raise
+    duration = time.monotonic() - start
+    prom.ACTIVE_REQUESTS.dec()
+    path_label = request.url.path
+    status_label = str(response.status_code)
+    prom.REQUEST_DURATION.labels(request.method, path_label, status_label).observe(duration)
+    prom.REQUESTS_TOTAL.labels(request.method, path_label, status_label).inc()
+    duration_ms = int(duration * 1000)
     client_ip = request.client.host if request.client else "unknown"
     print(
         f"[REQUEST] {request.method} {request.url.path} "
@@ -530,6 +545,15 @@ def write_audit_record(
         ),
     )
     conn.commit()
+
+    # Update Prometheus gauge for audit chain length
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()[0]
+        prom.AUDIT_CHAIN_LENGTH.labels(tenant_id=tenant_id).set(count)
+    except Exception:
+        pass
 
     # Fix 2: Invalidate the Merkle tree cache so the next proof/verify
     # request rebuilds the tree including this new record.
@@ -1049,6 +1073,7 @@ async def _agent_has_violations(agent_id: str, tenant_id: str = DEFAULT_TENANT_I
 
 async def query_opa(opa_input: dict) -> dict:
     """Send input to OPA and return the decision result."""
+    opa_start = time.monotonic()
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(
@@ -1057,10 +1082,12 @@ async def query_opa(opa_input: dict) -> dict:
             )
             resp.raise_for_status()
         except httpx.HTTPError as e:
+            prom.ERRORS_TOTAL.labels("opa_timeout").inc()
             raise HTTPException(
                 status_code=502,
                 detail=f"OPA unreachable: {str(e)}",
             )
+    prom.OPA_EVAL_DURATION.observe(time.monotonic() - opa_start)
     return resp.json().get("result", {})
 
 
@@ -1736,6 +1763,9 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             contains_pii = 0
             pii_fields = []
 
+    # Record Prometheus metrics
+    prom.ACTIONS_TOTAL.labels(decision=decision_str, tenant_id=tenant_id).inc()
+
     # Write audit record
     conn = get_db()
     try:
@@ -2146,6 +2176,16 @@ async def health():
         # Backward compat
         "sepolia_merkle": "sepolia" in connected_chains,
     }
+
+
+# /metrics is intentionally unauthenticated — Prometheus scrapes it from
+# the internal Docker network. The prod overlay binds gateway to 127.0.0.1
+# and nginx does not proxy /metrics, so it is not externally reachable.
+@app.get("/metrics")
+async def metrics_endpoint():
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from starlette.responses import Response
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/backup/trigger")

@@ -357,6 +357,11 @@ class BlockchainClient:
 
         anchored_at = datetime.now(timezone.utc).isoformat()
         self._last_successful_anchor = datetime.now(timezone.utc)
+        try:
+            import metrics as prom
+            prom.ANCHOR_LAST_SUCCESS.set(self._last_successful_anchor.timestamp())
+        except Exception:
+            pass
 
         # Write to legacy anchor_log
         conn.execute(
@@ -507,6 +512,11 @@ class BlockchainClient:
                     tx_hash_hex = f"0x{tx_hash_hex}"
 
                 self._last_successful_anchor = datetime.now(timezone.utc)
+                try:
+                    import metrics as prom
+                    prom.ANCHOR_LAST_SUCCESS.set(self._last_successful_anchor.timestamp())
+                except Exception:
+                    pass
 
                 # Update merkle_trees with anchor info
                 conn.execute(
