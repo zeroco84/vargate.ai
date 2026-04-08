@@ -331,6 +331,9 @@ def init_db():
     # Sprint 5 (AG-2.2): Hourly tenant-scoped Merkle trees
     from merkle import init_merkle_trees_table
     init_merkle_trees_table(conn)
+    # Run schema migrations (Audit Item 15)
+    from migrations import run_migrations
+    run_migrations(conn)
     # ── Seed default tenant (Sprint 2) ──────────────────────────────
     existing = conn.execute(
         "SELECT 1 FROM tenants WHERE tenant_id = ?", (DEFAULT_TENANT_ID,)
