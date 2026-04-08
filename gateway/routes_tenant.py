@@ -1,0 +1,517 @@
+"""
+Tenant routes: tenant CRUD, settings, public dashboard, transparency,
+approval queue, and GTM stats.
+Extracted from main.py for maintainability (Audit Item 14).
+"""
+
+import json
+import secrets
+import sqlite3
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
+from pydantic import BaseModel
+
+router = APIRouter()
+
+
+# ── Pydantic models ──────────────────────────────────────────────────────────
+
+class CreateTenantRequest(BaseModel):
+    tenant_id: str
+    name: str
+    rate_limit_rps: int = 10
+    rate_limit_burst: int = 20
+
+
+class TenantSettingsRequest(BaseModel):
+    public_dashboard: Optional[bool] = None
+    name: Optional[str] = None
+    anchor_chain: Optional[str] = None  # Sprint 5: polygon, ethereum, sepolia
+
+
+class ApprovalRequest(BaseModel):
+    note: Optional[str] = ""
+
+
+# ── Tenant management endpoints (Sprint 2) ──────────────────────────────────
+
+@router.post("/tenants")
+async def create_tenant(
+    req: CreateTenantRequest,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    api_key = f"vg-{secrets.token_hex(24)}"
+    now = datetime.now(timezone.utc).isoformat()
+    conn = main.get_db()
+    try:
+        conn.execute(
+            """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (req.tenant_id, api_key, req.name, now, req.rate_limit_rps, req.rate_limit_burst),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(409, f"Tenant already exists or API key collision: {e}")
+    finally:
+        conn.close()
+
+    main._refresh_tenant_cache()
+    print(f"[TENANT] Created tenant: {req.tenant_id} ({req.name})", flush=True)
+    return {
+        "tenant_id": req.tenant_id,
+        "api_key": api_key,
+        "name": req.name,
+        "rate_limit_rps": req.rate_limit_rps,
+        "rate_limit_burst": req.rate_limit_burst,
+        "created_at": now,
+    }
+
+
+@router.get("/tenants")
+async def list_tenants(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        rows = conn.execute("SELECT * FROM tenants ORDER BY created_at ASC").fetchall()
+    finally:
+        conn.close()
+    return {
+        "tenants": [
+            {
+                "tenant_id": r["tenant_id"],
+                "name": r["name"],
+                "api_key_prefix": r["api_key"][:12] + "...",
+                "created_at": r["created_at"],
+                "rate_limit_rps": r["rate_limit_rps"],
+                "rate_limit_burst": r["rate_limit_burst"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/tenants/{tenant_id}")
+async def get_tenant_info(
+    tenant_id: str,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        row = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(404, f"Tenant not found: {tenant_id}")
+    return {
+        "tenant_id": row["tenant_id"],
+        "name": row["name"],
+        "api_key_prefix": row["api_key"][:12] + "...",
+        "created_at": row["created_at"],
+        "rate_limit_rps": row["rate_limit_rps"],
+        "rate_limit_burst": row["rate_limit_burst"],
+    }
+
+
+# ── Dashboard data endpoints (Sprint 3) ─────────────────────────────────────
+
+@router.get("/dashboard/me")
+async def dashboard_me(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        user = conn.execute(
+            "SELECT email, github_login, created_at FROM users WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        stats = conn.execute(
+            "SELECT COUNT(*) as total, SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END) as allowed, "
+            "SUM(CASE WHEN decision='deny' THEN 1 ELSE 0 END) as denied "
+            "FROM audit_log WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    activated = (stats["total"] or 0) > 0
+
+    return {
+        "tenant_id": tenant["tenant_id"],
+        "name": tenant["name"],
+        "email": user["email"] if user else None,
+        "github_login": user["github_login"] if user else None,
+        "api_key_prefix": tenant_row["api_key"][:12] + "..." if tenant_row else None,
+        "slug": tenant_row["slug"] if tenant_row and "slug" in tenant_row.keys() else None,
+        "public_dashboard": bool(tenant_row["public_dashboard"]) if tenant_row and "public_dashboard" in tenant_row.keys() else False,
+        "anchor_chain": tenant_row["anchor_chain"] if tenant_row and "anchor_chain" in tenant_row.keys() else "polygon",
+        "created_at": tenant["created_at"],
+        "activated": activated,
+        "stats": {
+            "total_actions": stats["total"] or 0,
+            "allowed": stats["allowed"] or 0,
+            "denied": stats["denied"] or 0,
+        },
+    }
+
+
+@router.patch("/dashboard/settings")
+async def update_tenant_settings(
+    req: TenantSettingsRequest,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        if req.public_dashboard is not None:
+            conn.execute(
+                "UPDATE tenants SET public_dashboard = ? WHERE tenant_id = ?",
+                (1 if req.public_dashboard else 0, tenant["tenant_id"]),
+            )
+        if req.name is not None:
+            conn.execute(
+                "UPDATE tenants SET name = ? WHERE tenant_id = ?",
+                (req.name, tenant["tenant_id"]),
+            )
+        if req.anchor_chain is not None:
+            valid_chains = {"polygon", "ethereum", "sepolia", "polygon_amoy"}
+            if req.anchor_chain in valid_chains:
+                conn.execute(
+                    "UPDATE tenants SET anchor_chain = ? WHERE tenant_id = ?",
+                    (req.anchor_chain, tenant["tenant_id"]),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+    main._refresh_tenant_cache()
+    return {"status": "updated", "tenant_id": tenant["tenant_id"]}
+
+
+@router.get("/dashboard/public/{slug}")
+async def public_dashboard(slug: str):
+    """Get public dashboard data for a tenant (if enabled). No auth required."""
+    import main
+    conn = main.get_db()
+    try:
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE slug = ?", (slug,)
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(404, "Dashboard not found")
+        if not tenant_row["public_dashboard"]:
+            raise HTTPException(403, "This dashboard is not public")
+
+        tenant_id = tenant_row["tenant_id"]
+
+        stats = conn.execute(
+            "SELECT COUNT(*) as total, "
+            "SUM(CASE WHEN decision='allow' THEN 1 ELSE 0 END) as allowed, "
+            "SUM(CASE WHEN decision='deny' THEN 1 ELSE 0 END) as denied "
+            "FROM audit_log WHERE tenant_id = ?",
+            (tenant_id,),
+        ).fetchone()
+
+        recent = conn.execute(
+            "SELECT action_id, agent_id, tool, method, decision, severity, "
+            "alert_tier, created_at FROM audit_log WHERE tenant_id = ? "
+            "ORDER BY id DESC LIMIT 20",
+            (tenant_id,),
+        ).fetchall()
+
+        chain_result = main.verify_chain_integrity(conn, tenant_id=tenant_id)
+
+        violation_counts = {}
+        all_records = conn.execute(
+            "SELECT violations FROM audit_log WHERE tenant_id = ? AND decision = 'deny'",
+            (tenant_id,),
+        ).fetchall()
+        for r in all_records:
+            for v in json.loads(r["violations"]):
+                violation_counts[v] = violation_counts.get(v, 0) + 1
+    finally:
+        conn.close()
+
+    return {
+        "tenant_name": tenant_row["name"],
+        "slug": slug,
+        "stats": {
+            "total_actions": stats["total"] or 0,
+            "allowed": stats["allowed"] or 0,
+            "denied": stats["denied"] or 0,
+        },
+        "chain_integrity": chain_result,
+        "violation_breakdown": violation_counts,
+        "recent_actions": [
+            {
+                "action_id": r["action_id"],
+                "agent_id": r["agent_id"],
+                "tool": r["tool"],
+                "method": r["method"],
+                "decision": r["decision"],
+                "severity": r["severity"],
+                "created_at": r["created_at"],
+            }
+            for r in recent
+        ],
+    }
+
+
+# ── Approval Queue API ─────────────────────────────────────────────────────
+
+@router.get("/approvals")
+async def list_pending_approvals(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    import approval as approval_module
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        pending = approval_module.get_pending_actions(conn, tenant["tenant_id"])
+        stats = approval_module.get_queue_stats(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return {"pending": pending, "stats": stats}
+
+
+@router.get("/approvals/history")
+async def approval_history(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    import approval as approval_module
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        history = approval_module.get_approval_history(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return {"history": history}
+
+
+@router.post("/approve/{action_id}")
+async def approve_action(
+    action_id: str,
+    req: ApprovalRequest = ApprovalRequest(),
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    import approval as approval_module
+    import execution_engine
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        reviewer = user["email"] if user else "unknown"
+
+        action_row = conn.execute(
+            "SELECT * FROM pending_actions WHERE action_id = ? AND tenant_id = ?",
+            (action_id, tenant["tenant_id"]),
+        ).fetchone()
+
+        result = approval_module.approve_action(
+            conn, action_id, tenant["tenant_id"],
+            reviewer_email=reviewer, review_note=req.note or "",
+        )
+    finally:
+        conn.close()
+
+    if result is None:
+        raise HTTPException(404, "Action not found")
+    if "error" in result:
+        raise HTTPException(409, result["error"])
+
+    # Execute the approved action via brokered execution
+    execution_result = None
+    execution_error = None
+    if action_row:
+        tool = action_row["tool"]
+        method = action_row["method"]
+        params = json.loads(action_row["params"]) if isinstance(action_row["params"], str) else action_row["params"]
+
+        try:
+            exec_resp = await execution_engine.execute_tool_call(tool, method, params)
+            if exec_resp:
+                execution_result = exec_resp
+                print(f"[APPROVED-EXEC] Executed action_id={action_id} tool={tool}.{method}", flush=True)
+        except Exception as e:
+            execution_error = str(e)
+            print(f"[APPROVED-EXEC] ERROR action_id={action_id}: {e}", flush=True)
+
+    if execution_error:
+        print(f"[APPROVED-EXEC] WARN action_id={action_id}: {execution_error}", flush=True)
+
+    # Log the approval in the audit trail
+    conn = main.get_db()
+    try:
+        exec_detail = {
+            "target_action": action_id,
+            "note": req.note,
+            "executed": execution_result is not None,
+        }
+        if execution_error:
+            exec_detail["execution_error"] = execution_error
+        main.write_audit_record(
+            conn,
+            action_id=f"approval-{action_id}",
+            agent_id="human-reviewer",
+            tool="approval_queue",
+            method="approve",
+            params=exec_detail,
+            requested_at=datetime.now(timezone.utc).isoformat(),
+            decision="allow",
+            violations=[],
+            severity="none",
+            alert_tier="none",
+            tenant_id=tenant["tenant_id"],
+        )
+    finally:
+        conn.close()
+
+    response = {"status": "approved", **result}
+    if execution_result is not None:
+        response["execution"] = {"status": "success", "result": execution_result}
+    elif execution_error:
+        response["execution"] = {"status": "error", "error": execution_error}
+
+    return response
+
+
+@router.post("/reject/{action_id}")
+async def reject_action(
+    action_id: str,
+    req: ApprovalRequest = ApprovalRequest(),
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    import approval as approval_module
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        user = conn.execute(
+            "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
+        ).fetchone()
+        reviewer = user["email"] if user else "unknown"
+
+        result = approval_module.reject_action(
+            conn, action_id, tenant["tenant_id"],
+            reviewer_email=reviewer, review_note=req.note or "",
+        )
+    finally:
+        conn.close()
+
+    if result is None:
+        raise HTTPException(404, "Action not found")
+    if "error" in result:
+        raise HTTPException(409, result["error"])
+
+    # Log the rejection in the audit trail
+    conn = main.get_db()
+    try:
+        main.write_audit_record(
+            conn,
+            action_id=f"rejection-{action_id}",
+            agent_id="human-reviewer",
+            tool="approval_queue",
+            method="reject",
+            params={"target_action": action_id, "note": req.note},
+            requested_at=datetime.now(timezone.utc).isoformat(),
+            decision="deny",
+            violations=[],
+            severity="none",
+            alert_tier="none",
+            tenant_id=tenant["tenant_id"],
+        )
+    finally:
+        conn.close()
+
+    return {"status": "rejected", **result}
+
+
+# ── Transparency endpoints (public, no auth) ───────────────────────────────
+
+@router.get("/transparency")
+async def transparency_global():
+    import main
+    import transparency as transparency_module
+    conn = main.get_db()
+    try:
+        data = transparency_module.get_transparency_data(conn, tenant_id=None)
+    finally:
+        conn.close()
+    return data
+
+
+@router.get("/transparency/{tenant_id}")
+async def transparency_tenant(tenant_id: str):
+    import main
+    import transparency as transparency_module
+    conn = main.get_db()
+    try:
+        tenant_row = conn.execute(
+            "SELECT * FROM tenants WHERE tenant_id = ? OR slug = ?",
+            (tenant_id, tenant_id),
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(404, "Tenant not found")
+        if not tenant_row["public_dashboard"]:
+            raise HTTPException(403, "Transparency data not public for this tenant")
+
+        data = transparency_module.get_transparency_data(conn, tenant_id=tenant_row["tenant_id"])
+    finally:
+        conn.close()
+    return data
+
+
+# ── GTM constraints endpoint ────────────────────────────────────────────────
+
+@router.get("/gtm/stats")
+async def gtm_stats(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    import main
+    import gtm_constraints
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        stats = gtm_constraints.get_gtm_stats(conn, tenant["tenant_id"])
+    finally:
+        conn.close()
+    return stats
