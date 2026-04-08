@@ -131,6 +131,7 @@ class BlockchainClient:
         self.contract_address: Optional[str] = None
         self._connected = False
         self.chain_id: Optional[int] = None
+        self._last_successful_anchor: Optional[datetime] = None
 
     def connect(self) -> bool:
         """Attempt to connect to the chain and load the contract."""
@@ -198,9 +199,15 @@ class BlockchainClient:
         if not self._connected or not self.w3:
             return False
         try:
-            return self.w3.is_connected()
+            if self.w3.is_connected():
+                return True
         except Exception:
-            return False
+            pass
+        # Fallback: if we anchored recently, we're probably still connected
+        if self._last_successful_anchor:
+            elapsed = (datetime.now(timezone.utc) - self._last_successful_anchor).total_seconds()
+            return elapsed < ANCHOR_INTERVAL_SECONDS * 2
+        return False
 
     @property
     def explorer_base(self) -> str:
@@ -349,6 +356,7 @@ class BlockchainClient:
             tx_hash_hex = f"0x{tx_hash_hex}"
 
         anchored_at = datetime.now(timezone.utc).isoformat()
+        self._last_successful_anchor = datetime.now(timezone.utc)
 
         # Write to legacy anchor_log
         conn.execute(
@@ -497,6 +505,8 @@ class BlockchainClient:
                 tx_hash_hex = receipt.transactionHash.hex()
                 if not tx_hash_hex.startswith("0x"):
                     tx_hash_hex = f"0x{tx_hash_hex}"
+
+                self._last_successful_anchor = datetime.now(timezone.utc)
 
                 # Update merkle_trees with anchor info
                 conn.execute(
