@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { setPublicTenantSlug, checkPublicDashboard } from './api'
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -296,7 +297,7 @@ function Router() {
   if (path.startsWith('/dashboard/')) {
     const slug = path.split('/dashboard/')[1].replace(/\/$/, '');
     if (slug) {
-      return <PublicDashboard slug={slug} />;
+      return <PublicDashboardLoader slug={slug} />;
     }
   }
 
@@ -308,92 +309,56 @@ function Router() {
   );
 }
 
-// Lazy-loaded public dashboard
-function PublicDashboard({ slug }) {
-  const [data, setData] = React.useState(null);
-  const [error, setError] = React.useState('');
+// Public dashboard — checks if tenant is public, then renders full App in read-only mode
+function PublicDashboardLoader({ slug }) {
+  const [status, setStatus] = React.useState('loading'); // loading | public | private | error
+  const [tenantName, setTenantName] = React.useState('');
 
   React.useEffect(() => {
-    fetch(`/api/dashboard/public/${slug}`)
-      .then(r => {
-        if (!r.ok) throw new Error(r.status === 403 ? 'This dashboard is not public' : 'Dashboard not found');
-        return r.json();
+    checkPublicDashboard(slug)
+      .then(data => {
+        if (data && data.tenant_name) {
+          // Tenant is public — set up public viewer mode
+          setPublicTenantSlug(slug);
+          setTenantName(data.tenant_name);
+          setStatus('public');
+        } else {
+          setStatus('private');
+        }
       })
-      .then(setData)
-      .catch(e => setError(e.message));
+      .catch(() => setStatus('error'));
   }, [slug]);
 
-  if (error) return (
-    <div style={{ minHeight: '100vh', background: '#0a0e1a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e2e8f0', fontFamily: 'Inter, sans-serif' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '48px', marginBottom: '16px' }}>404</div>
-        <div style={{ color: 'rgba(255,255,255,0.5)' }}>{error}</div>
+  if (status === 'loading') {
+    return (
+      <div style={{ minHeight: '100vh', background: '#0a0e1a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)', fontFamily: 'Inter, sans-serif' }}>
+        Loading...
       </div>
-    </div>
-  );
+    );
+  }
 
-  if (!data) return (
-    <div style={{ minHeight: '100vh', background: '#0a0e1a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)', fontFamily: 'Inter, sans-serif' }}>
-      Loading...
-    </div>
-  );
+  if (status === 'private' || status === 'error') {
+    return (
+      <div style={{ minHeight: '100vh', background: '#0a0e1a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e2e8f0', fontFamily: 'Inter, sans-serif' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>404</div>
+          <div style={{ color: 'rgba(255,255,255,0.5)' }}>
+            {status === 'private' ? 'This dashboard is not public' : 'Dashboard not found'}
+          </div>
+          <a href="/dashboard/" style={{ color: '#818cf8', fontSize: '13px', marginTop: '16px', display: 'inline-block' }}>
+            Sign in to your dashboard →
+          </a>
+        </div>
+      </div>
+    );
+  }
 
-  const { stats, chain_integrity, violation_breakdown, recent_actions, tenant_name } = data;
-
+  // Public tenant — render full dashboard in read-only mode
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #0a0e1a 0%, #0f172a 40%, #1a1040 100%)', color: '#e2e8f0', fontFamily: 'Inter, sans-serif', padding: '40px 20px' }}>
-      <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-        <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '3px', color: 'rgba(255,255,255,0.3)', marginBottom: '8px' }}>VARGATE PUBLIC AUDIT</div>
-          <div style={{ fontSize: '28px', fontWeight: 700 }}>{tenant_name}</div>
-          <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', marginTop: '4px' }}>
-            Chain integrity: <span style={{ color: chain_integrity.valid ? '#10b981' : '#ef4444' }}>{chain_integrity.valid ? 'INTACT' : 'BROKEN'}</span>
-            {' '} | {chain_integrity.record_count} records
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '32px' }}>
-          {[
-            { label: 'Total Actions', value: stats.total_actions, color: '#818cf8' },
-            { label: 'Allowed', value: stats.allowed, color: '#10b981' },
-            { label: 'Denied', value: stats.denied, color: '#ef4444' },
-          ].map(s => (
-            <div key={s.label} style={{ padding: '20px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
-              <div style={{ fontSize: '28px', fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.4)', marginTop: '4px' }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {Object.keys(violation_breakdown).length > 0 && (
-          <div style={{ padding: '20px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)', marginBottom: '32px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: 'rgba(255,255,255,0.5)' }}>Violation Breakdown</div>
-            {Object.entries(violation_breakdown).sort((a, b) => b[1] - a[1]).map(([v, count]) => (
-              <div key={v} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: '13px' }}>
-                <span style={{ color: '#f59e0b' }}>{v}</span>
-                <span style={{ color: 'rgba(255,255,255,0.5)' }}>{count}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div style={{ padding: '20px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: 'rgba(255,255,255,0.5)' }}>Recent Actions</div>
-          {recent_actions.map(a => (
-            <div key={a.action_id} style={{ display: 'flex', gap: '12px', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontSize: '13px', alignItems: 'center' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: a.decision === 'allow' ? '#10b981' : '#ef4444', flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>{a.tool}.{a.method}</span>
-              <span style={{ color: 'rgba(255,255,255,0.4)' }}>{a.agent_id}</span>
-              <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '12px' }}>{new Date(a.created_at).toLocaleTimeString()}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ textAlign: 'center', marginTop: '40px', fontSize: '12px', color: 'rgba(255,255,255,0.2)' }}>
-          Powered by <a href="https://vargate.ai" style={{ color: '#818cf8', textDecoration: 'none' }}>Vargate</a> — AI Agent Governance
-        </div>
-      </div>
-    </div>
+    <App
+      session={{ token: null, tenantId: slug, isPublic: true, tenantName }}
+      onLogout={null}
+    />
   );
 }
 

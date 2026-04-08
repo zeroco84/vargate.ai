@@ -1,7 +1,7 @@
 """
 Vargate OPA Bundle Server
 Serves policy bundles to OPA over HTTP with ETag-based polling.
-Supports live policy hot-swap via update endpoint.
+Reads .rego files from the /policies directory (mounted from repo).
 """
 
 import hashlib
@@ -10,190 +10,52 @@ import json
 import os
 import tarfile
 import time
-import copy
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Header, Response, HTTPException
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Vargate Bundle Server", version="0.2.0")
+app = FastAPI(title="Vargate Bundle Server", version="0.3.0")
 
-# ── Default policy template ─────────────────────────────────────────────────
+# ── Policy source directory ──────────────────────────────────────────────────
 
-DEFAULT_COMPETITOR_DOMAINS = ["rival.com", "competitor.com", "acmecorp.com"]
-DEFAULT_HIGH_VALUE_THRESHOLD = 5000
-DEFAULT_HIGH_VALUE_OOH_THRESHOLD = 1000
+POLICY_DIR = os.environ.get("POLICY_DIR", "/policies")
 
 # ── Bundle state ─────────────────────────────────────────────────────────────
 
 class BundleState:
     def __init__(self):
-        self.competitor_domains: list[str] = list(DEFAULT_COMPETITOR_DOMAINS)
-        self.high_value_threshold: int = DEFAULT_HIGH_VALUE_THRESHOLD
-        self.high_value_ooh_threshold: int = DEFAULT_HIGH_VALUE_OOH_THRESHOLD
         self.revision: str = f"v1.0.0-{int(time.time())}"
         self.etag: str = ""
         self.last_updated: str = datetime.now(timezone.utc).isoformat()
         self.bundle_bytes: bytes = b""
         self.archive_dir: str = os.environ.get("BUNDLE_ARCHIVE_DIR", "/data/archive")
+        self.rego_files: dict[str, str] = {}  # relative path -> content
         os.makedirs(self.archive_dir, exist_ok=True)
         self._rebuild()
 
-    def _generate_rego(self) -> str:
-        """Generate the Rego policy file from current state."""
-        # Build the competitor domains set literal
-        domains_str = ", ".join(f'"{d}"' for d in sorted(self.competitor_domains))
+    def _read_rego_files(self) -> dict[str, str]:
+        """Read all .rego files from the policy source directory."""
+        files = {}
+        if not os.path.isdir(POLICY_DIR):
+            print(f"[BUNDLE] WARNING: Policy directory {POLICY_DIR} not found", flush=True)
+            return files
 
-        return f'''package vargate.policy
-
-import future.keywords.if
-import future.keywords.contains
-
-# ── Structured decision object returned to the gateway ──────────────────────
-
-decision := {{
-    "allow":           allow,
-    "violations":      violations,
-    "severity":        severity,
-    "requires_human":  requires_human_approval,
-    "alert_tier":      alert_tier,
-    "evaluation_mode": evaluation_mode,
-    "risk_indicators": risk_indicators,
-}}
-
-default allow := false
-allow if {{ count(violations) == 0 }}
-
-default requires_human_approval := false
-
-# ── Evaluation mode (two-pass support) ───────────────────────────────────────
-
-default evaluation_mode := "fast"
-evaluation_mode := "needs_enrichment" if {{ count(risk_indicators) > 0 }}
-
-risk_indicators contains "elevated_action_type" if {{
-    high_risk_tools := {{"stripe", "wire_transfer", "payroll"}}
-    input.action.tool in high_risk_tools
-}}
-
-risk_indicators contains "large_params" if {{
-    input.action.params.amount >= 1000
-}}
-
-risk_indicators contains "off_hours" if {{
-    input.context.is_business_hours == false
-}}
-
-# ── Violation rules ──────────────────────────────────────────────────────────
-
-# Block high-value transactions without approval
-violations contains msg if {{
-    input.action.params.amount >= {self.high_value_threshold}
-    not input.context.approval.granted
-    msg := "high_value_transaction_unapproved"
-}}
-
-# Block emails to competitor domains
-violations contains msg if {{
-    input.action.tool == "gmail"
-    input.action.method == "send_email"
-    competitor_domains := {{{domains_str}}}
-    some domain in competitor_domains
-    endswith(input.action.params.to, domain)
-    msg := "competitor_contact_attempt"
-}}
-
-# Block unmasked PII leaving EU
-violations contains msg if {{
-    input.agent.jurisdiction == "EU"
-    input.data.contains_pii == true
-    input.data.pii_types[_] == "email"
-    input.data.residency_required == "EU"
-    input.action.params.destination_region != "eu-west-1"
-    msg := "gdpr_pii_residency_violation"
-}}
-
-# Block anomalous behaviour
-violations contains msg if {{
-    input.history.anomaly_score > 0.7
-    msg := "anomaly_score_threshold_exceeded"
-}}
-
-# Block out-of-hours high-risk actions
-violations contains msg if {{
-    input.context.is_business_hours == false
-    input.action.params.amount >= {self.high_value_ooh_threshold}
-    msg := "high_value_out_of_hours"
-}}
-
-# Block agents with repeated violations today (Pass 2 — enriched history)
-violations contains msg if {{
-    input.history.last_24h.policy_violations >= 3
-    msg := "repeated_violations_today"
-}}
-
-# Block agents hammering high-value actions (Pass 2 — enriched history)
-violations contains msg if {{
-    input.history.last_24h.high_value_transactions >= 5
-    input.action.params.amount >= 1000
-    msg := "high_value_frequency_limit_exceeded"
-}}
-
-# Block tool calls with no credential registered in vault (Stage 8)
-violations contains msg if {{
-    input.vault.brokered_execution == true
-    not input.action.tool in {{t | t := input.vault.credentials_registered[_]}}
-    msg := "no_credential_registered_for_tool"
-}}
-
-# ── Severity derivation (else chain to avoid recursion) ──────────────────────
-
-is_critical if {{ "competitor_contact_attempt" in violations }}
-is_critical if {{ "gdpr_pii_residency_violation" in violations }}
-
-is_high if {{
-    "high_value_transaction_unapproved" in violations
-    not is_critical
-}}
-is_high if {{
-    "repeated_violations_today" in violations
-    not is_critical
-}}
-is_high if {{
-    "no_credential_registered_for_tool" in violations
-    not is_critical
-}}
-
-severity := "critical" if {{
-    is_critical
-}} else := "high" if {{
-    is_high
-}} else := "medium" if {{
-    count(violations) > 0
-}} else := "none"
-
-# ── Alert routing ────────────────────────────────────────────────────────────
-
-alert_tier := "soc_page" if {{
-    severity == "critical"
-}} else := "soc_ticket" if {{
-    severity == "high"
-}} else := "slack_alert" if {{
-    severity == "medium"
-}} else := "none"
-
-# ── Human approval requirement ───────────────────────────────────────────────
-
-requires_human_approval if {{ input.action.params.amount >= {self.high_value_threshold} }}
-requires_human_approval if {{
-    input.history.last_10min.denied_count >= 2
-    input.action.params.amount >= 500
-}}
-'''
+        for root, dirs, filenames in os.walk(POLICY_DIR):
+            for fname in sorted(filenames):
+                if fname.endswith(".rego"):
+                    full_path = os.path.join(root, fname)
+                    rel_path = os.path.relpath(full_path, POLICY_DIR)
+                    try:
+                        with open(full_path, "r") as f:
+                            files[rel_path] = f.read()
+                        print(f"[BUNDLE] Loaded {rel_path} ({len(files[rel_path])} bytes)", flush=True)
+                    except Exception as e:
+                        print(f"[BUNDLE] ERROR reading {full_path}: {e}", flush=True)
+        return files
 
     def _generate_manifest(self) -> str:
         """Generate the .manifest JSON."""
@@ -203,18 +65,23 @@ requires_human_approval if {{
         }, indent=2)
 
     def _rebuild(self):
-        """Rebuild the tar.gz bundle from current state."""
-        rego_content = self._generate_rego()
+        """Rebuild the tar.gz bundle from .rego files on disk."""
+        self.rego_files = self._read_rego_files()
+
+        if not self.rego_files:
+            print("[BUNDLE] WARNING: No .rego files found — bundle will be empty", flush=True)
+
         manifest_content = self._generate_manifest()
 
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            # Add vargate/policy.rego
-            rego_bytes = rego_content.encode("utf-8")
-            info = tarfile.TarInfo(name="vargate/policy.rego")
-            info.size = len(rego_bytes)
-            info.mtime = int(time.time())
-            tar.addfile(info, io.BytesIO(rego_bytes))
+            # Add each .rego file
+            for rel_path, content in sorted(self.rego_files.items()):
+                rego_bytes = content.encode("utf-8")
+                info = tarfile.TarInfo(name=rel_path)
+                info.size = len(rego_bytes)
+                info.mtime = int(time.time())
+                tar.addfile(info, io.BytesIO(rego_bytes))
 
             # Add .manifest
             manifest_bytes = manifest_content.encode("utf-8")
@@ -232,34 +99,35 @@ requires_human_approval if {{
         with open(archive_path, "wb") as f:
             f.write(self.bundle_bytes)
 
+        # Count rules for status reporting
+        rule_count = 0
+        for content in self.rego_files.values():
+            rule_count += content.count("violations contains msg if")
+            rule_count += content.count("requires_human_approval if")
+
         print(
             f"[BUNDLE] Rebuilt bundle: revision={self.revision} "
-            f"etag={self.etag} domains={self.competitor_domains} "
-            f"threshold={self.high_value_threshold} "
-            f"archived={archive_path}",
+            f"etag={self.etag} files={list(self.rego_files.keys())} "
+            f"rules={rule_count} archived={archive_path}",
             flush=True,
         )
 
     def update(self):
-        """Increment revision and rebuild the bundle."""
+        """Increment revision and rebuild the bundle from disk."""
         self.revision = f"v1.0.0-{int(time.time())}"
         self._rebuild()
 
     @property
     def rule_count(self) -> int:
-        return 8   # 7 violation rules + 1 behavioral
+        count = 0
+        for content in self.rego_files.values():
+            count += content.count("violations contains msg if")
+            count += content.count("requires_human_approval if")
+        return count
 
 
 # Global bundle state
 bundle = BundleState()
-
-
-# ── Request models ───────────────────────────────────────────────────────────
-
-class UpdateRequest(BaseModel):
-    operation: str
-    domain: Optional[str] = None
-    threshold: Optional[int] = None
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -293,73 +161,22 @@ async def bundle_status():
         "etag": bundle.etag,
         "rule_count": bundle.rule_count,
         "last_updated": bundle.last_updated,
-        "competitor_domains": bundle.competitor_domains,
-        "high_value_threshold": bundle.high_value_threshold,
+        "files": list(bundle.rego_files.keys()),
     }
 
 
-@app.post("/bundles/vargate/update")
-async def update_bundle(req: UpdateRequest):
-    """Apply an incremental policy update and regenerate the bundle."""
+@app.post("/bundles/vargate/reload")
+async def reload_bundle():
+    """Reload the bundle from disk (re-read .rego files)."""
     old_revision = bundle.revision
-
-    if req.operation == "add_competitor_domain":
-        if not req.domain:
-            raise HTTPException(400, "domain is required for add_competitor_domain")
-        if req.domain in bundle.competitor_domains:
-            raise HTTPException(409, f"{req.domain} already in blocklist")
-        bundle.competitor_domains.append(req.domain)
-        bundle.update()
-        return {
-            "status": "updated",
-            "operation": req.operation,
-            "domain": req.domain,
-            "old_revision": old_revision,
-            "new_revision": bundle.revision,
-        }
-
-    elif req.operation == "remove_competitor_domain":
-        if not req.domain:
-            raise HTTPException(400, "domain is required for remove_competitor_domain")
-        if req.domain not in bundle.competitor_domains:
-            raise HTTPException(404, f"{req.domain} not in blocklist")
-        bundle.competitor_domains.remove(req.domain)
-        bundle.update()
-        return {
-            "status": "updated",
-            "operation": req.operation,
-            "domain": req.domain,
-            "old_revision": old_revision,
-            "new_revision": bundle.revision,
-        }
-
-    elif req.operation == "set_high_value_threshold":
-        if req.threshold is None:
-            raise HTTPException(400, "threshold is required for set_high_value_threshold")
-        bundle.high_value_threshold = req.threshold
-        bundle.update()
-        return {
-            "status": "updated",
-            "operation": req.operation,
-            "threshold": req.threshold,
-            "old_revision": old_revision,
-            "new_revision": bundle.revision,
-        }
-
-    elif req.operation == "restore_defaults":
-        bundle.competitor_domains = list(DEFAULT_COMPETITOR_DOMAINS)
-        bundle.high_value_threshold = DEFAULT_HIGH_VALUE_THRESHOLD
-        bundle.high_value_ooh_threshold = DEFAULT_HIGH_VALUE_OOH_THRESHOLD
-        bundle.update()
-        return {
-            "status": "restored",
-            "operation": req.operation,
-            "old_revision": old_revision,
-            "new_revision": bundle.revision,
-        }
-
-    else:
-        raise HTTPException(400, f"Unknown operation: {req.operation}")
+    bundle.update()
+    return {
+        "status": "reloaded",
+        "old_revision": old_revision,
+        "new_revision": bundle.revision,
+        "files": list(bundle.rego_files.keys()),
+        "rule_count": bundle.rule_count,
+    }
 
 
 @app.get("/bundles/vargate/archive/list")

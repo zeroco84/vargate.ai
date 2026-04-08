@@ -5,7 +5,22 @@
 
 const API = '/api';
 
+// Public tenant slug — set when viewing a public dashboard without auth
+let _publicTenantSlug = null;
+
+export function setPublicTenantSlug(slug) {
+  _publicTenantSlug = slug;
+}
+
+export function getPublicTenantSlug() {
+  return _publicTenantSlug;
+}
+
 function getAuthHeaders() {
+  // Public dashboard viewer — no auth token, use public tenant header
+  if (_publicTenantSlug) {
+    return { 'X-Vargate-Public-Tenant': _publicTenantSlug };
+  }
   const token = localStorage.getItem('vargate_session');
   if (token && token !== 'pin') {
     return { 'Authorization': `Bearer ${token}` };
@@ -21,6 +36,16 @@ export async function fetchJSON(path, options = {}) {
     return await resp.json();
   } catch (e) {
     console.warn(`[API] ${path} failed:`, e.message);
+    return null;
+  }
+}
+
+export async function checkPublicDashboard(slug) {
+  try {
+    const resp = await fetch(`${API}/dashboard/public/${slug}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
     return null;
   }
 }

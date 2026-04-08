@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { parseBundleRevision, fetchMyTenants, switchTenant } from '../api';
 
-export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView, onLogout, session, onTenantSwitch }) {
+export default function Header({ chain, liveMode, setLiveMode, anchorStatus, policy, view, setView, onLogout, session, onTenantSwitch, isPublic }) {
   const valid = chain?.valid;
   const count = chain?.record_count ?? 0;
   const failedId = chain?.failed_at_action_id;
@@ -15,10 +15,11 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
   const dropdownRef = useRef(null);
 
   useEffect(() => {
+    if (isPublic) return;
     fetchMyTenants()
       .then(data => setTenants(data?.tenants || []))
       .catch(() => {});
-  }, [session?.tenantId]);
+  }, [session?.tenantId, isPublic]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -71,7 +72,12 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
     <header className="header">
       <div className="header-left">
         <span className="header-logo">VARGATE</span>
-        <span className="header-subtitle">Supervision Gateway</span>
+        <span className="header-subtitle">{isPublic ? 'Public Audit Dashboard' : 'Supervision Gateway'}</span>
+        {isPublic && session?.tenantName && (
+          <span style={{ color: 'var(--text-faint)', marginLeft: '8px', fontSize: '0.75rem' }}>
+            — {session.tenantName}
+          </span>
+        )}
       </div>
 
       <div className="header-center">
@@ -87,8 +93,8 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
       </div>
 
       <div className="header-right">
-        {/* Tenant switcher */}
-        {tenants.length > 1 && (
+        {/* Tenant switcher — hidden for public viewers */}
+        {!isPublic && tenants.length > 1 && (
           <div ref={dropdownRef} style={{ position: 'relative' }}>
             <button
               className="header-nav-btn"
@@ -165,25 +171,29 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
         >
           Dashboard
         </button>
-        <button
-          className={`header-nav-btn ${view === 'approvals' ? 'active' : ''}`}
-          onClick={() => setView('approvals')}
-        >
-          Approvals
-        </button>
-        <button
-          className={`header-nav-btn ${view === 'settings' ? 'active' : ''}`}
-          onClick={() => setView('settings')}
-        >
-          Tools
-        </button>
-        <button
-          className={`header-nav-btn ${view === 'account' ? 'active' : ''}`}
-          onClick={() => setView('account')}
-        >
-          Settings
-        </button>
-        {onLogout && (
+        {!isPublic && (
+          <>
+            <button
+              className={`header-nav-btn ${view === 'approvals' ? 'active' : ''}`}
+              onClick={() => setView('approvals')}
+            >
+              Approvals
+            </button>
+            <button
+              className={`header-nav-btn ${view === 'settings' ? 'active' : ''}`}
+              onClick={() => setView('settings')}
+            >
+              Tools
+            </button>
+            <button
+              className={`header-nav-btn ${view === 'account' ? 'active' : ''}`}
+              onClick={() => setView('account')}
+            >
+              Settings
+            </button>
+          </>
+        )}
+        {!isPublic && onLogout && (
           <button
             className="header-nav-btn"
             onClick={onLogout}
@@ -202,6 +212,16 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
             {liveMode ? 'Live' : 'Paused'}
           </span>
         </div>
+
+        {isPublic && (
+          <a
+            href="/dashboard/"
+            className="header-nav-btn"
+            style={{ color: 'var(--accent-blue)', textDecoration: 'none', fontSize: '0.75rem' }}
+          >
+            Sign in →
+          </a>
+        )}
       </div>
     </header>
   );

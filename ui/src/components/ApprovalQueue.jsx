@@ -15,12 +15,12 @@ export default function ApprovalQueue() {
     try {
       setLoading(true);
       const [pendingData, historyData] = await Promise.all([
-        fetchJSON('/api/approvals'),
-        fetchJSON('/api/approvals/history'),
+        fetchJSON('/approvals'),
+        fetchJSON('/approvals/history'),
       ]);
-      setPending(pendingData.pending || []);
-      setStats(pendingData.stats || null);
-      setHistory(historyData.history || []);
+      setPending(pendingData?.pending || []);
+      setStats(pendingData?.stats || null);
+      setHistory(historyData?.history || []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -39,7 +39,7 @@ export default function ApprovalQueue() {
   const handleAction = async (actionId, type) => {
     setActionLoading(prev => ({ ...prev, [actionId]: type }));
     try {
-      await fetchJSON(`/api/${type}/${actionId}`, {
+      await fetchJSON(`/${type}/${actionId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note: '' }),

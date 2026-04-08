@@ -27,7 +27,7 @@ from typing import Any, Optional
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -712,9 +712,10 @@ def resolve_tenant(api_key: Optional[str]) -> dict:
 async def get_tenant(
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
 ) -> dict:
-    """FastAPI dependency that resolves the tenant from X-API-Key or Bearer JWT.
-    Falls back to default tenant if neither is provided (backward compat)."""
+    """FastAPI dependency that resolves the tenant from X-API-Key, Bearer JWT,
+    or public dashboard header. Falls back to default tenant if none provided."""
     # Try JWT session first (dashboard uses this)
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -728,9 +729,41 @@ async def get_tenant(
                 return tenant
 
     # Try API key
-    tenant = resolve_tenant(x_api_key)
+    if x_api_key:
+        tenant = resolve_tenant(x_api_key)
+        if tenant is None:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return tenant
+
+    # Try public dashboard header (read-only, no auth required)
+    if x_vargate_public_tenant:
+        _refresh_tenant_cache()
+        tenant = _tenant_by_id.get(x_vargate_public_tenant)
+        if tenant and tenant.get("public_dashboard"):
+            return {**tenant, "is_public_viewer": True}
+        # Also try slug lookup
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT tenant_id FROM tenants WHERE slug = ? AND public_dashboard = 1",
+                (x_vargate_public_tenant,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            tid = row["tenant_id"]
+            tenant = _tenant_by_id.get(tid)
+            if not tenant:
+                _refresh_tenant_cache()
+                tenant = _tenant_by_id.get(tid)
+            if tenant:
+                return {**tenant, "is_public_viewer": True}
+        raise HTTPException(status_code=403, detail="Dashboard is not public")
+
+    # Fallback to default tenant (backward compat)
+    tenant = resolve_tenant(None)
     if tenant is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+        raise HTTPException(status_code=401, detail="No tenant found")
     return tenant
 
 
@@ -1415,6 +1448,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             requires_human = False  # blocked outright, no approval queue
 
     # ── Sprint 4: Human-approval queue ────────────────────────────
+    pending_approval = False
     if allowed and requires_human:
         # Enqueue action instead of executing it
         approval_conn = get_db()
@@ -1429,6 +1463,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         # Still log to audit trail as "pending_approval"
         decision_str = "pending_approval"
         allowed = False  # don't execute yet
+        pending_approval = True
 
     # Determine the final opa_input used for the decision
     if evaluation_pass == 2:
@@ -1512,6 +1547,13 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             f"latency={json.dumps(latency_breakdown)}",
             flush=True,
         )
+    elif pending_approval:
+        print(
+            f"[PENDING] action_id={action_id} agent={req.agent_id} "
+            f"tool={req.tool} method={req.method} "
+            f"queued_for_approval pass={pass_label} bundle={bundle_revision}",
+            flush=True,
+        )
     else:
         print(
             f"[BLOCK] action_id={action_id} agent={req.agent_id} "
@@ -1592,6 +1634,15 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             response["execution_result"] = execution_result
             response["latency"] = latency_breakdown
         return response
+    elif pending_approval:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "pending_approval",
+                "action_id": action_id,
+                "message": "Action requires human approval. It has been queued for review.",
+            },
+        )
     else:
         raise HTTPException(
             status_code=403,
@@ -3179,8 +3230,9 @@ async def create_session(x_api_key: str = Header(...)):
 async def get_session_tenant(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
 ) -> dict:
-    """Resolve tenant from Bearer token (JWT session) or X-API-Key."""
+    """Resolve tenant from Bearer token (JWT session), X-API-Key, or public dashboard header."""
     # Try JWT session first
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -3200,6 +3252,30 @@ async def get_session_tenant(
         if tenant:
             return tenant
         raise HTTPException(401, "Invalid API key")
+
+    # Try public dashboard header (read-only access)
+    if x_vargate_public_tenant:
+        _refresh_tenant_cache()
+        tenant = _tenant_by_id.get(x_vargate_public_tenant)
+        if tenant and tenant.get("public_dashboard"):
+            return {**tenant, "is_public_viewer": True}
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT tenant_id FROM tenants WHERE slug = ? AND public_dashboard = 1",
+                (x_vargate_public_tenant,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            tid = row["tenant_id"]
+            tenant = _tenant_by_id.get(tid)
+            if not tenant:
+                _refresh_tenant_cache()
+                tenant = _tenant_by_id.get(tid)
+            if tenant:
+                return {**tenant, "is_public_viewer": True}
+        raise HTTPException(403, "Dashboard is not public")
 
     raise HTTPException(401, "Authentication required — provide Bearer token or X-API-Key")
 
@@ -3428,7 +3504,7 @@ class ApprovalRequest(BaseModel):
 
 @app.post("/approve/{action_id}")
 async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(), tenant: dict = Depends(get_session_tenant)):
-    """Approve a pending action."""
+    """Approve a pending action and execute it via brokered execution."""
     conn = get_db()
     try:
         # Get reviewer email
@@ -3436,6 +3512,12 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
             "SELECT email FROM users WHERE tenant_id = ?", (tenant["tenant_id"],)
         ).fetchone()
         reviewer = user["email"] if user else "unknown"
+
+        # Get the original action details before approving
+        action_row = conn.execute(
+            "SELECT * FROM pending_actions WHERE action_id = ? AND tenant_id = ?",
+            (action_id, tenant["tenant_id"]),
+        ).fetchone()
 
         result = approval_module.approve_action(
             conn, action_id, tenant["tenant_id"],
@@ -3449,6 +3531,57 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
     if "error" in result:
         raise HTTPException(409, result["error"])
 
+    # ── Execute the approved action via brokered execution ────────────
+    execution_result = None
+    execution_error = None
+    if action_row:
+        tool = action_row["tool"]
+        method = action_row["method"]
+        params = json.loads(action_row["params"]) if isinstance(action_row["params"], str) else action_row["params"]
+        agent_id = action_row["agent_id"]
+        cred_name = "api_key"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Check credential exists
+                fetch_resp = await client.get(f"{HSM_URL}/credentials/{tool}/status")
+                if fetch_resp.status_code == 200 and fetch_resp.json().get("registered"):
+                    # Fetch credential from HSM
+                    cred_fetch_resp = await client.post(
+                        f"{HSM_URL}/credentials/fetch-for-execution",
+                        json={
+                            "tool_id": tool,
+                            "name": cred_name,
+                            "action_id": action_id,
+                            "agent_id": agent_id,
+                        },
+                    )
+                    if cred_fetch_resp.status_code == 200:
+                        credential_value = cred_fetch_resp.json().get("credential")
+                        # Execute the tool call
+                        exec_result = await execution_engine.execute_tool_call(
+                            tool=tool,
+                            method=method,
+                            params=params,
+                            credential=credential_value,
+                        )
+                        execution_result = exec_result.get("result", {})
+                        print(
+                            f"[APPROVED-EXEC] action_id={action_id} tool={tool} "
+                            f"method={method} result={json.dumps(execution_result)[:200]}",
+                            flush=True,
+                        )
+                    else:
+                        execution_error = f"HSM credential fetch failed: {cred_fetch_resp.status_code}"
+                else:
+                    execution_error = f"No credential registered for tool: {tool}"
+        except Exception as e:
+            execution_error = str(e)
+            print(f"[APPROVED-EXEC] ERROR action_id={action_id}: {e}", flush=True)
+
+    if execution_error:
+        print(f"[APPROVED-EXEC] WARN action_id={action_id}: {execution_error}", flush=True)
+
     # Log the approval in the audit trail
     conn = get_db()
     try:
@@ -3456,6 +3589,13 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
         prev_hash = get_prev_hash(conn, tenant["tenant_id"])
         record_data = f"{approval_action_id}|approve|{action_id}|{reviewer}|{prev_hash}"
         record_hash = hashlib.sha256(record_data.encode()).hexdigest()
+        exec_detail = {
+            "target_action": action_id,
+            "note": req.note,
+            "executed": execution_result is not None,
+        }
+        if execution_error:
+            exec_detail["execution_error"] = execution_error
         conn.execute(
             """INSERT OR IGNORE INTO audit_log
                (action_id, tenant_id, agent_id, tool, method, params,
@@ -3464,7 +3604,7 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 approval_action_id, tenant["tenant_id"], "human-reviewer",
-                "approval_queue", "approve", json.dumps({"target_action": action_id, "note": req.note}),
+                "approval_queue", "approve", json.dumps(exec_detail),
                 "allow", "[]", "none", "none",
                 prev_hash, record_hash, datetime.now(timezone.utc).isoformat(),
             ),
@@ -3473,7 +3613,13 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
     finally:
         conn.close()
 
-    return {"status": "approved", **result}
+    response = {"status": "approved", **result}
+    if execution_result is not None:
+        response["execution"] = {"status": "success", "result": execution_result}
+    elif execution_error:
+        response["execution"] = {"status": "error", "error": execution_error}
+
+    return response
 
 
 @app.post("/reject/{action_id}")

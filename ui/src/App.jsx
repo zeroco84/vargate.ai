@@ -36,11 +36,13 @@ import {
 } from './api';
 
 export default function App({ session, onLogout }) {
+  const isPublic = session?.isPublic || false;
+
   // ── State ──────────────────────────────────────────────────────────────────
 
   const [view, setView] = useState('dashboard');       // 'dashboard' | 'settings' | 'account'
   const [liveMode, setLiveMode] = useState(true);
-  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('vargate_onboarding_done'));
+  const [showOnboarding, setShowOnboarding] = useState(() => !isPublic && !localStorage.getItem('vargate_onboarding_done'));
 
   // Data
   const [records, setRecords] = useState([]);
@@ -119,10 +121,11 @@ export default function App({ session, onLogout }) {
         anchorStatus={anchorStatus}
         policy={policy}
         view={view}
-        setView={setView}
-        onLogout={onLogout}
+        setView={isPublic ? () => {} : setView}
+        onLogout={isPublic ? null : onLogout}
         session={session}
-        onTenantSwitch={() => window.location.reload()}
+        onTenantSwitch={isPublic ? null : () => window.location.reload()}
+        isPublic={isPublic}
       />
 
       {view === 'account' ? (

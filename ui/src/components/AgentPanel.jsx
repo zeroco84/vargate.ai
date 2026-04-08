@@ -28,6 +28,7 @@ export default function AgentPanel({ records }) {
 
   // Agent display names
   const agentNames = {
+    'sera-gtm-001': { name: 'Sera', icon: null, avatar: '/sera-avatar.png' },
     'agent-sales-eu-007': { name: 'Sales Agent EU', icon: '🦞' },
     'agent-sales-001': { name: 'Sales Agent', icon: '💼' },
     'agent-comms-001': { name: 'Comms Agent', icon: '📧' },
@@ -64,7 +65,13 @@ export default function AgentPanel({ records }) {
           return (
             <div key={agent.id}>
               <div className="agent-card">
-                <div className="agent-avatar">{display.icon}</div>
+                <div className="agent-avatar">
+                  {display.avatar ? (
+                    <img src={display.avatar} alt={display.name} style={{
+                      width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover',
+                    }} />
+                  ) : display.icon}
+                </div>
                 <div className="agent-info">
                   <div className="agent-name">{display.name}</div>
                   <div className="agent-id">{agent.id}</div>
