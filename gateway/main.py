@@ -78,6 +78,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ── Request logging middleware ──────────────────────────────────────────────
+
+@app.middleware("http")
+async def request_logging_middleware(request, call_next):
+    """Log method, path, status, duration, and client IP for every request (skip /health)."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    start = time.monotonic()
+    response = await call_next(request)
+    duration_ms = int((time.monotonic() - start) * 1000)
+    client_ip = request.client.host if request.client else "unknown"
+    print(
+        f"[REQUEST] {request.method} {request.url.path} "
+        f"status={response.status_code} duration={duration_ms}ms client={client_ip}",
+        flush=True,
+    )
+    return response
+
+
 # DEMO ONLY — stores original hashes during tamper simulation
 _tamper_store: dict[int, str] = {}
 
