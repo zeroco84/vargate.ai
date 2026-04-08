@@ -43,6 +43,11 @@ REAL_API_TOOLS = {"resend"}
 
 
 async def execute_tool_call(
+    # SECURITY NOTE: The credential value passes through gateway process memory.
+    # It is used only for the outbound HTTP Authorization header and is never
+    # logged, stored, or returned to the caller. However, a memory dump would
+    # expose it. For AGCS Tier 3 (AG-3.4), the HSM should make the outbound
+    # call directly. Current architecture is acceptable for Tier 1/2.
     tool: str,
     method: str,
     params: dict,
