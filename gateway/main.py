@@ -103,18 +103,31 @@ _merkle_root_task = None
 
 async def run_merkle_root_loop(get_db_fn):
     """
-    Fix 5 (AG-2.2): Background task that computes and records the current
-    Merkle root at regular intervals (default: every hour, must be ≤ 3600s).
-    This provides evidence that roots were computed at least hourly,
-    regardless of whether on-chain anchoring succeeded.
+    Sprint 5 (AG-2.2): Background task that builds hourly tenant-scoped
+    Merkle trees and records cumulative roots at regular intervals.
+    Runs every MERKLE_ROOT_INTERVAL_SECONDS (default 3600s, must be ≤ 3600s).
     """
-    from merkle import MerkleTree as _MT
+    from merkle import MerkleTree as _MT, build_hourly_trees
     await asyncio.sleep(20)  # Initial delay
 
     while True:
         try:
             conn = get_db_fn()
             try:
+                # Build hourly trees for each tenant
+                tenants = conn.execute("SELECT tenant_id FROM tenants").fetchall()
+                for t in tenants:
+                    tid = t["tenant_id"]
+                    new_trees = build_hourly_trees(conn, tid)
+                    for nt in new_trees:
+                        print(
+                            f"[MERKLE-TREE] tenant={tid} tree={nt['tree_index']} "
+                            f"root={nt['merkle_root'][:16]}... records={nt['record_count']} "
+                            f"period={nt['period_start']}",
+                            flush=True,
+                        )
+
+                # Also record cumulative root for backward compatibility
                 count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
                 if count > 0:
                     tree = _MT.from_db(conn)
@@ -126,7 +139,7 @@ async def run_merkle_root_loop(get_db_fn):
                     )
                     conn.commit()
                     print(
-                        f"[MERKLE-ROOT] Recorded root={tree.root[:16]}... records={tree.leaf_count}",
+                        f"[MERKLE-ROOT] Recorded cumulative root={tree.root[:16]}... records={tree.leaf_count}",
                         flush=True,
                     )
             finally:
@@ -294,6 +307,9 @@ def init_db():
             anchor_id       INTEGER REFERENCES merkle_anchor_log(id)
         )
     """)
+    # Sprint 5 (AG-2.2): Hourly tenant-scoped Merkle trees
+    from merkle import init_merkle_trees_table
+    init_merkle_trees_table(conn)
     # ── Seed default tenant (Sprint 2) ──────────────────────────────
     existing = conn.execute(
         "SELECT 1 FROM tenants WHERE tenant_id = ?", (DEFAULT_TENANT_ID,)
