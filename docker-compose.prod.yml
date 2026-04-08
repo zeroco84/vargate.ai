@@ -107,6 +107,13 @@ services:
     networks:
       - vargate-internal
 
+  docs:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:3002:80"
+    networks:
+      - vargate-internal
+
 networks:
   vargate-internal:
     driver: bridge

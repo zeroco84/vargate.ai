@@ -205,6 +205,17 @@ services:
       prometheus:
         condition: service_healthy
 
+  docs:
+    build:
+      context: ./docs-site
+    ports:
+      - "3002:80"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   audit-data:
   backup-data:
