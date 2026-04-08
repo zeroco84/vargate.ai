@@ -37,13 +37,14 @@ class ApprovalRequest(BaseModel):
 
 # ── Tenant management endpoints (Sprint 2) ──────────────────────────────────
 
-@router.post("/tenants")
+@router.post("/tenants", tags=["Tenants"])
 async def create_tenant(
     req: CreateTenantRequest,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Create a new tenant with API key. Requires existing tenant auth."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     api_key = f"vg-{secrets.token_hex(24)}"
@@ -73,12 +74,13 @@ async def create_tenant(
     }
 
 
-@router.get("/tenants")
+@router.get("/tenants", tags=["Tenants"])
 async def list_tenants(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List all tenants. Admin endpoint."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -101,13 +103,14 @@ async def list_tenants(
     }
 
 
-@router.get("/tenants/{tenant_id}")
+@router.get("/tenants/{tenant_id}", tags=["Tenants"])
 async def get_tenant_info(
     tenant_id: str,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Get tenant details by ID."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -129,12 +132,13 @@ async def get_tenant_info(
 
 # ── Dashboard data endpoints (Sprint 3) ─────────────────────────────────────
 
-@router.get("/dashboard/me")
+@router.get("/dashboard/me", tags=["Tenants"])
 async def dashboard_me(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Get dashboard data for the authenticated tenant including audit stats and chain health."""
     import main
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -176,13 +180,14 @@ async def dashboard_me(
     }
 
 
-@router.patch("/dashboard/settings")
+@router.patch("/dashboard/settings", tags=["Tenants"])
 async def update_tenant_settings(
     req: TenantSettingsRequest,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Update tenant settings (name, slug, public dashboard, rate limits)."""
     import main
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -212,7 +217,7 @@ async def update_tenant_settings(
     return {"status": "updated", "tenant_id": tenant["tenant_id"]}
 
 
-@router.get("/dashboard/public/{slug}")
+@router.get("/dashboard/public/{slug}", tags=["Tenants"])
 async def public_dashboard(slug: str):
     """Get public dashboard data for a tenant (if enabled). No auth required."""
     import main
@@ -283,12 +288,13 @@ async def public_dashboard(slug: str):
 
 # ── Approval Queue API ─────────────────────────────────────────────────────
 
-@router.get("/approvals")
+@router.get("/approvals", tags=["Approval Queue"])
 async def list_pending_approvals(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List actions awaiting human approval for the authenticated tenant."""
     import main
     import approval as approval_module
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
@@ -301,12 +307,13 @@ async def list_pending_approvals(
     return {"pending": pending, "stats": stats}
 
 
-@router.get("/approvals/history")
+@router.get("/approvals/history", tags=["Approval Queue"])
 async def approval_history(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List completed approval decisions (approved/rejected) for the tenant."""
     import main
     import approval as approval_module
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
@@ -318,7 +325,7 @@ async def approval_history(
     return {"history": history}
 
 
-@router.post("/approve/{action_id}")
+@router.post("/approve/{action_id}", tags=["Approval Queue"])
 async def approve_action(
     action_id: str,
     req: ApprovalRequest = ApprovalRequest(),
@@ -326,6 +333,7 @@ async def approve_action(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Approve a pending action. Executes via brokered execution if credentials are available."""
     import main
     import approval as approval_module
     import execution_engine
@@ -410,7 +418,7 @@ async def approve_action(
     return response
 
 
-@router.post("/reject/{action_id}")
+@router.post("/reject/{action_id}", tags=["Approval Queue"])
 async def reject_action(
     action_id: str,
     req: ApprovalRequest = ApprovalRequest(),
@@ -418,6 +426,7 @@ async def reject_action(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Reject a pending action with an optional reason."""
     import main
     import approval as approval_module
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
@@ -465,8 +474,9 @@ async def reject_action(
 
 # ── Transparency endpoints (public, no auth) ───────────────────────────────
 
-@router.get("/transparency")
+@router.get("/transparency", tags=["Tenants"])
 async def transparency_global():
+    """Public transparency stats across all tenants."""
     import main
     import transparency as transparency_module
     conn = main.get_db()
@@ -477,8 +487,9 @@ async def transparency_global():
     return data
 
 
-@router.get("/transparency/{tenant_id}")
+@router.get("/transparency/{tenant_id}", tags=["Tenants"])
 async def transparency_tenant(tenant_id: str):
+    """Public transparency stats for a specific tenant."""
     import main
     import transparency as transparency_module
     conn = main.get_db()
@@ -500,12 +511,13 @@ async def transparency_tenant(tenant_id: str):
 
 # ── GTM constraints endpoint ────────────────────────────────────────────────
 
-@router.get("/gtm/stats")
+@router.get("/gtm/stats", tags=["Tenants"])
 async def gtm_stats(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """GTM agent constraint statistics (blocked domains, daily cap, cooldown events)."""
     import main
     import gtm_constraints
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)

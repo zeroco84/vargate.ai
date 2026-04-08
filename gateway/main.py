@@ -29,7 +29,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import execution_engine
 import auth as auth_module
@@ -68,7 +68,30 @@ GTM_TENANT_NAME = "Vargate GTM Agent"
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Vargate Gateway", version="0.5.0")
+app = FastAPI(
+    title="Vargate Gateway",
+    version="1.0.0",
+    description=(
+        "AI agent supervision proxy. Intercepts autonomous agent tool calls, "
+        "evaluates them against OPA/Rego governance policy, logs every decision "
+        "to a hash-chained audit trail, and anchors Merkle tree roots to blockchain. "
+        "Implements AGCS v0.9 (Agent Governance Certification Standard)."
+    ),
+    openapi_tags=[
+        {"name": "Tool Calls", "description": "Core proxy endpoint — submit agent tool calls for governance evaluation"},
+        {"name": "Auth", "description": "Signup, email verification, GitHub OAuth, sessions, API key rotation"},
+        {"name": "Tenants", "description": "Tenant CRUD, dashboard settings, public dashboard"},
+        {"name": "Approval Queue", "description": "Human-in-the-loop approval workflow for flagged actions"},
+        {"name": "Audit", "description": "Hash-chained audit log, verification, GDPR erasure, replay"},
+        {"name": "Blockchain", "description": "Merkle tree anchoring, proofs, verification, multi-chain status"},
+        {"name": "Credentials", "description": "HSM-backed credential vault for agent-blind brokered execution"},
+        {"name": "Policy", "description": "OPA policy rules and bundle status"},
+        {"name": "System", "description": "Health check, backup, metrics"},
+    ],
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -205,6 +228,16 @@ class ContextOverride(BaseModel):
 
 
 class ToolCallRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "examples": [{
+            "agent_id": "my-agent-v1",
+            "agent_type": "autonomous",
+            "agent_version": "1.0.0",
+            "tool": "http",
+            "method": "GET",
+            "params": {"url": "https://api.example.com/data", "headers": {"Accept": "application/json"}},
+        }]
+    })
     agent_id: str = Field(..., min_length=1, max_length=256, pattern=r'^[a-zA-Z0-9_\-\.]+$')
     agent_type: str = Field(default="unknown", max_length=64)
     agent_version: str = Field(default="0.0.0", max_length=32, pattern=r'^\d+\.\d+\.\d+.*$')
@@ -224,11 +257,36 @@ class ToolCallRequest(BaseModel):
 
 
 class AllowedResponse(BaseModel):
+    """Returned when a tool call is allowed by policy."""
     status: str = "allowed"
     action_id: str
+    execution_mode: Optional[str] = None
+    execution_result: Optional[dict] = None
+    latency: Optional[dict] = None
+
+
+class PendingApprovalResponse(BaseModel):
+    """Returned when a tool call requires human approval."""
+    status: str = "pending_approval"
+    action_id: str
+    message: str
+
+
+class HealthResponse(BaseModel):
+    """Gateway health status including all dependency checks."""
+    status: str
+    service: str
+    redis: bool
+    blockchain: bool
+    connected_chains: list[str]
+    merkle_trees: bool
+    merkle_tree_count: int
+    sepolia_merkle: bool
+
 
 
 class BlockedResponse(BaseModel):
+    """Returned when a tool call is denied by policy."""
     status: str = "blocked"
     action_id: str
     violations: list[str]
@@ -1126,7 +1184,7 @@ async def get_bundle_revision() -> str:
     return DEFAULT_BUNDLE_REVISION
 
 
-@app.get("/policy/rules")
+@app.get("/policy/rules", tags=["Policy"])
 async def policy_rules():
     """Parse active OPA policy files and return structured rule descriptions."""
     import glob as glob_mod
@@ -1253,9 +1311,9 @@ def _rule_id_to_description(rule_id: str) -> str:
     return descriptions.get(rule_id, rule_id.replace("_", " ").capitalize())
 
 
-@app.get("/bundles/vargate/status")
+@app.get("/bundles/vargate/status", tags=["Policy"])
 async def bundle_status_proxy():
-    """Proxy bundle status from the bundle server so the UI can fetch it via /api/."""
+    """Proxy bundle status from the bundle server. Returns current policy bundle revision and hash."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{BUNDLE_SERVER_URL}/bundles/vargate/status")
@@ -1546,8 +1604,14 @@ async def shutdown():
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
-@app.post("/mcp/tools/call")
+@app.post("/mcp/tools/call", tags=["Tool Calls"])
 async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
+    """Submit an agent tool call for governance evaluation.
+
+    The proxy evaluates the action against OPA policy, checks gateway
+    constraints, logs the decision to the hash-chained audit trail,
+    and returns allow/deny/escalate with violation details.
+    """
     tenant_id = tenant["tenant_id"]
 
     # ── Per-tenant rate limiting ────────────────────────────────────
@@ -1855,21 +1919,21 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
 
 # ── Agent history endpoints (for test scripts) ──────────────────────────────
 
-@app.delete("/agents/{agent_id}/history")
+@app.delete("/agents/{agent_id}/history", tags=["Audit"])
 async def clear_agent_history(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear behavioral history for an agent. Used by test scripts."""
     await flush_agent_history(agent_id, tenant_id=tenant["tenant_id"])
     return {"status": "cleared", "agent_id": agent_id}
 
 
-@app.get("/agents/{agent_id}/anomaly_score")
+@app.get("/agents/{agent_id}/anomaly_score", tags=["Audit"])
 async def agent_anomaly_score(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Get current anomaly score for an agent."""
     score = await get_agent_anomaly_score(agent_id, tenant_id=tenant["tenant_id"])
     return {"agent_id": agent_id, "anomaly_score": round(score, 6)}
 
 
-@app.delete("/agents/{agent_id}/counters")
+@app.delete("/agents/{agent_id}/counters", tags=["Audit"])
 async def clear_agent_counters(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear counters and actions but keep anomaly_score. Used by test scripts."""
     global redis_pool
@@ -2154,8 +2218,9 @@ async def get_session_tenant(
 
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"], response_model=HealthResponse)
 async def health():
+    """Check gateway health including Redis, blockchain, and Merkle tree status."""
     redis_ok = False
     if redis_pool:
         try:
@@ -2199,16 +2264,17 @@ async def health():
 # /metrics is intentionally unauthenticated — Prometheus scrapes it from
 # the internal Docker network. The prod overlay binds gateway to 127.0.0.1
 # and nginx does not proxy /metrics, so it is not externally reachable.
-@app.get("/metrics")
+@app.get("/metrics", tags=["System"])
 async def metrics_endpoint():
+    """Prometheus metrics endpoint. Unauthenticated — only accessible from internal Docker network."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     from starlette.responses import Response
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/backup/trigger")
+@app.post("/backup/trigger", tags=["System"])
 async def trigger_backup(request: Request, tenant: dict = Depends(get_session_tenant)):
-    """Admin endpoint to trigger an immediate SQLite backup."""
+    """Trigger an immediate SQLite backup. Requires authentication. Rate-limited to 2/min."""
     from rate_limit import enforce_ip_rate_limit
     await enforce_ip_rate_limit(redis_pool, request, "backup", max_requests=2, window_seconds=60)
     import backup as backup_module

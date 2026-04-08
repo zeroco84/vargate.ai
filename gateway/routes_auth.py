@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-router = APIRouter()
+router = APIRouter(tags=["Auth"])
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ class EmailSignupRequest(BaseModel):
 
 @router.post("/auth/signup")
 async def email_signup(req: EmailSignupRequest, request: Request):
+    """Sign up with email. Sends a verification link. On verification, a tenant and API key are provisioned."""
     import main
     from rate_limit import enforce_ip_rate_limit
     await enforce_ip_rate_limit(main.redis_pool, request, "signup", max_requests=5, window_seconds=60)
@@ -62,6 +63,7 @@ async def email_signup(req: EmailSignupRequest, request: Request):
 
 @router.get("/auth/verify-email")
 async def verify_email(request: Request, token: str = Query(...)):
+    """Verify email address from signup link. Provisions tenant, user, and API key on success."""
     import main
     from rate_limit import enforce_ip_rate_limit
     await enforce_ip_rate_limit(main.redis_pool, request, "verify-email", max_requests=10, window_seconds=60)
@@ -118,6 +120,7 @@ async def verify_email(request: Request, token: str = Query(...)):
 
 @router.get("/auth/github")
 async def github_login():
+    """Redirect to GitHub OAuth authorization page."""
     import auth as auth_module
     if not auth_module.GITHUB_CLIENT_ID:
         raise HTTPException(501, "GitHub OAuth not configured")
@@ -128,6 +131,7 @@ async def github_login():
 
 @router.get("/auth/github/callback")
 async def github_callback(request: Request, code: str = Query(...), state: str = Query(default="")):
+    """GitHub OAuth callback. Exchanges code for token, provisions or links user account."""
     import main
     from rate_limit import enforce_ip_rate_limit
     await enforce_ip_rate_limit(main.redis_pool, request, "github-callback", max_requests=10, window_seconds=60)
@@ -184,6 +188,7 @@ async def github_callback(request: Request, code: str = Query(...), state: str =
 
 @router.post("/auth/session")
 async def create_session(x_api_key: str = Header(...)):
+    """Exchange API key for a JWT session token."""
     import main
     import auth as auth_module
     tenant = main.resolve_tenant(x_api_key)
@@ -211,6 +216,7 @@ async def rotate_api_key(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Rotate the current API key. Returns a new key; the old one is invalidated."""
     import main
     import auth as auth_module
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
@@ -234,6 +240,7 @@ async def list_my_tenants(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List all tenants the authenticated user belongs to."""
     import main
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -273,6 +280,7 @@ async def switch_tenant(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Switch active tenant context. Returns a new session token scoped to the target tenant."""
     import main
     import auth as auth_module
     tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)

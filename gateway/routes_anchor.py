@@ -12,7 +12,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 
-router = APIRouter()
+router = APIRouter(tags=["Blockchain"])
 
 
 # ── Anchor trigger ──────────────────────────────────────────────────────────
@@ -249,6 +249,7 @@ async def audit_merkle_roots(
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Get Merkle tree roots for the tenant's audit records."""
     import main
     from merkle import build_hourly_trees
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
@@ -297,6 +298,7 @@ async def audit_merkle_proof(
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Get a Merkle inclusion proof for a specific audit record hash."""
     import main
     from merkle import get_inclusion_proof, build_hourly_trees
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
@@ -319,6 +321,7 @@ async def audit_merkle_consistency(
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Verify consistency between two Merkle trees."""
     import main
     from merkle import get_consistency_proof
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
@@ -338,6 +341,7 @@ async def audit_merkle_verify(
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Verify the overall Merkle tree integrity."""
     import main
     from merkle import verify_merkle_chain, build_hourly_trees
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)

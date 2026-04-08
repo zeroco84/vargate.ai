@@ -48,12 +48,13 @@ class BulkReplayRequest(BaseModel):
 
 # ── Audit log & verification ────────────────────────────────────────────────
 
-@router.get("/audit/verify")
+@router.get("/audit/verify", tags=["Audit"])
 async def audit_verify(
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Verify the hash chain integrity of the tenant's audit log."""
     import main
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
@@ -64,13 +65,14 @@ async def audit_verify(
     return result
 
 
-@router.get("/audit/log")
+@router.get("/audit/log", tags=["Audit"])
 async def audit_log(
     limit: int = Query(default=200, le=1000),
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Retrieve recent audit log records for the authenticated tenant."""
     import main
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
@@ -113,13 +115,14 @@ async def audit_log(
 
 # ── Tamper simulation endpoints (DEMO ONLY) ─────────────────────────────────
 
-@router.post("/audit/tamper-simulate")  # DEMO ONLY
+@router.post("/audit/tamper-simulate", tags=["Audit"])  # DEMO ONLY
 async def tamper_simulate(
     req: TamperRequest,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """DEMO ONLY: Simulate tampering with an audit record to demonstrate chain verification."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -156,12 +159,13 @@ async def tamper_simulate(
         conn.close()
 
 
-@router.post("/audit/tamper-restore")  # DEMO ONLY
+@router.post("/audit/tamper-restore", tags=["Audit"])  # DEMO ONLY
 async def tamper_restore(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """DEMO ONLY: Restore tampered records to their original hashes."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -186,7 +190,7 @@ async def tamper_restore(
 
 # ── Crypto-shredding / Erasure endpoints ────────────────────────────────────
 
-@router.post("/audit/erase/{subject_id}")
+@router.post("/audit/erase/{subject_id}", tags=["Audit"])
 async def erase_subject(
     subject_id: str,
     request: Request,
@@ -194,6 +198,7 @@ async def erase_subject(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """GDPR right-to-erasure: delete the subject's HSM key, making encrypted PII irrecoverable."""
     import main
     from rate_limit import enforce_ip_rate_limit
     await enforce_ip_rate_limit(main.redis_pool, request, "erasure", max_requests=5, window_seconds=60)
@@ -239,13 +244,14 @@ async def erase_subject(
     }
 
 
-@router.get("/audit/erase/{subject_id}/verify")
+@router.get("/audit/erase/{subject_id}/verify", tags=["Audit"])
 async def verify_erasure(
     subject_id: str,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Verify that crypto-shredding was successful for a given subject."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     """Attempt to decrypt PII after erasure — should fail."""
@@ -290,12 +296,13 @@ async def verify_erasure(
     }
 
 
-@router.get("/audit/subjects")
+@router.get("/audit/subjects", tags=["Audit"])
 async def list_subjects(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List all PII subjects with encrypted records in the audit log."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
@@ -324,13 +331,14 @@ async def list_subjects(
 
 # ── HSM proxy endpoints ─────────────────────────────────────────────────────
 
-@router.post("/hsm/keys")
+@router.post("/hsm/keys", tags=["Credentials"])
 async def proxy_hsm_create_key(
     req: dict,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Create an HSM encryption key for a data subject."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -338,13 +346,14 @@ async def proxy_hsm_create_key(
         return resp.json()
 
 
-@router.post("/hsm/encrypt")
+@router.post("/hsm/encrypt", tags=["Credentials"])
 async def proxy_hsm_encrypt(
     req: dict,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Encrypt data using an HSM-managed key."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -352,13 +361,14 @@ async def proxy_hsm_encrypt(
         return resp.json()
 
 
-@router.post("/hsm/decrypt")
+@router.post("/hsm/decrypt", tags=["Credentials"])
 async def proxy_hsm_decrypt(
     req: dict,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Decrypt data using an HSM-managed key."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -366,13 +376,14 @@ async def proxy_hsm_decrypt(
         return resp.json()
 
 
-@router.get("/hsm/keys/{subject_id}/status")
+@router.get("/hsm/keys/{subject_id}/status", tags=["Credentials"])
 async def proxy_hsm_key_status(
     subject_id: str,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Check the status of an HSM key for a data subject."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -380,12 +391,13 @@ async def proxy_hsm_key_status(
         return resp.json()
 
 
-@router.get("/hsm/keys")
+@router.get("/hsm/keys", tags=["Credentials"])
 async def proxy_hsm_list_keys(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List all HSM keys."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -393,13 +405,14 @@ async def proxy_hsm_list_keys(
         return resp.json()
 
 
-@router.delete("/hsm/keys/{subject_id}")
+@router.delete("/hsm/keys/{subject_id}", tags=["Credentials"])
 async def proxy_hsm_delete_key(
     subject_id: str,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Delete an HSM key (crypto-shredding)."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -411,13 +424,14 @@ async def proxy_hsm_delete_key(
 
 # ── Credential vault proxy endpoints ────────────────────────────────────────
 
-@router.post("/credentials/register")
+@router.post("/credentials/register", tags=["Credentials"])
 async def register_credential(
     req: RegisterCredentialRequest,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Register a tool credential in the HSM vault for brokered execution."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     # SECURITY: value passes through to HSM immediately, never logged by gateway
@@ -435,6 +449,7 @@ async def list_credentials(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """List registered tool credentials (metadata only, not values)."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -442,7 +457,7 @@ async def list_credentials(
         return resp.json()
 
 
-@router.delete("/credentials/{tool_id}/{name}")
+@router.delete("/credentials/{tool_id}/{name}", tags=["Credentials"])
 async def delete_credential(
     tool_id: str,
     name: str,
@@ -450,6 +465,7 @@ async def delete_credential(
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Remove a tool credential from the vault."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -459,13 +475,14 @@ async def delete_credential(
         return resp.json()
 
 
-@router.get("/credentials/{tool_id}/status")
+@router.get("/credentials/{tool_id}/status", tags=["Credentials"])
 async def credential_status(
     tool_id: str,
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """Check registration status of a tool credential."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -473,12 +490,13 @@ async def credential_status(
         return resp.json()
 
 
-@router.get("/credentials/access-log")
+@router.get("/credentials/access-log", tags=["Credentials"])
 async def credential_access_log(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
+    """View the credential access log (which credentials were used and when)."""
     import main
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -611,8 +629,9 @@ def _build_replay_response(row, replayed_result: dict) -> dict:
     }
 
 
-@router.post("/audit/replay")
+@router.post("/audit/replay", tags=["Audit"])
 async def audit_replay(req: ReplayRequest):
+    """Replay a single audit record against current OPA policy to check decision consistency."""
     import main
     conn = main.get_db()
     try:
@@ -654,8 +673,9 @@ async def audit_replay(req: ReplayRequest):
         conn.close()
 
 
-@router.post("/audit/replay-bulk")
+@router.post("/audit/replay-bulk", tags=["Audit"])
 async def audit_replay_bulk(req: BulkReplayRequest):
+    """Replay multiple recent records against current policy for bulk verification."""
     import main
     conn = main.get_db()
     try:
