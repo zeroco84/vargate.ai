@@ -3688,16 +3688,35 @@ async def health():
         except Exception:
             pass
     blockchain_ok = blockchain_client is not None
-    sepolia_ok = (
-        merkle_blockchain_client is not None
-        and merkle_blockchain_client.connected
-    )
+
+    # Sprint 5: Multi-chain and Merkle tree status
+    connected_chains = chain_manager.connected_chains if chain_manager else []
+    any_chain_connected = bool(connected_chains) or blockchain_ok
+
+    # Merkle tree health
+    merkle_ok = False
+    merkle_tree_count = 0
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT COUNT(*) as cnt FROM merkle_trees").fetchone()
+            merkle_tree_count = row["cnt"] if row else 0
+            merkle_ok = True
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "service": "vargate-gateway",
         "redis": redis_ok,
-        "blockchain": blockchain_ok,
-        "sepolia_merkle": sepolia_ok,
+        "blockchain": any_chain_connected,
+        "connected_chains": connected_chains,
+        "merkle_trees": merkle_ok,
+        "merkle_tree_count": merkle_tree_count,
+        # Backward compat
+        "sepolia_merkle": "sepolia" in connected_chains,
     }
 
 
