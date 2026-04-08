@@ -49,6 +49,17 @@ async function checkAuditIntegrity() {
   return response.json();
 }
 
+async function getMerkleProof(recordHash) {
+  const response = await fetch(
+    `${VARGATE_URL}/audit/merkle/proof/${recordHash}`,
+    { headers: { "X-API-Key": API_KEY } }
+  );
+  if (!response.ok) {
+    throw new Error(`Vargate error: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
 // Example usage
 (async () => {
   const result = await governedToolCall("http", "GET", {
@@ -58,4 +69,8 @@ async function checkAuditIntegrity() {
 
   const integrity = await checkAuditIntegrity();
   console.log("Chain valid:", integrity.valid);
+
+  // Get Merkle inclusion proof for a record
+  // const proof = await getMerkleProof("abc123...");
+  // console.log("Merkle proof:", proof);
 })();
