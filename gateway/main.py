@@ -36,6 +36,7 @@ import auth as auth_module
 import approval as approval_module
 import gtm_constraints
 import transparency as transparency_module
+import webhooks as webhooks_module
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -1931,6 +1932,23 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         amount=amount,
         tenant_id=tenant_id,
     )
+
+    # ── Webhook dispatch ─────────────────────────────────────────
+    webhook_payload = {
+        "action_id": action_id,
+        "agent_id": req.agent_id,
+        "tool": req.tool,
+        "method": req.method,
+        "decision": decision_str,
+        "violations": sorted(violations) if violations else [],
+        "severity": severity,
+    }
+    if decision_str == "deny":
+        await webhooks_module.dispatch_webhook(tenant, "action.denied", webhook_payload)
+    elif pending_approval:
+        await webhooks_module.dispatch_webhook(tenant, "action.pending", webhook_payload)
+    elif allowed:
+        await webhooks_module.dispatch_webhook(tenant, "action.allowed", webhook_payload)
 
     # Return response
     if allowed:

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -29,6 +30,10 @@ class TenantSettingsRequest(BaseModel):
     public_dashboard: Optional[bool] = None
     name: Optional[str] = None
     anchor_chain: Optional[str] = None  # Sprint 5: polygon, ethereum, sepolia
+    policy_template: Optional[str] = None  # Sprint 7.3
+    policy_config: Optional[dict] = None  # Sprint 7.3
+    webhook_url: Optional[str] = None  # Sprint 7.6
+    webhook_events: Optional[list] = None  # Sprint 7.6
 
 
 class ApprovalRequest(BaseModel):
@@ -209,12 +214,98 @@ async def update_tenant_settings(
                     "UPDATE tenants SET anchor_chain = ? WHERE tenant_id = ?",
                     (req.anchor_chain, tenant["tenant_id"]),
                 )
+        if req.policy_template is not None:
+            valid_templates = {"general", "financial", "email", "crm", "data_access"}
+            if req.policy_template in valid_templates:
+                conn.execute(
+                    "UPDATE tenants SET policy_template = ? WHERE tenant_id = ?",
+                    (req.policy_template, tenant["tenant_id"]),
+                )
+        if req.policy_config is not None:
+            conn.execute(
+                "UPDATE tenants SET policy_config = ? WHERE tenant_id = ?",
+                (json.dumps(req.policy_config), tenant["tenant_id"]),
+            )
+        if req.webhook_url is not None:
+            # Generate a webhook secret on first URL set
+            webhook_secret = conn.execute(
+                "SELECT webhook_secret FROM tenants WHERE tenant_id = ?",
+                (tenant["tenant_id"],),
+            ).fetchone()
+            secret_val = webhook_secret["webhook_secret"] if webhook_secret and webhook_secret["webhook_secret"] else secrets.token_hex(32)
+            conn.execute(
+                "UPDATE tenants SET webhook_url = ?, webhook_secret = ? WHERE tenant_id = ?",
+                (req.webhook_url, secret_val, tenant["tenant_id"]),
+            )
+        if req.webhook_events is not None:
+            conn.execute(
+                "UPDATE tenants SET webhook_events = ? WHERE tenant_id = ?",
+                (json.dumps(req.webhook_events), tenant["tenant_id"]),
+            )
         conn.commit()
     finally:
         conn.close()
 
     main._refresh_tenant_cache()
-    return {"status": "updated", "tenant_id": tenant["tenant_id"]}
+
+    # Include webhook_secret in response if webhook was configured
+    result = {"status": "updated", "tenant_id": tenant["tenant_id"]}
+    if req.webhook_url is not None:
+        # Re-read to get the secret
+        conn2 = main.get_db()
+        try:
+            row = conn2.execute(
+                "SELECT webhook_secret FROM tenants WHERE tenant_id = ?",
+                (tenant["tenant_id"],),
+            ).fetchone()
+            if row:
+                result["webhook_secret"] = row["webhook_secret"]
+        finally:
+            conn2.close()
+    return result
+
+
+@router.post("/webhooks/test", tags=["Tenants"])
+async def test_webhook(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    """Send a test webhook to the tenant's configured URL."""
+    import main
+    import webhooks as webhooks_module
+
+    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    webhook_url = tenant.get("webhook_url")
+    webhook_secret = tenant.get("webhook_secret")
+
+    if not webhook_url or not webhook_secret:
+        raise HTTPException(400, "No webhook URL configured. Set one via PATCH /dashboard/settings.")
+
+    test_payload = {
+        "action_id": "test-webhook-ping",
+        "agent_id": "vargate-system",
+        "tool": "webhook-test",
+        "method": "PING",
+        "decision": "allow",
+        "message": "This is a test webhook from Vargate.",
+    }
+
+    success = await webhooks_module.send_webhook(
+        url=webhook_url,
+        secret=webhook_secret,
+        event="test.ping",
+        payload=test_payload,
+        max_retries=0,
+    )
+
+    if success:
+        return {"status": "delivered", "webhook_url": webhook_url}
+    else:
+        return JSONResponse(
+            status_code=502,
+            content={"status": "failed", "webhook_url": webhook_url, "message": "Webhook delivery failed"},
+        )
 
 
 @router.get("/dashboard/public/{slug}", tags=["Tenants"])

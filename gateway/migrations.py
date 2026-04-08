@@ -94,6 +94,19 @@ def _migration_5_policy_template(conn: sqlite3.Connection):
             pass
 
 
+def _migration_6_webhook_columns(conn: sqlite3.Connection):
+    """Add webhook columns to tenants."""
+    for sql in [
+        "ALTER TABLE tenants ADD COLUMN webhook_url TEXT",
+        "ALTER TABLE tenants ADD COLUMN webhook_secret TEXT",
+        "ALTER TABLE tenants ADD COLUMN webhook_events TEXT DEFAULT '[]'",
+    ]:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+
 # Ordered list of migrations. Version 1 is the baseline (all existing tables).
 # Each entry: (version, description, migration_fn)
 MIGRATIONS = [
@@ -102,6 +115,7 @@ MIGRATIONS = [
     (3, "Sessions 2-8: audit_log additional columns", _migration_3_audit_columns),
     (4, "Merkle columns on legacy anchor_log", _migration_4_anchor_log_columns),
     (5, "Sprint 7: policy_template and policy_config on tenants", _migration_5_policy_template),
+    (6, "Sprint 7.6: webhook_url, webhook_secret, webhook_events on tenants", _migration_6_webhook_columns),
 ]
 
 
