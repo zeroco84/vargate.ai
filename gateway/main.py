@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -355,11 +355,19 @@ def init_db():
 
 
 def _seed_gtm_tenant(conn: sqlite3.Connection):
-    """Seed the GTM agent tenant with custom rate limits and public dashboard enabled."""
+    """Seed the GTM agent tenant with custom rate limits and public dashboard enabled.
+    Requires auth tables (public_dashboard, slug columns) to be initialized first."""
     existing = conn.execute(
         "SELECT 1 FROM tenants WHERE tenant_id = ?", (GTM_TENANT_ID,)
     ).fetchone()
     if not existing:
+        # Verify auth columns exist before inserting (guards against init reordering)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tenants)").fetchall()}
+        if "public_dashboard" not in cols or "slug" not in cols:
+            raise RuntimeError(
+                "_seed_gtm_tenant called before auth_module.init_auth_db() — "
+                "public_dashboard/slug columns missing from tenants table"
+            )
         gtm_api_key = f"vg-gtm-{secrets.token_hex(24)}"
         conn.execute(
             """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst, public_dashboard, slug)
@@ -1412,7 +1420,7 @@ async def startup():
         chain_manager = None
 
     # Fix 5 (AG-2.2): Start background Merkle root recording loop
-    _merkle_root_task = asyncio.create_task(run_merkle_root_loop(get_db))
+    _merkle_root_task = asyncio.create_task(run_merkle_root_loop(get_db_threadsafe))
     print(
         f"[VARGATE] Merkle root recording started (interval: {MERKLE_ROOT_INTERVAL_SECONDS}s).",
         flush=True,
@@ -3296,11 +3304,7 @@ async def email_signup(req: EmailSignupRequest):
         token = auth_module._generate_verification_token()
         token_hash = auth_module._hash_verification_token(token)
         now = datetime.now(timezone.utc)
-        expires = datetime(now.year, now.month, now.day, now.hour, now.minute, now.second,
-                           tzinfo=timezone.utc).__class__(
-            now.year, now.month, now.day + 1, now.hour, now.minute, now.second,
-            tzinfo=timezone.utc
-        )
+        expires = now + timedelta(days=1)
 
         conn.execute(
             """INSERT INTO pending_signups (email, token_hash, tenant_name, created_at, expires_at)
@@ -3848,8 +3852,7 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
     try:
         approval_action_id = f"approval-{action_id}"
         prev_hash = get_prev_hash(conn, tenant["tenant_id"])
-        record_data = f"{approval_action_id}|approve|{action_id}|{reviewer}|{prev_hash}"
-        record_hash = hashlib.sha256(record_data.encode()).hexdigest()
+        now_ts = datetime.now(timezone.utc).isoformat()
         exec_detail = {
             "target_action": action_id,
             "note": req.note,
@@ -3857,17 +3860,31 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
         }
         if execution_error:
             exec_detail["execution_error"] = execution_error
+        params_json = json.dumps(exec_detail)
+        record_hash = compute_record_hash(
+            action_id=approval_action_id,
+            agent_id="human-reviewer",
+            tool="approval_queue",
+            method="approve",
+            params=params_json,
+            requested_at=now_ts,
+            decision="allow",
+            violations="[]",
+            severity="none",
+            bundle_revision="",
+            prev_hash=prev_hash,
+        )
         conn.execute(
-            """INSERT OR IGNORE INTO audit_log
+            """INSERT INTO audit_log
                (action_id, tenant_id, agent_id, tool, method, params,
                 decision, violations, severity, alert_tier,
                 prev_hash, record_hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 approval_action_id, tenant["tenant_id"], "human-reviewer",
-                "approval_queue", "approve", json.dumps(exec_detail),
+                "approval_queue", "approve", params_json,
                 "allow", "[]", "none", "none",
-                prev_hash, record_hash, datetime.now(timezone.utc).isoformat(),
+                prev_hash, record_hash, now_ts,
             ),
         )
         conn.commit()
@@ -3910,19 +3927,32 @@ async def reject_action(action_id: str, req: ApprovalRequest = ApprovalRequest()
     try:
         rejection_action_id = f"rejection-{action_id}"
         prev_hash = get_prev_hash(conn, tenant["tenant_id"])
-        record_data = f"{rejection_action_id}|reject|{action_id}|{reviewer}|{prev_hash}"
-        record_hash = hashlib.sha256(record_data.encode()).hexdigest()
+        now_ts = datetime.now(timezone.utc).isoformat()
+        params_json = json.dumps({"target_action": action_id, "note": req.note})
+        record_hash = compute_record_hash(
+            action_id=rejection_action_id,
+            agent_id="human-reviewer",
+            tool="approval_queue",
+            method="reject",
+            params=params_json,
+            requested_at=now_ts,
+            decision="deny",
+            violations="[]",
+            severity="none",
+            bundle_revision="",
+            prev_hash=prev_hash,
+        )
         conn.execute(
-            """INSERT OR IGNORE INTO audit_log
+            """INSERT INTO audit_log
                (action_id, tenant_id, agent_id, tool, method, params,
                 decision, violations, severity, alert_tier,
                 prev_hash, record_hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rejection_action_id, tenant["tenant_id"], "human-reviewer",
-                "approval_queue", "reject", json.dumps({"target_action": action_id, "note": req.note}),
+                "approval_queue", "reject", params_json,
                 "deny", "[]", "none", "none",
-                prev_hash, record_hash, datetime.now(timezone.utc).isoformat(),
+                prev_hash, record_hash, now_ts,
             ),
         )
         conn.commit()

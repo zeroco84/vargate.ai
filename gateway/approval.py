@@ -263,25 +263,13 @@ def get_queue_stats(conn: sqlite3.Connection, tenant_id: str) -> dict:
     """Get approval queue statistics for a tenant."""
     row = conn.execute(
         """SELECT
-            COUNT(*) FILTER (WHERE status = 'pending') as pending,
-            COUNT(*) FILTER (WHERE status = 'approved') as approved,
-            COUNT(*) FILTER (WHERE status = 'rejected') as rejected,
-            COUNT(*) FILTER (WHERE status = 'expired') as expired
+            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+            SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+            SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired
            FROM pending_actions WHERE tenant_id = ?""",
         (tenant_id,),
     ).fetchone()
-
-    # SQLite doesn't support FILTER — use CASE instead
-    if row is None or row["pending"] is None:
-        row = conn.execute(
-            """SELECT
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
-                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
-                SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired
-               FROM pending_actions WHERE tenant_id = ?""",
-            (tenant_id,),
-        ).fetchone()
 
     return {
         "pending": row["pending"] or 0,
