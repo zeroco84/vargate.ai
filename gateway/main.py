@@ -1995,7 +1995,7 @@ async def erase_subject(subject_id: str, tenant: dict = Depends(get_session_tena
 
 
 @app.get("/audit/erase/{subject_id}/verify")
-async def verify_erasure(subject_id: str):
+async def verify_erasure(subject_id: str, tenant: dict = Depends(get_session_tenant)):
     """Attempt to decrypt PII after erasure — should fail."""
     # Get the first encrypted record for this subject
     conn = get_db()
@@ -3850,9 +3850,6 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
     # Log the approval in the audit trail
     conn = get_db()
     try:
-        approval_action_id = f"approval-{action_id}"
-        prev_hash = get_prev_hash(conn, tenant["tenant_id"])
-        now_ts = datetime.now(timezone.utc).isoformat()
         exec_detail = {
             "target_action": action_id,
             "note": req.note,
@@ -3860,34 +3857,20 @@ async def approve_action(action_id: str, req: ApprovalRequest = ApprovalRequest(
         }
         if execution_error:
             exec_detail["execution_error"] = execution_error
-        params_json = json.dumps(exec_detail)
-        record_hash = compute_record_hash(
-            action_id=approval_action_id,
+        write_audit_record(
+            conn,
+            action_id=f"approval-{action_id}",
             agent_id="human-reviewer",
             tool="approval_queue",
             method="approve",
-            params=params_json,
-            requested_at=now_ts,
+            params=exec_detail,
+            requested_at=datetime.now(timezone.utc).isoformat(),
             decision="allow",
-            violations="[]",
+            violations=[],
             severity="none",
-            bundle_revision="",
-            prev_hash=prev_hash,
+            alert_tier="none",
+            tenant_id=tenant["tenant_id"],
         )
-        conn.execute(
-            """INSERT INTO audit_log
-               (action_id, tenant_id, agent_id, tool, method, params,
-                decision, violations, severity, alert_tier,
-                prev_hash, record_hash, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                approval_action_id, tenant["tenant_id"], "human-reviewer",
-                "approval_queue", "approve", params_json,
-                "allow", "[]", "none", "none",
-                prev_hash, record_hash, now_ts,
-            ),
-        )
-        conn.commit()
     finally:
         conn.close()
 
@@ -3925,37 +3908,20 @@ async def reject_action(action_id: str, req: ApprovalRequest = ApprovalRequest()
     # Log the rejection in the audit trail
     conn = get_db()
     try:
-        rejection_action_id = f"rejection-{action_id}"
-        prev_hash = get_prev_hash(conn, tenant["tenant_id"])
-        now_ts = datetime.now(timezone.utc).isoformat()
-        params_json = json.dumps({"target_action": action_id, "note": req.note})
-        record_hash = compute_record_hash(
-            action_id=rejection_action_id,
+        write_audit_record(
+            conn,
+            action_id=f"rejection-{action_id}",
             agent_id="human-reviewer",
             tool="approval_queue",
             method="reject",
-            params=params_json,
-            requested_at=now_ts,
+            params={"target_action": action_id, "note": req.note},
+            requested_at=datetime.now(timezone.utc).isoformat(),
             decision="deny",
-            violations="[]",
+            violations=[],
             severity="none",
-            bundle_revision="",
-            prev_hash=prev_hash,
+            alert_tier="none",
+            tenant_id=tenant["tenant_id"],
         )
-        conn.execute(
-            """INSERT INTO audit_log
-               (action_id, tenant_id, agent_id, tool, method, params,
-                decision, violations, severity, alert_tier,
-                prev_hash, record_hash, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                rejection_action_id, tenant["tenant_id"], "human-reviewer",
-                "approval_queue", "reject", params_json,
-                "deny", "[]", "none", "none",
-                prev_hash, record_hash, now_ts,
-            ),
-        )
-        conn.commit()
     finally:
         conn.close()
 
