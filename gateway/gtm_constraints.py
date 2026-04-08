@@ -25,6 +25,7 @@ DAILY_SEND_CAP = 30
 COOLDOWN_DAYS = 30
 
 # Domains that should NEVER receive outbound GTM emails
+# KEEP IN SYNC with policies/vargate/gtm_policy.rego consumer_domains
 BLOCKED_DOMAINS = {
     # Internal
     "vargate.ai",

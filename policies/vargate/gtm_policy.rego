@@ -39,7 +39,8 @@ requires_human_approval if {
 violations contains msg if {
     _is_gtm_tenant
     _is_email_action
-    consumer_domains := {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "protonmail.com", "proton.me"}
+    # KEEP IN SYNC with gateway/gtm_constraints.py BLOCKED_DOMAINS
+    consumer_domains := {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "protonmail.com", "proton.me", "vargate.ai", "vargate.com", "example.com", "test.com", "localhost"}
     some domain in consumer_domains
     endswith(input.action.params.to, domain)
     msg := "gtm_consumer_email_blocked"
