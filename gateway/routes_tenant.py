@@ -227,6 +227,8 @@ async def update_tenant_settings(
                 (json.dumps(req.policy_config), tenant["tenant_id"]),
             )
         if req.webhook_url is not None:
+            if req.webhook_url and not req.webhook_url.startswith("https://"):
+                raise HTTPException(status_code=400, detail="Webhook URL must use HTTPS")
             # Generate a webhook secret on first URL set
             webhook_secret = conn.execute(
                 "SELECT webhook_secret FROM tenants WHERE tenant_id = ?",
