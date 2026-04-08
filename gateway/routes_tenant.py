@@ -34,6 +34,7 @@ class TenantSettingsRequest(BaseModel):
     policy_config: Optional[dict] = None  # Sprint 7.3
     webhook_url: Optional[str] = None  # Sprint 7.6
     webhook_events: Optional[list] = None  # Sprint 7.6
+    failure_config: Optional[dict] = None  # Sprint 8.4
 
 
 class ApprovalRequest(BaseModel):
@@ -243,6 +244,18 @@ async def update_tenant_settings(
             conn.execute(
                 "UPDATE tenants SET webhook_events = ? WHERE tenant_id = ?",
                 (json.dumps(req.webhook_events), tenant["tenant_id"]),
+            )
+        if req.failure_config is not None:
+            valid_modes = {"fail_closed", "fail_open", "fail_to_queue"}
+            valid_deps = {"opa", "redis", "blockchain"}
+            for dep, mode in req.failure_config.items():
+                if dep not in valid_deps:
+                    raise HTTPException(400, f"Invalid dependency: {dep}. Valid: {valid_deps}")
+                if mode not in valid_modes:
+                    raise HTTPException(400, f"Invalid mode: {mode}. Valid: {valid_modes}")
+            conn.execute(
+                "UPDATE tenants SET failure_config = ? WHERE tenant_id = ?",
+                (json.dumps(req.failure_config), tenant["tenant_id"]),
             )
         conn.commit()
     finally:

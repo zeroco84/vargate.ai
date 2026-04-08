@@ -37,6 +37,7 @@ import approval as approval_module
 import gtm_constraints
 import transparency as transparency_module
 import webhooks as webhooks_module
+import failure_modes
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -977,7 +978,10 @@ async def check_rate_limit(tenant: dict) -> bool:
         return True
     except Exception as e:
         print(f"[RATELIMIT] Error checking rate limit for {tenant_id}: {e}", flush=True)
-        return True  # Fail open
+        fm = failure_modes.get_failure_mode(tenant, "redis")
+        if fm == failure_modes.FailureMode.FAIL_CLOSED:
+            return False
+        return True  # Fail open (default)
 
 
 # ── Redis behavioral history ────────────────────────────────────────────────
@@ -1157,8 +1161,12 @@ async def _agent_has_violations(agent_id: str, tenant_id: str = DEFAULT_TENANT_I
 
 # ── OPA query helper ────────────────────────────────────────────────────────
 
-async def query_opa(opa_input: dict) -> dict:
-    """Send input to OPA and return the decision result."""
+async def query_opa(opa_input: dict, tenant: dict = None) -> dict:
+    """Send input to OPA and return the decision result.
+
+    On OPA failure, respects the tenant's configured failure mode:
+    fail_closed (default), fail_open, or fail_to_queue.
+    """
     opa_start = time.monotonic()
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -1169,6 +1177,17 @@ async def query_opa(opa_input: dict) -> dict:
             resp.raise_for_status()
         except httpx.HTTPError as e:
             prom.ERRORS_TOTAL.labels("opa_timeout").inc()
+            if tenant:
+                fm = failure_modes.handle_failure(tenant, "opa", e)
+                if fm["status"] == "allowed":
+                    print(f"[OPA-FAILOPEN] OPA unreachable, fail_open for tenant {tenant['tenant_id']}", flush=True)
+                    return {"allow": True, "violations": [], "severity": "none",
+                            "failure_mode": "fail_open", "warning": fm["warning"]}
+                elif fm["status"] == "escalated":
+                    print(f"[OPA-QUEUE] OPA unreachable, fail_to_queue for tenant {tenant['tenant_id']}", flush=True)
+                    return {"allow": True, "requires_human": True, "violations": [],
+                            "severity": "none", "failure_mode": "fail_to_queue"}
+            # Default: fail_closed
             raise HTTPException(
                 status_code=502,
                 detail=f"OPA unreachable: {str(e)}",
@@ -1693,7 +1712,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
     opa_start = time.monotonic()
     opa_input_p1 = build_opa_input(req, action_id, history=None, credentials_registered=credentials_registered, tenant=tenant)
     requested_at = opa_input_p1["action"]["requested_at"]
-    result_p1 = await query_opa(opa_input_p1)
+    result_p1 = await query_opa(opa_input_p1, tenant=tenant)
 
     allowed_p1 = result_p1.get("allow", False)
     violations_p1 = result_p1.get("violations", [])
@@ -1716,7 +1735,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         opa_input_p2 = build_opa_input(req, action_id, history=history, credentials_registered=credentials_registered, tenant=tenant)
         # Preserve the same requested_at from Pass 1
         opa_input_p2["action"]["requested_at"] = requested_at
-        final_result = await query_opa(opa_input_p2)
+        final_result = await query_opa(opa_input_p2, tenant=tenant)
     # If allowed and fast mode with clean history — forward immediately
     else:
         final_result = result_p1

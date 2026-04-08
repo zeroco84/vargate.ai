@@ -107,6 +107,14 @@ def _migration_6_webhook_columns(conn: sqlite3.Connection):
             pass
 
 
+def _migration_7_failure_config(conn: sqlite3.Connection):
+    """Add failure_config column to tenants."""
+    try:
+        conn.execute("ALTER TABLE tenants ADD COLUMN failure_config TEXT DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass
+
+
 # Ordered list of migrations. Version 1 is the baseline (all existing tables).
 # Each entry: (version, description, migration_fn)
 MIGRATIONS = [
@@ -116,6 +124,7 @@ MIGRATIONS = [
     (4, "Merkle columns on legacy anchor_log", _migration_4_anchor_log_columns),
     (5, "Sprint 7: policy_template and policy_config on tenants", _migration_5_policy_template),
     (6, "Sprint 7.6: webhook_url, webhook_secret, webhook_events on tenants", _migration_6_webhook_columns),
+    (7, "Sprint 8.4: failure_config on tenants", _migration_7_failure_config),
 ]
 
 
