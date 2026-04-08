@@ -8,6 +8,7 @@ import PolicyPanel from './components/PolicyPanel';
 import ActivityFeed from './components/ActivityFeed';
 import ChainPanel from './components/ChainPanel';
 import AnchorPanel from './components/AnchorPanel';
+import MerklePanel from './components/MerklePanel';
 import VaultPanel from './components/VaultPanel';
 
 // Secondary views
@@ -160,6 +161,7 @@ export default function App({ session, onLogout }) {
           {/* Right Column — Trust Indicators */}
           <div className="col-right">
             <ChainPanel chain={chain} />
+            <MerklePanel records={records} />
             <AnchorPanel
               anchorStatus={anchorStatus}
               anchorLog={anchorLog}

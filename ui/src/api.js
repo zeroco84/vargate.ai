@@ -120,6 +120,24 @@ export async function triggerAnchor() {
   return fetchJSON('/anchor/trigger', { method: 'POST' });
 }
 
+// ── Merkle Trees (Sprint 5) ──────────────────────────────────────────────────
+
+export async function fetchMerkleRoots(limit = 100) {
+  return fetchJSON(`/audit/merkle/roots?limit=${limit}`);
+}
+
+export async function fetchMerkleProof(recordHash) {
+  return fetchJSON(`/audit/merkle/proof/${recordHash}`);
+}
+
+export async function fetchMerkleConsistency(treeN, treeM) {
+  return fetchJSON(`/audit/merkle/consistency/${treeN}/${treeM}`);
+}
+
+export async function fetchMerkleVerify() {
+  return fetchJSON('/audit/merkle/verify');
+}
+
 // ── Credentials ──────────────────────────────────────────────────────────────
 
 export async function fetchCredentials() {
