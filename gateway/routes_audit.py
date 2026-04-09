@@ -132,7 +132,7 @@ async def tamper_simulate(
     """DEMO ONLY: Simulate tampering with an audit record to demonstrate chain verification."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         row = conn.execute(
@@ -176,7 +176,7 @@ async def tamper_restore(
     """DEMO ONLY: Restore tampered records to their original hashes."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         for record_id, original_hash in main._tamper_store.items():
@@ -215,8 +215,8 @@ async def erase_subject(
     await enforce_ip_rate_limit(
         main.redis_pool, request, "erasure", max_requests=5, window_seconds=60
     )
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
-    """GDPR right-to-erasure: delete the subject's HSM key and mark records."""
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
+    # GDPR right-to-erasure: delete the subject's HSM key and mark records.
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{main.HSM_URL}/keys/{subject_id}")
         if resp.status_code == 404:
@@ -267,8 +267,8 @@ async def verify_erasure(
     """Verify that crypto-shredding was successful for a given subject."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
-    """Attempt to decrypt PII after erasure — should fail."""
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
+    # Attempt to decrypt PII after erasure — should fail.
     conn = main.get_db()
     try:
         row = conn.execute(
