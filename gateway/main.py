@@ -1526,7 +1526,7 @@ async def policy_rules():
 def _rule_id_to_description(rule_id: str) -> str:
     """Convert a snake_case rule ID to a human-readable description."""
     descriptions = {
-        "high_value_transaction_unapproved_eur": "Transactions over €5,000 require approval",
+        "high_value_transaction_unapproved": "Transactions over €5,000 require approval",
         "gdpr_pii_residency_violation": "Unmasked PII leaving EU — blocked",
         "anomaly_score_threshold_exceeded": "Anomaly score above 0.7 — blocked",
         "high_value_out_of_hours_eur": "High-value actions (€1,000+) outside business hours — blocked",

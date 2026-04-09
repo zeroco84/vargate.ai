@@ -62,6 +62,9 @@ jobs:
             exit 1
           fi
 
+      - name: Seed test data
+        run: bash scripts/ci-seed.sh
+
       - name: Install test dependencies
         run: pip install requests
 

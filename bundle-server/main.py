@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Response
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -34,6 +34,16 @@ class BundleState:
         self.bundle_bytes: bytes = b""
         self.archive_dir: str = os.environ.get("BUNDLE_ARCHIVE_DIR", "/data/archive")
         self.rego_files: dict[str, str] = {}  # relative path -> content
+        self.competitor_domains: set[str] = {
+            "rival.com",
+            "competitor.com",
+            "acmecorp.com",
+        }
+        self.default_competitor_domains: set[str] = {
+            "rival.com",
+            "competitor.com",
+            "acmecorp.com",
+        }
         os.makedirs(self.archive_dir, exist_ok=True)
         self._rebuild()
 
@@ -93,6 +103,16 @@ class BundleState:
                 info.size = len(rego_bytes)
                 info.mtime = int(time.time())
                 tar.addfile(info, io.BytesIO(rego_bytes))
+
+            # Add data.json with competitor domains
+            data_json = json.dumps(
+                {"vargate": {"competitor_domains": sorted(self.competitor_domains)}}
+            )
+            data_bytes = data_json.encode("utf-8")
+            info = tarfile.TarInfo(name="data.json")
+            info.size = len(data_bytes)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(data_bytes))
 
             # Add .manifest
             manifest_bytes = manifest_content.encode("utf-8")
@@ -174,6 +194,7 @@ async def bundle_status():
         "rule_count": bundle.rule_count,
         "last_updated": bundle.last_updated,
         "files": list(bundle.rego_files.keys()),
+        "competitor_domains": sorted(bundle.competitor_domains),
     }
 
 
@@ -189,6 +210,50 @@ async def reload_bundle():
         "files": list(bundle.rego_files.keys()),
         "rule_count": bundle.rule_count,
     }
+
+
+@app.post("/bundles/vargate/update")
+async def update_bundle(request: dict = Body(...)):
+    """Update bundle configuration (competitor domains, etc.)."""
+    operation = request.get("operation")
+
+    if operation == "add_competitor_domain":
+        domain = request.get("domain", "").lower()
+        if not domain:
+            raise HTTPException(400, "domain required")
+        bundle.competitor_domains.add(domain)
+        bundle.update()
+        return {
+            "status": "updated",
+            "operation": operation,
+            "domain": domain,
+            "new_revision": bundle.revision,
+            "competitor_domains": sorted(bundle.competitor_domains),
+        }
+
+    elif operation == "remove_competitor_domain":
+        domain = request.get("domain", "").lower()
+        bundle.competitor_domains.discard(domain)
+        bundle.update()
+        return {
+            "status": "updated",
+            "operation": operation,
+            "domain": domain,
+            "new_revision": bundle.revision,
+            "competitor_domains": sorted(bundle.competitor_domains),
+        }
+
+    elif operation == "restore_defaults":
+        bundle.competitor_domains = set(bundle.default_competitor_domains)
+        bundle.update()
+        return {
+            "status": "restored",
+            "new_revision": bundle.revision,
+            "competitor_domains": sorted(bundle.competitor_domains),
+        }
+
+    else:
+        raise HTTPException(400, f"Unknown operation: {operation}")
 
 
 @app.get("/bundles/vargate/archive/list")

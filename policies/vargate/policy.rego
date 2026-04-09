@@ -54,7 +54,7 @@ violations contains msg if {
     not _is_gtm_tenant
     input.action.params.amount >= 5000
     not input.context.approval.granted
-    msg := "high_value_transaction_unapproved_eur"
+    msg := "high_value_transaction_unapproved"
 }
 
 # Block unmasked PII leaving EU
@@ -73,6 +73,18 @@ violations contains msg if {
     not _is_gtm_tenant
     input.history.anomaly_score > 0.7
     msg := "anomaly_score_threshold_exceeded"
+}
+
+# Block emails to competitor domains
+violations contains msg if {
+    not _is_gtm_tenant
+    input.action.tool == "gmail"
+    input.action.method == "send_email"
+    competitor_domains := data.vargate.competitor_domains
+    recipient := input.action.params.to
+    some domain in competitor_domains
+    endswith(recipient, concat("", ["@", domain]))
+    msg := "competitor_contact_attempt"
 }
 
 # Block out-of-hours high-risk actions (EUR)
@@ -94,9 +106,10 @@ violations contains msg if {
 # ── Severity derivation (else chain to avoid recursion) ──────────────────────
 
 is_critical if { "gdpr_pii_residency_violation" in violations }
+is_critical if { "competitor_contact_attempt" in violations }
 
 is_high if {
-    "high_value_transaction_unapproved_eur" in violations
+    "high_value_transaction_unapproved" in violations
     not is_critical
 }
 
