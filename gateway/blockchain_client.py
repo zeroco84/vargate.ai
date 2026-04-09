@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-from merkle import MerkleTree, GENESIS_ROOT
+from merkle import GENESIS_ROOT, MerkleTree
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -38,7 +38,9 @@ ETH_MAINNET_RPC_URL = os.getenv("ETH_MAINNET_RPC_URL", "")
 ETH_MAINNET_PRIVATE_KEY = os.getenv("ETH_MAINNET_PRIVATE_KEY", "")
 
 CONTRACT_INFO_FILE = os.getenv("MERKLE_CONTRACT_FILE", "/shared/MerkleAuditAnchor.json")
-POLYGON_CONTRACT_FILE = os.getenv("POLYGON_CONTRACT_FILE", "/shared/PolygonMerkleAuditAnchor.json")
+POLYGON_CONTRACT_FILE = os.getenv(
+    "POLYGON_CONTRACT_FILE", "/shared/PolygonMerkleAuditAnchor.json"
+)
 ETH_CONTRACT_FILE = os.getenv("ETH_CONTRACT_FILE", "/shared/EthMerkleAuditAnchor.json")
 
 ANCHOR_INTERVAL_SECONDS = int(os.getenv("ANCHOR_INTERVAL_SECONDS", "3600"))
@@ -56,6 +58,7 @@ CHAIN_EXPLORERS = {
 
 
 # ── Signer Abstraction (AG-3.4) ─────────────────────────────────────────────
+
 
 class SignerBackend:
     """Protocol for transaction signing backends."""
@@ -111,6 +114,7 @@ class HsmSigner(SignerBackend):
 
 # ── Blockchain Client ────────────────────────────────────────────────────────
 
+
 class BlockchainClient:
     """
     Connects to an EVM chain via web3.py. Submits Merkle root anchors to
@@ -119,9 +123,13 @@ class BlockchainClient:
     Supports Polygon, Ethereum mainnet, Sepolia, and Amoy testnets.
     """
 
-    def __init__(self, chain_name: str = "sepolia",
-                 rpc_url: str = "", contract_file: str = "",
-                 signer: Optional[SignerBackend] = None):
+    def __init__(
+        self,
+        chain_name: str = "sepolia",
+        rpc_url: str = "",
+        contract_file: str = "",
+        signer: Optional[SignerBackend] = None,
+    ):
         self.chain_name = chain_name
         self.rpc_url = rpc_url
         self.contract_file = contract_file
@@ -145,16 +153,24 @@ class BlockchainClient:
             if self.rpc_url.startswith("wss://") or self.rpc_url.startswith("ws://"):
                 provider = Web3.WebSocketProvider(self.rpc_url)
             else:
-                provider = Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 30})
+                provider = Web3.HTTPProvider(
+                    self.rpc_url, request_kwargs={"timeout": 30}
+                )
 
             self.w3 = Web3(provider)
 
             if not self.w3.is_connected():
-                print(f"[ANCHOR-{self.chain_name}] Cannot connect to RPC: {self.rpc_url}", flush=True)
+                print(
+                    f"[ANCHOR-{self.chain_name}] Cannot connect to RPC: {self.rpc_url}",
+                    flush=True,
+                )
                 return False
 
             if not os.path.exists(self.contract_file):
-                print(f"[ANCHOR-{self.chain_name}] Contract info not found: {self.contract_file}", flush=True)
+                print(
+                    f"[ANCHOR-{self.chain_name}] Contract info not found: {self.contract_file}",
+                    flush=True,
+                )
                 return False
 
             with open(self.contract_file) as f:
@@ -164,7 +180,10 @@ class BlockchainClient:
             abi = info.get("abi", [])
 
             if not contract_address or not abi:
-                print(f"[ANCHOR-{self.chain_name}] Invalid contract info file.", flush=True)
+                print(
+                    f"[ANCHOR-{self.chain_name}] Invalid contract info file.",
+                    flush=True,
+                )
                 return False
 
             self.contract_address = Web3.to_checksum_address(contract_address)
@@ -177,7 +196,9 @@ class BlockchainClient:
 
             signer_addr = self.signer.get_address()
             if not signer_addr:
-                print(f"[ANCHOR-{self.chain_name}] No signing key configured.", flush=True)
+                print(
+                    f"[ANCHOR-{self.chain_name}] No signing key configured.", flush=True
+                )
                 return False
 
             self.chain_id = self.w3.eth.chain_id
@@ -205,7 +226,9 @@ class BlockchainClient:
             pass
         # Fallback: if we anchored recently, we're probably still connected
         if self._last_successful_anchor:
-            elapsed = (datetime.now(timezone.utc) - self._last_successful_anchor).total_seconds()
+            elapsed = (
+                datetime.now(timezone.utc) - self._last_successful_anchor
+            ).total_seconds()
             return elapsed < ANCHOR_INTERVAL_SECONDS * 2
         return False
 
@@ -239,8 +262,13 @@ class BlockchainClient:
                     "SELECT to_record FROM merkle_anchor_log ORDER BY id DESC LIMIT 1"
                 ).fetchone()
             last_anchored_id = (
-                (last_anchor["to_record"] if isinstance(last_anchor, sqlite3.Row) else last_anchor[0])
-                if last_anchor else 0
+                (
+                    last_anchor["to_record"]
+                    if isinstance(last_anchor, sqlite3.Row)
+                    else last_anchor[0]
+                )
+                if last_anchor
+                else 0
             )
             rows = conn.execute(
                 "SELECT id, record_hash FROM audit_log WHERE id > ? ORDER BY id ASC",
@@ -254,7 +282,9 @@ class BlockchainClient:
         if not rows:
             raise ValueError("No new audit records to anchor")
 
-        leaves = [r["record_hash"] if isinstance(r, sqlite3.Row) else r[1] for r in rows]
+        leaves = [
+            r["record_hash"] if isinstance(r, sqlite3.Row) else r[1] for r in rows
+        ]
         record_ids = [r["id"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
         from_record = record_ids[0]
         to_record = record_ids[-1]
@@ -268,14 +298,26 @@ class BlockchainClient:
             "SELECT merkle_root FROM merkle_anchor_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
         prev_merkle_root_hex = (
-            (prev_row["merkle_root"] if isinstance(prev_row, sqlite3.Row) else prev_row[0])
-            if prev_row else GENESIS_ROOT
+            (
+                prev_row["merkle_root"]
+                if isinstance(prev_row, sqlite3.Row)
+                else prev_row[0]
+            )
+            if prev_row
+            else GENESIS_ROOT
         )
 
         # Skip if root hasn't changed since last anchor
         if prev_row and prev_merkle_root_hex == merkle_root_hex:
-            print(f"[ANCHOR-{self.chain_name}] Root unchanged, skipping anchor.", flush=True)
-            return {"skipped": True, "reason": "root_unchanged", "merkle_root": merkle_root_hex}
+            print(
+                f"[ANCHOR-{self.chain_name}] Root unchanged, skipping anchor.",
+                flush=True,
+            )
+            return {
+                "skipped": True,
+                "reason": "root_unchanged",
+                "merkle_root": merkle_root_hex,
+            }
 
         root_bytes = bytes.fromhex(merkle_root_hex)
         if len(root_bytes) < 32:
@@ -297,15 +339,22 @@ class BlockchainClient:
         nonce = self.w3.eth.get_transaction_count(self.signer.get_address())
 
         fn = self.contract.functions.submitAnchor(
-            root_bytes, prev_root_bytes32,
-            record_count, from_record, to_record, SYSTEM_ID,
+            root_bytes,
+            prev_root_bytes32,
+            record_count,
+            from_record,
+            to_record,
+            SYSTEM_ID,
         )
 
         try:
             gas_estimate = fn.estimate_gas({"from": self.signer.get_address()})
             gas_limit = int(gas_estimate * 1.3)
         except Exception as e:
-            print(f"[ANCHOR-{self.chain_name}] Gas estimation failed, using fallback: {e}", flush=True)
+            print(
+                f"[ANCHOR-{self.chain_name}] Gas estimation failed, using fallback: {e}",
+                flush=True,
+            )
             gas_limit = 200_000
 
         try:
@@ -314,32 +363,38 @@ class BlockchainClient:
             if base_fee:
                 max_priority = self.w3.eth.max_priority_fee
                 max_fee = base_fee * 2 + max_priority
-                tx = fn.build_transaction({
-                    "from": self.signer.get_address(),
-                    "nonce": nonce,
-                    "gas": gas_limit,
-                    "maxFeePerGas": max_fee,
-                    "maxPriorityFeePerGas": max_priority,
-                    "chainId": self.chain_id,
-                })
+                tx = fn.build_transaction(
+                    {
+                        "from": self.signer.get_address(),
+                        "nonce": nonce,
+                        "gas": gas_limit,
+                        "maxFeePerGas": max_fee,
+                        "maxPriorityFeePerGas": max_priority,
+                        "chainId": self.chain_id,
+                    }
+                )
             else:
                 gas_price = self.w3.eth.gas_price
-                tx = fn.build_transaction({
+                tx = fn.build_transaction(
+                    {
+                        "from": self.signer.get_address(),
+                        "nonce": nonce,
+                        "gas": gas_limit,
+                        "gasPrice": gas_price,
+                        "chainId": self.chain_id,
+                    }
+                )
+        except Exception:
+            gas_price = self.w3.eth.gas_price
+            tx = fn.build_transaction(
+                {
                     "from": self.signer.get_address(),
                     "nonce": nonce,
                     "gas": gas_limit,
-                    "gasPrice": gas_price,
+                    "gasPrice": int(gas_price * 1.2),
                     "chainId": self.chain_id,
-                })
-        except Exception:
-            gas_price = self.w3.eth.gas_price
-            tx = fn.build_transaction({
-                "from": self.signer.get_address(),
-                "nonce": nonce,
-                "gas": gas_limit,
-                "gasPrice": int(gas_price * 1.2),
-                "chainId": self.chain_id,
-            })
+                }
+            )
 
         signed = self.signer.sign_transaction(self.w3, tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -364,6 +419,7 @@ class BlockchainClient:
         self._last_successful_anchor = datetime.now(timezone.utc)
         try:
             import metrics as prom
+
             prom.ANCHOR_LAST_SUCCESS.set(self._last_successful_anchor.timestamp())
         except Exception:
             pass
@@ -374,9 +430,17 @@ class BlockchainClient:
                (anchor_index, chain_tip_hash, merkle_root, record_count,
                 from_record, to_record, tx_hash, block_number, anchored_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (anchor_index, merkle_root_hex, merkle_root_hex,
-             record_count, from_record, to_record,
-             tx_hash_hex, receipt.blockNumber, anchored_at),
+            (
+                anchor_index,
+                merkle_root_hex,
+                merkle_root_hex,
+                record_count,
+                from_record,
+                to_record,
+                tx_hash_hex,
+                receipt.blockNumber,
+                anchored_at,
+            ),
         )
 
         # Write to merkle_anchor_log with chain info
@@ -386,10 +450,19 @@ class BlockchainClient:
                 tx_hash, block_number, anchored_at, prev_merkle_root, root_chain_hash,
                 anchor_chain)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (anchor_index, merkle_root_hex, record_count,
-             from_record, to_record, tx_hash_hex, receipt.blockNumber,
-             anchored_at, prev_merkle_root_hex, root_chain_hash,
-             self.chain_name),
+            (
+                anchor_index,
+                merkle_root_hex,
+                record_count,
+                from_record,
+                to_record,
+                tx_hash_hex,
+                receipt.blockNumber,
+                anchored_at,
+                prev_merkle_root_hex,
+                root_chain_hash,
+                self.chain_name,
+            ),
         )
         conn.commit()
 
@@ -416,18 +489,22 @@ class BlockchainClient:
     async def anchor_now(self, conn_or_fn) -> dict:
         """Async wrapper. Accepts a connection (legacy) or get_db callable."""
         if callable(conn_or_fn):
+
             def _run():
                 conn = conn_or_fn()
                 try:
                     return self._anchor_now_sync(conn)
                 finally:
                     conn.close()
+
             return await asyncio.to_thread(_run)
         return await asyncio.to_thread(self._anchor_now_sync, conn_or_fn)
 
     # ── Anchor hourly trees ─────────────────────────────────────────────
 
-    def _anchor_trees_sync(self, conn: sqlite3.Connection, tenant_id: str) -> list[dict]:
+    def _anchor_trees_sync(
+        self, conn: sqlite3.Connection, tenant_id: str
+    ) -> list[dict]:
         """Anchor all un-anchored hourly trees for a tenant."""
         if not self.connected:
             return []
@@ -458,7 +535,8 @@ class BlockchainClient:
                 nonce = self.w3.eth.get_transaction_count(self.signer.get_address())
 
                 fn = self.contract.functions.submitAnchor(
-                    root_bytes, prev_root_bytes,
+                    root_bytes,
+                    prev_root_bytes,
                     tree_row["record_count"],
                     tree_row["from_record_id"],
                     tree_row["to_record_id"],
@@ -477,39 +555,48 @@ class BlockchainClient:
                     if base_fee:
                         max_priority = self.w3.eth.max_priority_fee
                         max_fee = base_fee * 2 + max_priority
-                        tx = fn.build_transaction({
-                            "from": self.signer.get_address(),
-                            "nonce": nonce,
-                            "gas": gas_limit,
-                            "maxFeePerGas": max_fee,
-                            "maxPriorityFeePerGas": max_priority,
-                            "chainId": self.chain_id,
-                        })
+                        tx = fn.build_transaction(
+                            {
+                                "from": self.signer.get_address(),
+                                "nonce": nonce,
+                                "gas": gas_limit,
+                                "maxFeePerGas": max_fee,
+                                "maxPriorityFeePerGas": max_priority,
+                                "chainId": self.chain_id,
+                            }
+                        )
                     else:
                         gas_price = self.w3.eth.gas_price
-                        tx = fn.build_transaction({
+                        tx = fn.build_transaction(
+                            {
+                                "from": self.signer.get_address(),
+                                "nonce": nonce,
+                                "gas": gas_limit,
+                                "gasPrice": gas_price,
+                                "chainId": self.chain_id,
+                            }
+                        )
+                except Exception:
+                    gas_price = self.w3.eth.gas_price
+                    tx = fn.build_transaction(
+                        {
                             "from": self.signer.get_address(),
                             "nonce": nonce,
                             "gas": gas_limit,
-                            "gasPrice": gas_price,
+                            "gasPrice": int(gas_price * 1.2),
                             "chainId": self.chain_id,
-                        })
-                except Exception:
-                    gas_price = self.w3.eth.gas_price
-                    tx = fn.build_transaction({
-                        "from": self.signer.get_address(),
-                        "nonce": nonce,
-                        "gas": gas_limit,
-                        "gasPrice": int(gas_price * 1.2),
-                        "chainId": self.chain_id,
-                    })
+                        }
+                    )
 
                 signed = self.signer.sign_transaction(self.w3, tx)
                 tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
                 receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
                 if receipt.status != 1:
-                    print(f"[ANCHOR-{self.chain_name}] Tree {tree_row['tree_index']} tx reverted", flush=True)
+                    print(
+                        f"[ANCHOR-{self.chain_name}] Tree {tree_row['tree_index']} tx reverted",
+                        flush=True,
+                    )
                     continue
 
                 tx_hash_hex = receipt.transactionHash.hex()
@@ -519,7 +606,10 @@ class BlockchainClient:
                 self._last_successful_anchor = datetime.now(timezone.utc)
                 try:
                     import metrics as prom
-                    prom.ANCHOR_LAST_SUCCESS.set(self._last_successful_anchor.timestamp())
+
+                    prom.ANCHOR_LAST_SUCCESS.set(
+                        self._last_successful_anchor.timestamp()
+                    )
                 except Exception:
                     pass
 
@@ -538,14 +628,16 @@ class BlockchainClient:
                     flush=True,
                 )
 
-                results.append({
-                    "tree_index": tree_row["tree_index"],
-                    "merkle_root": merkle_root_hex,
-                    "tx_hash": tx_hash_hex,
-                    "block_number": receipt.blockNumber,
-                    "chain": self.chain_name,
-                    "explorer_url": self.explorer_tx_url(tx_hash_hex),
-                })
+                results.append(
+                    {
+                        "tree_index": tree_row["tree_index"],
+                        "merkle_root": merkle_root_hex,
+                        "tx_hash": tx_hash_hex,
+                        "block_number": receipt.blockNumber,
+                        "chain": self.chain_name,
+                        "explorer_url": self.explorer_tx_url(tx_hash_hex),
+                    }
+                )
             except Exception as e:
                 print(
                     f"[ANCHOR-{self.chain_name}] Failed to anchor tree[{tree_row['tree_index']}]: {e}",
@@ -557,12 +649,14 @@ class BlockchainClient:
     async def anchor_trees(self, conn_or_fn, tenant_id: str) -> list[dict]:
         """Async wrapper. Accepts a connection (legacy) or get_db callable."""
         if callable(conn_or_fn):
+
             def _run():
                 conn = conn_or_fn()
                 try:
                     return self._anchor_trees_sync(conn, tenant_id)
                 finally:
                     conn.close()
+
             return await asyncio.to_thread(_run)
         return await asyncio.to_thread(self._anchor_trees_sync, conn_or_fn, tenant_id)
 
@@ -587,7 +681,10 @@ class BlockchainClient:
                     "SELECT record_hash FROM audit_log WHERE id >= ? AND id <= ? ORDER BY id ASC",
                     (on_chain_from, on_chain_to),
                 ).fetchall()
-                leaves = [r["record_hash"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
+                leaves = [
+                    r["record_hash"] if isinstance(r, sqlite3.Row) else r[0]
+                    for r in rows
+                ]
                 tree = MerkleTree(leaves)
             else:
                 tree = MerkleTree.from_db(conn)
@@ -625,12 +722,14 @@ class BlockchainClient:
     async def verify_latest(self, conn_or_fn) -> dict:
         """Async wrapper. Accepts a connection (legacy) or get_db callable."""
         if callable(conn_or_fn):
+
             def _run():
                 conn = conn_or_fn()
                 try:
                     return self._verify_latest_sync(conn)
                 finally:
                     conn.close()
+
             return await asyncio.to_thread(_run)
         return await asyncio.to_thread(self._verify_latest_sync, conn_or_fn)
 
@@ -673,6 +772,7 @@ class BlockchainClient:
 
 
 # ── Multi-Chain Manager ──────────────────────────────────────────────────────
+
 
 class ChainManager:
     """
@@ -730,6 +830,7 @@ class ChainManager:
 
 # ── Background anchor loop ──────────────────────────────────────────────────
 
+
 async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=None):
     """Background task anchoring every ANCHOR_INTERVAL_SECONDS."""
     await asyncio.sleep(15)
@@ -752,9 +853,14 @@ async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=No
                         finally:
                             cb_conn.close()
                 else:
-                    print(f"[ANCHOR-{client.chain_name}] No records to anchor yet.", flush=True)
+                    print(
+                        f"[ANCHOR-{client.chain_name}] No records to anchor yet.",
+                        flush=True,
+                    )
         except Exception as e:
-            print(f"[ANCHOR-{client.chain_name}] Background loop error: {e}", flush=True)
+            print(
+                f"[ANCHOR-{client.chain_name}] Background loop error: {e}", flush=True
+            )
 
         await asyncio.sleep(ANCHOR_INTERVAL_SECONDS)
 
@@ -771,7 +877,9 @@ async def run_tree_anchor_loop(chain_manager: "ChainManager", get_db_fn):
             # Read tenant list in the event loop thread
             conn = get_db_fn()
             try:
-                tenants = [dict(t) for t in conn.execute("SELECT * FROM tenants").fetchall()]
+                tenants = [
+                    dict(t) for t in conn.execute("SELECT * FROM tenants").fetchall()
+                ]
             finally:
                 conn.close()
 

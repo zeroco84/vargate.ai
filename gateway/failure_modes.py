@@ -35,14 +35,18 @@ def get_failure_mode(tenant: dict, dependency: str) -> FailureMode:
             config = json.loads(config) if config else {}
         except (json.JSONDecodeError, TypeError):
             config = {}
-    mode_str = config.get(dependency, DEFAULTS.get(dependency, FailureMode.FAIL_CLOSED).value)
+    mode_str = config.get(
+        dependency, DEFAULTS.get(dependency, FailureMode.FAIL_CLOSED).value
+    )
     try:
         return FailureMode(mode_str)
     except ValueError:
         return DEFAULTS.get(dependency, FailureMode.FAIL_CLOSED)
 
 
-def handle_failure(tenant: dict, dependency: str, error: Exception, action_data: dict = None) -> dict:
+def handle_failure(
+    tenant: dict, dependency: str, error: Exception, action_data: dict = None
+) -> dict:
     """
     Handle a dependency failure according to the tenant's configured mode.
     Returns a decision dict that the caller can use.

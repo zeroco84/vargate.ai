@@ -5,6 +5,7 @@ Used for auth/signup/admin endpoints to prevent brute-force attacks.
 
 import secrets
 import time
+
 from fastapi import HTTPException, Request
 
 
@@ -56,6 +57,10 @@ async def enforce_ip_rate_limit(
 ):
     """Raise HTTP 429 if the client IP exceeds the rate limit."""
     client_ip = get_client_ip(request)
-    allowed = await check_ip_rate_limit(redis_pool, prefix, client_ip, max_requests, window_seconds)
+    allowed = await check_ip_rate_limit(
+        redis_pool, prefix, client_ip, max_requests, window_seconds
+    )
     if not allowed:
-        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+        raise HTTPException(
+            status_code=429, detail="Too many requests. Try again later."
+        )

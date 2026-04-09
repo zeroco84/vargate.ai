@@ -8,10 +8,13 @@ Credential values are used for Authorization headers but never logged or stored.
 
 import os
 import time
+
 import httpx
 
 MOCK_TOOLS_URL = None  # Set during gateway startup
-RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>")
+RESEND_FROM_EMAIL = os.environ.get(
+    "RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>"
+)
 
 
 def init(mock_tools_url: str):
@@ -67,7 +70,10 @@ async def execute_tool_call(
 
 # ── Real API execution ──────────────────────────────────────────────────────
 
-async def _execute_real_api(tool: str, method: str, params: dict, credential: str) -> dict:
+
+async def _execute_real_api(
+    tool: str, method: str, params: dict, credential: str
+) -> dict:
     """Execute a real API call (Resend, etc.)."""
     start = time.monotonic()
 
@@ -149,6 +155,7 @@ async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
 
 # ── Mock tool execution ────────────────────────────────────────────────────
 
+
 async def _execute_mock(tool: str, method: str, params: dict, credential: str) -> dict:
     """Execute via the mock tool server."""
     if MOCK_TOOLS_URL is None:
@@ -197,7 +204,13 @@ async def _execute_mock(tool: str, method: str, params: dict, credential: str) -
                     "result": {
                         "error": "credential_rejected",
                         "status_code": 401,
-                        "detail": resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text,
+                        "detail": (
+                            resp.json()
+                            if resp.headers.get("content-type", "").startswith(
+                                "application/json"
+                            )
+                            else resp.text
+                        ),
                         "simulated": True,
                     },
                     "execution_ms": elapsed_ms,

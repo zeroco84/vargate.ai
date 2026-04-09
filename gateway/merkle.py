@@ -23,7 +23,6 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-
 # Canonical root for an empty tree — deterministic sentinel value
 GENESIS_ROOT = hashlib.sha256(b"VARGATE_GENESIS").hexdigest()
 
@@ -95,7 +94,9 @@ class MerkleTree:
             node being proved.
         """
         if index < 0 or index >= len(self._leaves):
-            raise IndexError(f"Leaf index {index} out of range (0..{len(self._leaves) - 1})")
+            raise IndexError(
+                f"Leaf index {index} out of range (0..{len(self._leaves) - 1})"
+            )
 
         proof = []
         idx = index
@@ -109,10 +110,12 @@ class MerkleTree:
                 sibling_pos = "left"
 
             if sibling_idx < len(level):
-                proof.append({
-                    "sibling": level[sibling_idx],
-                    "position": sibling_pos,
-                })
+                proof.append(
+                    {
+                        "sibling": level[sibling_idx],
+                        "position": sibling_pos,
+                    }
+                )
 
             idx = idx // 2
 
@@ -138,7 +141,9 @@ class MerkleTree:
             "WHERE erasure_status = 'active' OR erasure_status IS NULL "
             "ORDER BY id ASC"
         ).fetchall()
-        leaves = [row[0] if isinstance(row, tuple) else row["record_hash"] for row in rows]
+        leaves = [
+            row[0] if isinstance(row, tuple) else row["record_hash"] for row in rows
+        ]
         return MerkleTree(leaves)
 
 
@@ -245,6 +250,7 @@ def build_hourly_trees(conn: sqlite3.Connection, tenant_id: str) -> list[dict]:
             # Parse and add 1 hour
             dt = datetime.fromisoformat(hour_key + "+00:00")
             from datetime import timedelta
+
             dt_end = dt + timedelta(hours=1)
             period_end = dt_end.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -257,9 +263,17 @@ def build_hourly_trees(conn: sqlite3.Connection, tenant_id: str) -> list[dict]:
                 created_at, prev_tree_root)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                tenant_id, next_index, tree.root, tree.leaf_count, tree.height,
-                from_id, to_id, hour_key, period_end,
-                created, prev_root,
+                tenant_id,
+                next_index,
+                tree.root,
+                tree.leaf_count,
+                tree.height,
+                from_id,
+                to_id,
+                hour_key,
+                period_end,
+                created,
+                prev_root,
             ),
         )
 
@@ -285,7 +299,9 @@ def build_hourly_trees(conn: sqlite3.Connection, tenant_id: str) -> list[dict]:
     return new_trees
 
 
-def get_inclusion_proof(conn: sqlite3.Connection, record_hash: str, tenant_id: str) -> Optional[dict]:
+def get_inclusion_proof(
+    conn: sqlite3.Connection, record_hash: str, tenant_id: str
+) -> Optional[dict]:
     """
     Generate an inclusion proof for a record in its hourly tree.
 
@@ -355,8 +371,9 @@ def get_inclusion_proof(conn: sqlite3.Connection, record_hash: str, tenant_id: s
     }
 
 
-def get_consistency_proof(conn: sqlite3.Connection, tenant_id: str,
-                          tree_n: int, tree_m: int) -> Optional[dict]:
+def get_consistency_proof(
+    conn: sqlite3.Connection, tenant_id: str, tree_n: int, tree_m: int
+) -> Optional[dict]:
     """
     Consistency proof between two hourly trees.
 
@@ -402,7 +419,7 @@ def get_consistency_proof(conn: sqlite3.Connection, tenant_id: str,
             "tree_m": tree_m,
             "consistent": False,
             "reason": f"Tree {tree_n} records have been modified. "
-                      f"Recomputed root={n_tree.root[:16]}... != stored={tree_n_row['merkle_root'][:16]}...",
+            f"Recomputed root={n_tree.root[:16]}... != stored={tree_n_row['merkle_root'][:16]}...",
         }
 
     # 2. Verify the chain of prev_tree_root links between N and M
@@ -502,11 +519,13 @@ def verify_merkle_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
         # Check prev_tree_root chain
         stored_prev = t["prev_tree_root"] or GENESIS_ROOT
         if stored_prev != prev_root:
-            issues.append({
-                "tree_index": t["tree_index"],
-                "type": "broken_chain",
-                "detail": f"prev_tree_root={stored_prev[:16]}... expected={prev_root[:16]}...",
-            })
+            issues.append(
+                {
+                    "tree_index": t["tree_index"],
+                    "type": "broken_chain",
+                    "detail": f"prev_tree_root={stored_prev[:16]}... expected={prev_root[:16]}...",
+                }
+            )
 
         # Check record ID contiguity
         if prev_to_id > 0 and t["from_record_id"] != prev_to_id + 1:
@@ -526,11 +545,13 @@ def verify_merkle_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
         rebuilt = MerkleTree(leaves)
 
         if rebuilt.root != t["merkle_root"]:
-            issues.append({
-                "tree_index": t["tree_index"],
-                "type": "root_mismatch",
-                "detail": f"rebuilt={rebuilt.root[:16]}... stored={t['merkle_root'][:16]}...",
-            })
+            issues.append(
+                {
+                    "tree_index": t["tree_index"],
+                    "type": "root_mismatch",
+                    "detail": f"rebuilt={rebuilt.root[:16]}... stored={t['merkle_root'][:16]}...",
+                }
+            )
 
         total_records += t["record_count"]
         prev_root = t["merkle_root"]

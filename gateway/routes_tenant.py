@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ router = APIRouter()
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
+
 
 class CreateTenantRequest(BaseModel):
     tenant_id: str
@@ -43,6 +44,7 @@ class ApprovalRequest(BaseModel):
 
 # ── Tenant management endpoints (Sprint 2) ──────────────────────────────────
 
+
 @router.post("/tenants", tags=["Tenants"])
 async def create_tenant(
     req: CreateTenantRequest,
@@ -52,6 +54,7 @@ async def create_tenant(
 ):
     """Create a new tenant with API key. Requires existing tenant auth."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     api_key = f"vg-{secrets.token_hex(24)}"
     now = datetime.now(timezone.utc).isoformat()
@@ -60,7 +63,14 @@ async def create_tenant(
         conn.execute(
             """INSERT INTO tenants (tenant_id, api_key, name, created_at, rate_limit_rps, rate_limit_burst)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (req.tenant_id, api_key, req.name, now, req.rate_limit_rps, req.rate_limit_burst),
+            (
+                req.tenant_id,
+                api_key,
+                req.name,
+                now,
+                req.rate_limit_rps,
+                req.rate_limit_burst,
+            ),
         )
         conn.commit()
     except sqlite3.IntegrityError as e:
@@ -88,6 +98,7 @@ async def list_tenants(
 ):
     """List all tenants. Admin endpoint."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -118,10 +129,13 @@ async def get_tenant_info(
 ):
     """Get tenant details by ID."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
     try:
-        row = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)
+        ).fetchone()
     finally:
         conn.close()
     if not row:
@@ -138,6 +152,7 @@ async def get_tenant_info(
 
 # ── Dashboard data endpoints (Sprint 3) ─────────────────────────────────────
 
+
 @router.get("/dashboard/me", tags=["Tenants"])
 async def dashboard_me(
     authorization: Optional[str] = Header(default=None),
@@ -146,7 +161,10 @@ async def dashboard_me(
 ):
     """Get dashboard data for the authenticated tenant including audit stats and chain health."""
     import main
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         user = conn.execute(
@@ -173,9 +191,19 @@ async def dashboard_me(
         "email": user["email"] if user else None,
         "github_login": user["github_login"] if user else None,
         "api_key_prefix": tenant_row["api_key"][:12] + "..." if tenant_row else None,
-        "slug": tenant_row["slug"] if tenant_row and "slug" in tenant_row.keys() else None,
-        "public_dashboard": bool(tenant_row["public_dashboard"]) if tenant_row and "public_dashboard" in tenant_row.keys() else False,
-        "anchor_chain": tenant_row["anchor_chain"] if tenant_row and "anchor_chain" in tenant_row.keys() else "polygon",
+        "slug": (
+            tenant_row["slug"] if tenant_row and "slug" in tenant_row.keys() else None
+        ),
+        "public_dashboard": (
+            bool(tenant_row["public_dashboard"])
+            if tenant_row and "public_dashboard" in tenant_row.keys()
+            else False
+        ),
+        "anchor_chain": (
+            tenant_row["anchor_chain"]
+            if tenant_row and "anchor_chain" in tenant_row.keys()
+            else "polygon"
+        ),
         "created_at": tenant["created_at"],
         "activated": activated,
         "stats": {
@@ -195,7 +223,10 @@ async def update_tenant_settings(
 ):
     """Update tenant settings (name, slug, public dashboard, rate limits)."""
     import main
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         if req.public_dashboard is not None:
@@ -229,13 +260,19 @@ async def update_tenant_settings(
             )
         if req.webhook_url is not None:
             if req.webhook_url and not req.webhook_url.startswith("https://"):
-                raise HTTPException(status_code=400, detail="Webhook URL must use HTTPS")
+                raise HTTPException(
+                    status_code=400, detail="Webhook URL must use HTTPS"
+                )
             # Generate a webhook secret on first URL set
             webhook_secret = conn.execute(
                 "SELECT webhook_secret FROM tenants WHERE tenant_id = ?",
                 (tenant["tenant_id"],),
             ).fetchone()
-            secret_val = webhook_secret["webhook_secret"] if webhook_secret and webhook_secret["webhook_secret"] else secrets.token_hex(32)
+            secret_val = (
+                webhook_secret["webhook_secret"]
+                if webhook_secret and webhook_secret["webhook_secret"]
+                else secrets.token_hex(32)
+            )
             conn.execute(
                 "UPDATE tenants SET webhook_url = ?, webhook_secret = ? WHERE tenant_id = ?",
                 (req.webhook_url, secret_val, tenant["tenant_id"]),
@@ -250,9 +287,13 @@ async def update_tenant_settings(
             valid_deps = {"opa", "redis", "blockchain"}
             for dep, mode in req.failure_config.items():
                 if dep not in valid_deps:
-                    raise HTTPException(400, f"Invalid dependency: {dep}. Valid: {valid_deps}")
+                    raise HTTPException(
+                        400, f"Invalid dependency: {dep}. Valid: {valid_deps}"
+                    )
                 if mode not in valid_modes:
-                    raise HTTPException(400, f"Invalid mode: {mode}. Valid: {valid_modes}")
+                    raise HTTPException(
+                        400, f"Invalid mode: {mode}. Valid: {valid_modes}"
+                    )
             conn.execute(
                 "UPDATE tenants SET failure_config = ? WHERE tenant_id = ?",
                 (json.dumps(req.failure_config), tenant["tenant_id"]),
@@ -290,12 +331,16 @@ async def test_webhook(
     import main
     import webhooks as webhooks_module
 
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     webhook_url = tenant.get("webhook_url")
     webhook_secret = tenant.get("webhook_secret")
 
     if not webhook_url or not webhook_secret:
-        raise HTTPException(400, "No webhook URL configured. Set one via PATCH /dashboard/settings.")
+        raise HTTPException(
+            400, "No webhook URL configured. Set one via PATCH /dashboard/settings."
+        )
 
     test_payload = {
         "action_id": "test-webhook-ping",
@@ -319,7 +364,11 @@ async def test_webhook(
     else:
         return JSONResponse(
             status_code=502,
-            content={"status": "failed", "webhook_url": webhook_url, "message": "Webhook delivery failed"},
+            content={
+                "status": "failed",
+                "webhook_url": webhook_url,
+                "message": "Webhook delivery failed",
+            },
         )
 
 
@@ -327,6 +376,7 @@ async def test_webhook(
 async def public_dashboard(slug: str):
     """Get public dashboard data for a tenant (if enabled). No auth required."""
     import main
+
     conn = main.get_db()
     try:
         tenant_row = conn.execute(
@@ -394,6 +444,7 @@ async def public_dashboard(slug: str):
 
 # ── Approval Queue API ─────────────────────────────────────────────────────
 
+
 @router.get("/approvals", tags=["Approval Queue"])
 async def list_pending_approvals(
     authorization: Optional[str] = Header(default=None),
@@ -401,9 +452,12 @@ async def list_pending_approvals(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """List actions awaiting human approval for the authenticated tenant."""
-    import main
     import approval as approval_module
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         pending = approval_module.get_pending_actions(conn, tenant["tenant_id"])
@@ -420,9 +474,12 @@ async def approval_history(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """List completed approval decisions (approved/rejected) for the tenant."""
-    import main
     import approval as approval_module
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         history = approval_module.get_approval_history(conn, tenant["tenant_id"])
@@ -440,10 +497,13 @@ async def approve_action(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """Approve a pending action. Executes via brokered execution if credentials are available."""
-    import main
     import approval as approval_module
     import execution_engine
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         user = conn.execute(
@@ -457,8 +517,11 @@ async def approve_action(
         ).fetchone()
 
         result = approval_module.approve_action(
-            conn, action_id, tenant["tenant_id"],
-            reviewer_email=reviewer, review_note=req.note or "",
+            conn,
+            action_id,
+            tenant["tenant_id"],
+            reviewer_email=reviewer,
+            review_note=req.note or "",
         )
     finally:
         conn.close()
@@ -474,19 +537,28 @@ async def approve_action(
     if action_row:
         tool = action_row["tool"]
         method = action_row["method"]
-        params = json.loads(action_row["params"]) if isinstance(action_row["params"], str) else action_row["params"]
+        params = (
+            json.loads(action_row["params"])
+            if isinstance(action_row["params"], str)
+            else action_row["params"]
+        )
 
         try:
             exec_resp = await execution_engine.execute_tool_call(tool, method, params)
             if exec_resp:
                 execution_result = exec_resp
-                print(f"[APPROVED-EXEC] Executed action_id={action_id} tool={tool}.{method}", flush=True)
+                print(
+                    f"[APPROVED-EXEC] Executed action_id={action_id} tool={tool}.{method}",
+                    flush=True,
+                )
         except Exception as e:
             execution_error = str(e)
             print(f"[APPROVED-EXEC] ERROR action_id={action_id}: {e}", flush=True)
 
     if execution_error:
-        print(f"[APPROVED-EXEC] WARN action_id={action_id}: {execution_error}", flush=True)
+        print(
+            f"[APPROVED-EXEC] WARN action_id={action_id}: {execution_error}", flush=True
+        )
 
     # Log the approval in the audit trail
     conn = main.get_db()
@@ -533,9 +605,12 @@ async def reject_action(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """Reject a pending action with an optional reason."""
-    import main
     import approval as approval_module
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         user = conn.execute(
@@ -544,8 +619,11 @@ async def reject_action(
         reviewer = user["email"] if user else "unknown"
 
         result = approval_module.reject_action(
-            conn, action_id, tenant["tenant_id"],
-            reviewer_email=reviewer, review_note=req.note or "",
+            conn,
+            action_id,
+            tenant["tenant_id"],
+            reviewer_email=reviewer,
+            review_note=req.note or "",
         )
     finally:
         conn.close()
@@ -580,11 +658,13 @@ async def reject_action(
 
 # ── Transparency endpoints (public, no auth) ───────────────────────────────
 
+
 @router.get("/transparency", tags=["Tenants"])
 async def transparency_global():
     """Public transparency stats across all tenants."""
     import main
     import transparency as transparency_module
+
     conn = main.get_db()
     try:
         data = transparency_module.get_transparency_data(conn, tenant_id=None)
@@ -598,6 +678,7 @@ async def transparency_tenant(tenant_id: str):
     """Public transparency stats for a specific tenant."""
     import main
     import transparency as transparency_module
+
     conn = main.get_db()
     try:
         tenant_row = conn.execute(
@@ -609,13 +690,16 @@ async def transparency_tenant(tenant_id: str):
         if not tenant_row["public_dashboard"]:
             raise HTTPException(403, "Transparency data not public for this tenant")
 
-        data = transparency_module.get_transparency_data(conn, tenant_id=tenant_row["tenant_id"])
+        data = transparency_module.get_transparency_data(
+            conn, tenant_id=tenant_row["tenant_id"]
+        )
     finally:
         conn.close()
     return data
 
 
 # ── GTM constraints endpoint ────────────────────────────────────────────────
+
 
 @router.get("/gtm/stats", tags=["Tenants"])
 async def gtm_stats(
@@ -624,9 +708,12 @@ async def gtm_stats(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """GTM agent constraint statistics (blocked domains, daily cap, cooldown events)."""
-    import main
     import gtm_constraints
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         stats = gtm_constraints.get_gtm_stats(conn, tenant["tenant_id"])

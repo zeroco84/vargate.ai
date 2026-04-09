@@ -10,10 +10,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel
 import uvicorn
-
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 
 app = FastAPI(title="Vargate Mock Tool Server", version="1.0.0")
 
@@ -39,15 +38,19 @@ def _validate_auth(tool_id: str, authorization: str | None):
     # If we have a registered token for this tool, validate it matches
     expected = _valid_tokens.get(tool_id)
     if expected and token != expected:
-        raise HTTPException(401, {
-            "error": "invalid_credential",
-            "tool": tool_id,
-            "message": "Token does not match registered credential",
-        })
+        raise HTTPException(
+            401,
+            {
+                "error": "invalid_credential",
+                "tool": tool_id,
+                "message": "Token does not match registered credential",
+            },
+        )
     return token
 
 
 # ── Admin endpoint to register expected tokens ──────────────────────────────
+
 
 class RegisterTokenRequest(BaseModel):
     tool_id: str
@@ -62,6 +65,7 @@ async def register_token(req: RegisterTokenRequest):
 
 
 # ── Gmail endpoints ─────────────────────────────────────────────────────────
+
 
 class GmailSendRequest(BaseModel):
     to: str
@@ -86,6 +90,7 @@ async def gmail_send(req: GmailSendRequest, authorization: str | None = Header(N
 
 # ── Salesforce endpoints ────────────────────────────────────────────────────
 
+
 class SalesforceReadRequest(BaseModel):
     object_type: str = "Opportunity"
     record_id: str = ""
@@ -98,7 +103,9 @@ class SalesforceUpdateRequest(BaseModel):
 
 
 @app.post("/salesforce/read")
-async def salesforce_read(req: SalesforceReadRequest, authorization: str | None = Header(None)):
+async def salesforce_read(
+    req: SalesforceReadRequest, authorization: str | None = Header(None)
+):
     _validate_auth("salesforce", authorization)
     time.sleep(0.015)
 
@@ -131,7 +138,9 @@ async def salesforce_read(req: SalesforceReadRequest, authorization: str | None 
 
 
 @app.post("/salesforce/update")
-async def salesforce_update(req: SalesforceUpdateRequest, authorization: str | None = Header(None)):
+async def salesforce_update(
+    req: SalesforceUpdateRequest, authorization: str | None = Header(None)
+):
     _validate_auth("salesforce", authorization)
     time.sleep(0.02)
 
@@ -145,6 +154,7 @@ async def salesforce_update(req: SalesforceUpdateRequest, authorization: str | N
 
 # ── Stripe endpoints ────────────────────────────────────────────────────────
 
+
 class StripeChargeRequest(BaseModel):
     amount: float
     currency: str = "gbp"
@@ -153,7 +163,9 @@ class StripeChargeRequest(BaseModel):
 
 
 @app.post("/stripe/charge")
-async def stripe_charge(req: StripeChargeRequest, authorization: str | None = Header(None)):
+async def stripe_charge(
+    req: StripeChargeRequest, authorization: str | None = Header(None)
+):
     _validate_auth("stripe", authorization)
     time.sleep(0.025)
 
@@ -170,6 +182,7 @@ async def stripe_charge(req: StripeChargeRequest, authorization: str | None = He
 
 
 # ── Slack endpoints ─────────────────────────────────────────────────────────
+
 
 class SlackPostRequest(BaseModel):
     channel: str = "#general"
@@ -192,9 +205,14 @@ async def slack_post(req: SlackPostRequest, authorization: str | None = Header(N
 
 # ── Health ───────────────────────────────────────────────────────────────────
 
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "vargate-mock-tools", "tools": ["gmail", "salesforce", "stripe", "slack"]}
+    return {
+        "status": "ok",
+        "service": "vargate-mock-tools",
+        "tools": ["gmail", "salesforce", "stripe", "slack"],
+    }
 
 
 if __name__ == "__main__":

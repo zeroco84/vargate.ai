@@ -8,7 +8,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ router = APIRouter(tags=["Auth"])
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
 
+
 class EmailSignupRequest(BaseModel):
     email: str
     name: str
@@ -24,20 +25,27 @@ class EmailSignupRequest(BaseModel):
 
 # ── Auth & Signup endpoints (Sprint 3) ──────────────────────────────────────
 
+
 @router.post("/auth/signup")
 async def email_signup(req: EmailSignupRequest, request: Request):
     """Sign up with email. Sends a verification link. On verification, a tenant and API key are provisioned."""
     import main
     from rate_limit import enforce_ip_rate_limit
-    await enforce_ip_rate_limit(main.redis_pool, request, "signup", max_requests=5, window_seconds=60)
+
+    await enforce_ip_rate_limit(
+        main.redis_pool, request, "signup", max_requests=5, window_seconds=60
+    )
     import auth as auth_module
+
     error = auth_module.validate_email(req.email)
     if error:
         raise HTTPException(400, error)
 
     conn = main.get_db()
     try:
-        existing = conn.execute("SELECT 1 FROM users WHERE email = ?", (req.email,)).fetchone()
+        existing = conn.execute(
+            "SELECT 1 FROM users WHERE email = ?", (req.email,)
+        ).fetchone()
         if existing:
             raise HTTPException(409, "Email already registered")
 
@@ -66,8 +74,12 @@ async def verify_email(request: Request, token: str = Query(...)):
     """Verify email address from signup link. Provisions tenant, user, and API key on success."""
     import main
     from rate_limit import enforce_ip_rate_limit
-    await enforce_ip_rate_limit(main.redis_pool, request, "verify-email", max_requests=10, window_seconds=60)
+
+    await enforce_ip_rate_limit(
+        main.redis_pool, request, "verify-email", max_requests=10, window_seconds=60
+    )
     import auth as auth_module
+
     token_hash = auth_module._hash_verification_token(token)
     conn = main.get_db()
     try:
@@ -88,7 +100,9 @@ async def verify_email(request: Request, token: str = Query(...)):
         name = row["tenant_name"]
         slug = auth_module.generate_tenant_slug(name)
 
-        existing_slug = conn.execute("SELECT 1 FROM tenants WHERE slug = ?", (slug,)).fetchone()
+        existing_slug = conn.execute(
+            "SELECT 1 FROM tenants WHERE slug = ?", (slug,)
+        ).fetchone()
         if existing_slug:
             slug = f"{slug}-{secrets.token_hex(3)}"
 
@@ -122,6 +136,7 @@ async def verify_email(request: Request, token: str = Query(...)):
 async def github_login():
     """Redirect to GitHub OAuth authorization page."""
     import auth as auth_module
+
     if not auth_module.GITHUB_CLIENT_ID:
         raise HTTPException(501, "GitHub OAuth not configured")
     state = secrets.token_urlsafe(16)
@@ -130,12 +145,18 @@ async def github_login():
 
 
 @router.get("/auth/github/callback")
-async def github_callback(request: Request, code: str = Query(...), state: str = Query(default="")):
+async def github_callback(
+    request: Request, code: str = Query(...), state: str = Query(default="")
+):
     """GitHub OAuth callback. Exchanges code for token, provisions or links user account."""
     import main
     from rate_limit import enforce_ip_rate_limit
-    await enforce_ip_rate_limit(main.redis_pool, request, "github-callback", max_requests=10, window_seconds=60)
+
+    await enforce_ip_rate_limit(
+        main.redis_pool, request, "github-callback", max_requests=10, window_seconds=60
+    )
     import auth as auth_module
+
     if not auth_module.GITHUB_CLIENT_ID:
         raise HTTPException(501, "GitHub OAuth not configured")
 
@@ -151,17 +172,26 @@ async def github_callback(request: Request, code: str = Query(...), state: str =
 
         if existing:
             tenant_id = existing["tenant_id"]
-            session_token = auth_module.create_session_token(tenant_id, profile["email"])
+            session_token = auth_module.create_session_token(
+                tenant_id, profile["email"]
+            )
             from urllib.parse import urlencode
-            params = urlencode({"token": session_token, "tenant_id": tenant_id, "new_user": "false"})
+
+            params = urlencode(
+                {"token": session_token, "tenant_id": tenant_id, "new_user": "false"}
+            )
             return RedirectResponse(url=f"/dashboard/?{params}", status_code=302)
 
         slug = auth_module.generate_tenant_slug(profile["name"])
-        existing_slug = conn.execute("SELECT 1 FROM tenants WHERE slug = ?", (slug,)).fetchone()
+        existing_slug = conn.execute(
+            "SELECT 1 FROM tenants WHERE slug = ?", (slug,)
+        ).fetchone()
         if existing_slug:
             slug = f"{slug}-{secrets.token_hex(3)}"
 
-        existing_tenant = conn.execute("SELECT 1 FROM tenants WHERE tenant_id = ?", (slug,)).fetchone()
+        existing_tenant = conn.execute(
+            "SELECT 1 FROM tenants WHERE tenant_id = ?", (slug,)
+        ).fetchone()
         if existing_tenant:
             slug = f"{slug}-{secrets.token_hex(3)}"
 
@@ -180,7 +210,14 @@ async def github_callback(request: Request, code: str = Query(...), state: str =
 
         session_token = auth_module.create_session_token(slug, profile["email"])
         from urllib.parse import urlencode
-        params = urlencode({"token": session_token, "tenant_id": result["tenant_id"], "new_user": "true"})
+
+        params = urlencode(
+            {
+                "token": session_token,
+                "tenant_id": result["tenant_id"],
+                "new_user": "true",
+            }
+        )
         return RedirectResponse(url=f"/dashboard/?{params}", status_code=302)
     finally:
         conn.close()
@@ -189,8 +226,9 @@ async def github_callback(request: Request, code: str = Query(...), state: str =
 @router.post("/auth/session")
 async def create_session(x_api_key: str = Header(...)):
     """Exchange API key for a JWT session token."""
-    import main
     import auth as auth_module
+    import main
+
     tenant = main.resolve_tenant(x_api_key)
     if not tenant:
         raise HTTPException(401, "Invalid API key")
@@ -210,6 +248,7 @@ async def create_session(x_api_key: str = Header(...)):
 
 # ── API key rotation (Sprint 3) ─────────────────────────────────────────────
 
+
 @router.post("/api-keys/rotate")
 async def rotate_api_key(
     authorization: Optional[str] = Header(default=None),
@@ -217,9 +256,12 @@ async def rotate_api_key(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """Rotate the current API key. Returns a new key; the old one is invalidated."""
-    import main
     import auth as auth_module
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         result = auth_module.rotate_api_key(conn, tenant["tenant_id"])
@@ -234,6 +276,7 @@ async def rotate_api_key(
 
 # ── Tenant switching ────────────────────────────────────────────────────────
 
+
 @router.get("/auth/my-tenants")
 async def list_my_tenants(
     authorization: Optional[str] = Header(default=None),
@@ -242,7 +285,10 @@ async def list_my_tenants(
 ):
     """List all tenants the authenticated user belongs to."""
     import main
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     conn = main.get_db()
     try:
         current_user = conn.execute(
@@ -251,7 +297,15 @@ async def list_my_tenants(
         ).fetchone()
 
         if not current_user or not current_user["github_id"]:
-            return {"tenants": [{"tenant_id": tenant["tenant_id"], "name": tenant["name"], "current": True}]}
+            return {
+                "tenants": [
+                    {
+                        "tenant_id": tenant["tenant_id"],
+                        "name": tenant["name"],
+                        "current": True,
+                    }
+                ]
+            }
 
         user_rows = conn.execute(
             "SELECT u.tenant_id, t.name, t.slug FROM users u JOIN tenants t ON u.tenant_id = t.tenant_id WHERE u.github_id = ?",
@@ -281,9 +335,12 @@ async def switch_tenant(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
     """Switch active tenant context. Returns a new session token scoped to the target tenant."""
-    import main
     import auth as auth_module
-    tenant = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    import main
+
+    tenant = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     body = await request.json()
     target_tenant_id = body.get("tenant_id")
     if not target_tenant_id:
@@ -297,7 +354,9 @@ async def switch_tenant(
         ).fetchone()
 
         if not current_user or not current_user["github_id"]:
-            raise HTTPException(403, "Cannot switch tenants without GitHub authentication")
+            raise HTTPException(
+                403, "Cannot switch tenants without GitHub authentication"
+            )
 
         target_user = conn.execute(
             "SELECT email FROM users WHERE tenant_id = ? AND github_id = ?",
@@ -307,7 +366,9 @@ async def switch_tenant(
         if not target_user:
             raise HTTPException(403, "You don't have access to that tenant")
 
-        new_token = auth_module.create_session_token(target_tenant_id, target_user["email"])
+        new_token = auth_module.create_session_token(
+            target_tenant_id, target_user["email"]
+        )
     finally:
         conn.close()
 

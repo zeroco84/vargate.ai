@@ -13,8 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Header, Response, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, Header, HTTPException, Response
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -25,6 +24,7 @@ app = FastAPI(title="Vargate Bundle Server", version="0.3.0")
 POLICY_DIR = os.environ.get("POLICY_DIR", "/policies")
 
 # ── Bundle state ─────────────────────────────────────────────────────────────
+
 
 class BundleState:
     def __init__(self):
@@ -41,7 +41,9 @@ class BundleState:
         """Read all .rego files from the policy source directory."""
         files = {}
         if not os.path.isdir(POLICY_DIR):
-            print(f"[BUNDLE] WARNING: Policy directory {POLICY_DIR} not found", flush=True)
+            print(
+                f"[BUNDLE] WARNING: Policy directory {POLICY_DIR} not found", flush=True
+            )
             return files
 
         for root, dirs, filenames in os.walk(POLICY_DIR):
@@ -52,24 +54,33 @@ class BundleState:
                     try:
                         with open(full_path, "r") as f:
                             files[rel_path] = f.read()
-                        print(f"[BUNDLE] Loaded {rel_path} ({len(files[rel_path])} bytes)", flush=True)
+                        print(
+                            f"[BUNDLE] Loaded {rel_path} ({len(files[rel_path])} bytes)",
+                            flush=True,
+                        )
                     except Exception as e:
                         print(f"[BUNDLE] ERROR reading {full_path}: {e}", flush=True)
         return files
 
     def _generate_manifest(self) -> str:
         """Generate the .manifest JSON."""
-        return json.dumps({
-            "revision": self.revision,
-            "roots": ["vargate"],
-        }, indent=2)
+        return json.dumps(
+            {
+                "revision": self.revision,
+                "roots": ["vargate"],
+            },
+            indent=2,
+        )
 
     def _rebuild(self):
         """Rebuild the tar.gz bundle from .rego files on disk."""
         self.rego_files = self._read_rego_files()
 
         if not self.rego_files:
-            print("[BUNDLE] WARNING: No .rego files found — bundle will be empty", flush=True)
+            print(
+                "[BUNDLE] WARNING: No .rego files found — bundle will be empty",
+                flush=True,
+            )
 
         manifest_content = self._generate_manifest()
 
@@ -131,6 +142,7 @@ bundle = BundleState()
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
+
 
 @app.get("/bundles/vargate")
 async def get_bundle(

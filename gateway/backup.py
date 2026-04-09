@@ -61,7 +61,11 @@ def backup_database(db_path: str = DB_PATH, backup_dir: str = BACKUP_DIR) -> dic
 def _prune_backups(backup_dir: str):
     """Remove oldest backups beyond BACKUP_RETENTION count."""
     backups = sorted(
-        [f for f in os.listdir(backup_dir) if f.startswith("audit-") and f.endswith(".db")],
+        [
+            f
+            for f in os.listdir(backup_dir)
+            if f.startswith("audit-") and f.endswith(".db")
+        ],
         reverse=True,
     )
     for old in backups[BACKUP_RETENTION:]:

@@ -9,8 +9,6 @@ from prometheus_client import (
     Counter,
     Gauge,
     Histogram,
-    generate_latest,
-    CONTENT_TYPE_LATEST,
 )
 
 # ── Latency & throughput ────────────────────────────────────────────────────

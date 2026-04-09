@@ -11,13 +11,10 @@ These run BEFORE OPA evaluation and are hard blocks — OPA policies
 are for governance, these are for safety.
 """
 
-import json
 import re
 import sqlite3
-import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
-
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -56,6 +53,7 @@ AI_DISCLOSURE_PATTERNS = [
 
 # ── Database setup ─────────────────────────────────────────────────────────
 
+
 def init_gtm_db(conn: sqlite3.Connection):
     """Create the GTM tracking tables."""
     conn.execute("""
@@ -79,6 +77,7 @@ def init_gtm_db(conn: sqlite3.Connection):
 
 
 # ── Constraint checks ─────────────────────────────────────────────────────
+
 
 def check_gtm_constraints(
     conn: sqlite3.Connection,
@@ -106,20 +105,24 @@ def check_gtm_constraints(
     if recipient:
         domain = recipient.split("@")[-1].lower() if "@" in recipient else ""
         if domain in BLOCKED_DOMAINS:
-            violations.append({
-                "rule": "gtm_blocked_domain",
-                "detail": f"Recipient domain '{domain}' is on the blocked list",
-                "severity": "critical",
-            })
+            violations.append(
+                {
+                    "rule": "gtm_blocked_domain",
+                    "detail": f"Recipient domain '{domain}' is on the blocked list",
+                    "severity": "critical",
+                }
+            )
 
     # 2. Daily send cap
     daily_count = _get_daily_send_count(conn, tenant_id)
     if daily_count >= DAILY_SEND_CAP:
-        violations.append({
-            "rule": "gtm_daily_cap_exceeded",
-            "detail": f"Daily send limit ({DAILY_SEND_CAP}) reached ({daily_count} sent today)",
-            "severity": "high",
-        })
+        violations.append(
+            {
+                "rule": "gtm_daily_cap_exceeded",
+                "detail": f"Daily send limit ({DAILY_SEND_CAP}) reached ({daily_count} sent today)",
+                "severity": "high",
+            }
+        )
 
     # 3. Cooldown check
     if recipient:
@@ -127,19 +130,23 @@ def check_gtm_constraints(
         if last_contact:
             days_since = (datetime.now(timezone.utc) - last_contact).days
             if days_since < COOLDOWN_DAYS:
-                violations.append({
-                    "rule": "gtm_cooldown_active",
-                    "detail": f"Recipient contacted {days_since} days ago (cooldown: {COOLDOWN_DAYS} days)",
-                    "severity": "high",
-                })
+                violations.append(
+                    {
+                        "rule": "gtm_cooldown_active",
+                        "detail": f"Recipient contacted {days_since} days ago (cooldown: {COOLDOWN_DAYS} days)",
+                        "severity": "high",
+                    }
+                )
 
     # 4. AI disclosure check
     if body and not _has_ai_disclosure(body):
-        violations.append({
-            "rule": "gtm_missing_ai_disclosure",
-            "detail": "Email body does not contain required AI disclosure statement",
-            "severity": "medium",
-        })
+        violations.append(
+            {
+                "rule": "gtm_missing_ai_disclosure",
+                "detail": "Email body does not contain required AI disclosure statement",
+                "severity": "medium",
+            }
+        )
 
     return violations
 
@@ -153,12 +160,18 @@ def record_send(
     """Record a successful email send for rate limiting and cooldown tracking."""
     conn.execute(
         "INSERT INTO gtm_send_log (tenant_id, recipient, sent_at, action_id) VALUES (?, ?, ?, ?)",
-        (tenant_id, recipient.lower(), datetime.now(timezone.utc).isoformat(), action_id),
+        (
+            tenant_id,
+            recipient.lower(),
+            datetime.now(timezone.utc).isoformat(),
+            action_id,
+        ),
     )
     conn.commit()
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
+
 
 def _is_email_action(tool: str, method: str) -> bool:
     """Check if this is an email-sending action."""
@@ -191,9 +204,11 @@ def _extract_body(params: dict) -> str:
 
 def _get_daily_send_count(conn: sqlite3.Connection, tenant_id: str) -> int:
     """Count emails sent today by this tenant."""
-    today_start = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).isoformat()
+    today_start = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
     row = conn.execute(
         "SELECT COUNT(*) as cnt FROM gtm_send_log WHERE tenant_id = ? AND sent_at >= ?",
         (tenant_id, today_start),

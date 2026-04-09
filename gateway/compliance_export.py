@@ -15,27 +15,37 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(tags=["Compliance"])
 
 
-def _get_tenant_and_conn(tenant_id: str, authorization, x_api_key, x_vargate_public_tenant):
+def _get_tenant_and_conn(
+    tenant_id: str, authorization, x_api_key, x_vargate_public_tenant
+):
     """Resolve tenant and get database connection."""
-    import main
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    import main
+
+    asyncio.get_event_loop()  # noqa: F841 — ensure loop exists
     # Synchronous wrapper not needed — we'll handle auth in the endpoint
     conn = main.get_db()
     return conn
 
 
-def _verify_chain_range(conn: sqlite3.Connection, tenant_id: str, records: list) -> dict:
+def _verify_chain_range(
+    conn: sqlite3.Connection, tenant_id: str, records: list
+) -> dict:
     """Verify hash chain integrity over a range of records."""
     if not records:
-        return {"valid": True, "first_record": None, "last_record": None, "broken_links": []}
+        return {
+            "valid": True,
+            "first_record": None,
+            "last_record": None,
+            "broken_links": [],
+        }
 
     broken = []
     for i in range(1, len(records)):
@@ -44,11 +54,13 @@ def _verify_chain_range(conn: sqlite3.Connection, tenant_id: str, records: list)
         expected_prev = prev["record_hash"]
         actual_prev = curr["prev_hash"]
         if expected_prev != actual_prev:
-            broken.append({
-                "record_id": curr["id"],
-                "expected_prev_hash": expected_prev,
-                "actual_prev_hash": actual_prev,
-            })
+            broken.append(
+                {
+                    "record_id": curr["id"],
+                    "expected_prev_hash": expected_prev,
+                    "actual_prev_hash": actual_prev,
+                }
+            )
 
     return {
         "valid": len(broken) == 0,
@@ -213,7 +225,9 @@ def _build_compliance_package(
 
     # Compute hash of entire package (minus export_hash)
     hash_input = json.dumps(package, sort_keys=True, default=str)
-    package["metadata"]["export_hash"] = f"sha256:{hashlib.sha256(hash_input.encode()).hexdigest()}"
+    package["metadata"][
+        "export_hash"
+    ] = f"sha256:{hashlib.sha256(hash_input.encode()).hexdigest()}"
 
     return package
 
@@ -221,12 +235,17 @@ def _build_compliance_package(
 def _generate_pdf(package: dict) -> bytes:
     """Generate a PDF compliance report from the package."""
     try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
         from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import inch
         from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+            PageBreak,
+            Paragraph,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
         )
     except ImportError:
         raise HTTPException(
@@ -235,27 +254,38 @@ def _generate_pdf(package: dict) -> bytes:
         )
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=0.75*inch, bottomMargin=0.75*inch)
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, topMargin=0.75 * inch, bottomMargin=0.75 * inch
+    )
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('CustomTitle', parent=styles['Title'], fontSize=24, spaceAfter=20)
-    heading_style = ParagraphStyle('CustomHeading', parent=styles['Heading2'], fontSize=14, spaceAfter=10)
-    body_style = styles['BodyText']
+    title_style = ParagraphStyle(
+        "CustomTitle", parent=styles["Title"], fontSize=24, spaceAfter=20
+    )
+    heading_style = ParagraphStyle(
+        "CustomHeading", parent=styles["Heading2"], fontSize=14, spaceAfter=10
+    )
+    body_style = styles["BodyText"]
 
     elements = []
     meta = package["metadata"]
     chain = package["chain_verification"]
 
     # Cover page
-    elements.append(Spacer(1, 2*inch))
+    elements.append(Spacer(1, 2 * inch))
     elements.append(Paragraph("Vargate Compliance Report", title_style))
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(Spacer(1, 0.3 * inch))
     elements.append(Paragraph(f"Tenant: {meta['tenant_name']}", body_style))
     elements.append(Paragraph(f"Tenant ID: {meta['tenant_id']}", body_style))
-    elements.append(Paragraph(f"Date Range: {meta['date_range']['from']} to {meta['date_range']['to']}", body_style))
+    elements.append(
+        Paragraph(
+            f"Date Range: {meta['date_range']['from']} to {meta['date_range']['to']}",
+            body_style,
+        )
+    )
     elements.append(Paragraph(f"Export Date: {meta['export_date']}", body_style))
     elements.append(Paragraph(f"System Version: {meta['system_version']}", body_style))
     elements.append(Paragraph(f"AGCS Version: {meta['agcs_version']}", body_style))
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(Spacer(1, 0.3 * inch))
     elements.append(Paragraph(f"Export Hash: {meta['export_hash']}", body_style))
     elements.append(PageBreak())
 
@@ -277,111 +307,182 @@ def _generate_pdf(package: dict) -> bytes:
         ["Merkle Trees", str(len(package["merkle_trees"]))],
         ["Blockchain Anchors", str(len(package["blockchain_anchors"]))],
     ]
-    t = Table(summary_data, colWidths=[3*inch, 3*inch])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-    ]))
+    t = Table(summary_data, colWidths=[3 * inch, 3 * inch])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ]
+        )
+    )
     elements.append(t)
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(Spacer(1, 0.3 * inch))
 
     # Chain verification
     elements.append(Paragraph("Hash Chain Verification", heading_style))
     status_text = "VALID" if chain["valid"] else "INVALID"
     elements.append(Paragraph(f"Status: <b>{status_text}</b>", body_style))
-    elements.append(Paragraph(f"Records verified: {chain.get('records_verified', 0)}", body_style))
+    elements.append(
+        Paragraph(f"Records verified: {chain.get('records_verified', 0)}", body_style)
+    )
     if chain["broken_links"]:
-        elements.append(Paragraph(f"Broken links at record IDs: {[b['record_id'] for b in chain['broken_links']]}", body_style))
-    elements.append(Spacer(1, 0.3*inch))
+        elements.append(
+            Paragraph(
+                f"Broken links at record IDs: {[b['record_id'] for b in chain['broken_links']]}",
+                body_style,
+            )
+        )
+    elements.append(Spacer(1, 0.3 * inch))
 
     # Merkle tree summary
     if package["merkle_trees"]:
         elements.append(Paragraph("Merkle Tree Summary", heading_style))
-        tree_header = ["Index", "Root (first 16)", "Records", "From ID", "To ID", "Period Start"]
+        tree_header = [
+            "Index",
+            "Root (first 16)",
+            "Records",
+            "From ID",
+            "To ID",
+            "Period Start",
+        ]
         tree_data = [tree_header]
         for mt in package["merkle_trees"][:50]:  # Limit to 50 rows
-            tree_data.append([
-                str(mt.get("tree_index", "")),
-                str(mt.get("merkle_root", ""))[:16] + "...",
-                str(mt.get("record_count", "")),
-                str(mt.get("from_record_id", "")),
-                str(mt.get("to_record_id", "")),
-                str(mt.get("period_start", ""))[:19],
-            ])
-        t2 = Table(tree_data, colWidths=[0.6*inch, 1.5*inch, 0.8*inch, 0.8*inch, 0.8*inch, 1.5*inch])
-        t2.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
+            tree_data.append(
+                [
+                    str(mt.get("tree_index", "")),
+                    str(mt.get("merkle_root", ""))[:16] + "...",
+                    str(mt.get("record_count", "")),
+                    str(mt.get("from_record_id", "")),
+                    str(mt.get("to_record_id", "")),
+                    str(mt.get("period_start", ""))[:19],
+                ]
+            )
+        t2 = Table(
+            tree_data,
+            colWidths=[
+                0.6 * inch,
+                1.5 * inch,
+                0.8 * inch,
+                0.8 * inch,
+                0.8 * inch,
+                1.5 * inch,
+            ],
+        )
+        t2.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ]
+            )
+        )
         elements.append(t2)
-        elements.append(Spacer(1, 0.3*inch))
+        elements.append(Spacer(1, 0.3 * inch))
 
     # Blockchain anchors
     if package["blockchain_anchors"]:
         elements.append(Paragraph("Blockchain Anchors", heading_style))
-        anchor_header = ["Chain", "Tx Hash (first 16)", "Block", "Records", "Anchored At"]
+        anchor_header = [
+            "Chain",
+            "Tx Hash (first 16)",
+            "Block",
+            "Records",
+            "Anchored At",
+        ]
         anchor_data = [anchor_header]
         for ba in package["blockchain_anchors"][:50]:
-            anchor_data.append([
-                str(ba.get("anchor_chain", "")),
-                str(ba.get("tx_hash", ""))[:16] + "...",
-                str(ba.get("block_number", "")),
-                str(ba.get("record_count", "")),
-                str(ba.get("anchored_at", ""))[:19],
-            ])
-        t3 = Table(anchor_data, colWidths=[0.8*inch, 1.5*inch, 1*inch, 0.8*inch, 1.5*inch])
-        t3.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
+            anchor_data.append(
+                [
+                    str(ba.get("anchor_chain", "")),
+                    str(ba.get("tx_hash", ""))[:16] + "...",
+                    str(ba.get("block_number", "")),
+                    str(ba.get("record_count", "")),
+                    str(ba.get("anchored_at", ""))[:19],
+                ]
+            )
+        t3 = Table(
+            anchor_data,
+            colWidths=[0.8 * inch, 1.5 * inch, 1 * inch, 0.8 * inch, 1.5 * inch],
+        )
+        t3.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ]
+            )
+        )
         elements.append(t3)
-        elements.append(Spacer(1, 0.3*inch))
+        elements.append(Spacer(1, 0.3 * inch))
 
     # Sample inclusion proofs
     if package["inclusion_proofs"]:
         elements.append(Paragraph("Sample Inclusion Proofs", heading_style))
-        proof_header = ["Record ID", "Action ID (first 8)", "Hash (first 16)", "Merkle Root (first 16)", "Verified"]
+        proof_header = [
+            "Record ID",
+            "Action ID (first 8)",
+            "Hash (first 16)",
+            "Merkle Root (first 16)",
+            "Verified",
+        ]
         proof_data = [proof_header]
         for p in package["inclusion_proofs"][:20]:
-            proof_data.append([
-                str(p.get("record_id", "")),
-                str(p.get("action_id", ""))[:8] + "...",
-                str(p.get("record_hash", ""))[:16] + "...",
-                str(p.get("merkle_root", "") or "")[:16] + ("..." if p.get("merkle_root") else "N/A"),
-                "Yes" if p.get("verified") else "No",
-            ])
-        t4 = Table(proof_data, colWidths=[0.8*inch, 1.2*inch, 1.5*inch, 1.5*inch, 0.7*inch])
-        t4.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a1a2e')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
+            proof_data.append(
+                [
+                    str(p.get("record_id", "")),
+                    str(p.get("action_id", ""))[:8] + "...",
+                    str(p.get("record_hash", ""))[:16] + "...",
+                    str(p.get("merkle_root", "") or "")[:16]
+                    + ("..." if p.get("merkle_root") else "N/A"),
+                    "Yes" if p.get("verified") else "No",
+                ]
+            )
+        t4 = Table(
+            proof_data,
+            colWidths=[0.8 * inch, 1.2 * inch, 1.5 * inch, 1.5 * inch, 0.7 * inch],
+        )
+        t4.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ]
+            )
+        )
         elements.append(t4)
-        elements.append(Spacer(1, 0.3*inch))
+        elements.append(Spacer(1, 0.3 * inch))
 
     # Policy snapshot
     elements.append(Paragraph("Policy Snapshot", heading_style))
     ps = package["policy_snapshot"]
     elements.append(Paragraph(f"Template: {ps['policy_template']}", body_style))
-    elements.append(Paragraph(f"Config: {json.dumps(ps['policy_config'], indent=2)}", body_style))
+    elements.append(
+        Paragraph(f"Config: {json.dumps(ps['policy_config'], indent=2)}", body_style)
+    )
 
     # Footer
-    elements.append(Spacer(1, 0.5*inch))
-    elements.append(Paragraph(
-        "Generated by Vargate Gateway v1.0.0 | AGCS v0.9 Compliance Export",
-        ParagraphStyle('Footer', parent=body_style, fontSize=8, textColor=colors.grey),
-    ))
+    elements.append(Spacer(1, 0.5 * inch))
+    elements.append(
+        Paragraph(
+            "Generated by Vargate Gateway v1.0.0 | AGCS v0.9 Compliance Export",
+            ParagraphStyle(
+                "Footer", parent=body_style, fontSize=8, textColor=colors.grey
+            ),
+        )
+    )
 
     doc.build(elements)
     return buf.getvalue()
@@ -409,7 +510,9 @@ async def export_compliance(
         date_to = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # Auth: caller must own the tenant or be admin
-    caller = await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    caller = await main.get_session_tenant(
+        authorization, x_api_key, x_vargate_public_tenant
+    )
     caller_tid = caller["tenant_id"]
 
     # Allow tenant to export own data, or admin to export any
@@ -427,7 +530,9 @@ async def export_compliance(
             raise HTTPException(404, f"Tenant {tenant_id} not found")
         tenant_name = tenant_row["name"]
 
-        package = _build_compliance_package(conn, tenant_id, tenant_name, date_from, date_to)
+        package = _build_compliance_package(
+            conn, tenant_id, tenant_name, date_from, date_to
+        )
     finally:
         conn.close()
 

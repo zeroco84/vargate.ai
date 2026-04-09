@@ -11,11 +11,9 @@ import asyncio
 import hashlib
 import hmac
 import json
-import time
 from datetime import datetime, timezone
 
 import httpx
-
 
 # Supported event types
 WEBHOOK_EVENTS = ["action.denied", "action.pending", "action.allowed", "chain.anchored"]
@@ -38,15 +36,16 @@ async def send_webhook(
     The payload is JSON-encoded and signed with HMAC-SHA256 using the
     tenant's webhook secret. The signature is sent in X-Vargate-Signature.
     """
-    body = json.dumps({
-        "event": event,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "data": payload,
-    }, default=str)
+    body = json.dumps(
+        {
+            "event": event,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": payload,
+        },
+        default=str,
+    )
 
-    signature = hmac.new(
-        secret.encode(), body.encode(), hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
 
     headers = {
         "Content-Type": "application/json",
@@ -118,7 +117,5 @@ async def dispatch_webhook(tenant: dict, event: str, payload: dict):
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """Verify an incoming webhook signature (for /webhooks/test endpoint)."""
-    expected = hmac.new(
-        secret.encode(), payload, hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(f"sha256={expected}", signature)

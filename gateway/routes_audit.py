@@ -18,13 +18,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, Depends, Header
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 router = APIRouter()
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
+
 
 class TamperRequest(BaseModel):
     record_number: int
@@ -48,6 +49,7 @@ class BulkReplayRequest(BaseModel):
 
 # ── Audit log & verification ────────────────────────────────────────────────
 
+
 @router.get("/audit/verify", tags=["Audit"])
 async def audit_verify(
     x_api_key: Optional[str] = Header(default=None),
@@ -56,6 +58,7 @@ async def audit_verify(
 ):
     """Verify the hash chain integrity of the tenant's audit log."""
     import main
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -74,6 +77,7 @@ async def audit_log(
 ):
     """Retrieve recent audit log records for the authenticated tenant."""
     import main
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -93,7 +97,9 @@ async def audit_log(
             "tool": r["tool"],
             "method": r["method"],
             "params": json.loads(r["params"]),
-            "requested_at": r["requested_at"] if "requested_at" in r.keys() else r["created_at"],
+            "requested_at": (
+                r["requested_at"] if "requested_at" in r.keys() else r["created_at"]
+            ),
             "decision": r["decision"],
             "violations": json.loads(r["violations"]),
             "severity": r["severity"],
@@ -115,6 +121,7 @@ async def audit_log(
 
 # ── Tamper simulation endpoints (DEMO ONLY) ─────────────────────────────────
 
+
 @router.post("/audit/tamper-simulate", tags=["Audit"])  # DEMO ONLY
 async def tamper_simulate(
     req: TamperRequest,
@@ -124,6 +131,7 @@ async def tamper_simulate(
 ):
     """DEMO ONLY: Simulate tampering with an audit record to demonstrate chain verification."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -167,6 +175,7 @@ async def tamper_restore(
 ):
     """DEMO ONLY: Restore tampered records to their original hashes."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -190,6 +199,7 @@ async def tamper_restore(
 
 # ── Crypto-shredding / Erasure endpoints ────────────────────────────────────
 
+
 @router.post("/audit/erase/{subject_id}", tags=["Audit"])
 async def erase_subject(
     subject_id: str,
@@ -201,7 +211,10 @@ async def erase_subject(
     """GDPR right-to-erasure: delete the subject's HSM key, making encrypted PII irrecoverable."""
     import main
     from rate_limit import enforce_ip_rate_limit
-    await enforce_ip_rate_limit(main.redis_pool, request, "erasure", max_requests=5, window_seconds=60)
+
+    await enforce_ip_rate_limit(
+        main.redis_pool, request, "erasure", max_requests=5, window_seconds=60
+    )
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     """GDPR right-to-erasure: delete the subject's HSM key and mark records."""
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -253,6 +266,7 @@ async def verify_erasure(
 ):
     """Verify that crypto-shredding was successful for a given subject."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     """Attempt to decrypt PII after erasure — should fail."""
     conn = main.get_db()
@@ -281,7 +295,9 @@ async def verify_erasure(
                 "erasure_verified": decrypted is None,
             }
 
-    all_verified = all(r["erasure_verified"] for r in results.values()) if results else False
+    all_verified = (
+        all(r["erasure_verified"] for r in results.values()) if results else False
+    )
 
     return {
         "subject_id": subject_id,
@@ -290,8 +306,8 @@ async def verify_erasure(
         "erasure_verified": all_verified,
         "interpretation": (
             "All encrypted fields are now irrecoverable — the HSM key has been deleted."
-            if all_verified else
-            "WARNING: Some fields could still be decrypted. Erasure may not be complete."
+            if all_verified
+            else "WARNING: Some fields could still be decrypted. Erasure may not be complete."
         ),
     }
 
@@ -304,32 +320,34 @@ async def list_subjects(
 ):
     """List all PII subjects with encrypted records in the audit log."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     conn = main.get_db()
     try:
-        rows = conn.execute(
-            """SELECT pii_subject_id, COUNT(*) as record_count,
+        rows = conn.execute("""SELECT pii_subject_id, COUNT(*) as record_count,
                       erasure_status, MAX(created_at) as last_seen
                FROM audit_log
                WHERE pii_subject_id IS NOT NULL
-               GROUP BY pii_subject_id"""
-        ).fetchall()
+               GROUP BY pii_subject_id""").fetchall()
     finally:
         conn.close()
 
     subjects = []
     for row in rows:
-        subjects.append({
-            "subject_id": row["pii_subject_id"],
-            "record_count": row["record_count"],
-            "erasure_status": row["erasure_status"],
-            "last_seen": row["last_seen"],
-        })
+        subjects.append(
+            {
+                "subject_id": row["pii_subject_id"],
+                "record_count": row["record_count"],
+                "erasure_status": row["erasure_status"],
+                "last_seen": row["last_seen"],
+            }
+        )
 
     return {"subjects": subjects}
 
 
 # ── HSM proxy endpoints ─────────────────────────────────────────────────────
+
 
 @router.post("/hsm/keys", tags=["Credentials"])
 async def proxy_hsm_create_key(
@@ -340,6 +358,7 @@ async def proxy_hsm_create_key(
 ):
     """Create an HSM encryption key for a data subject."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/keys", json=req)
@@ -355,6 +374,7 @@ async def proxy_hsm_encrypt(
 ):
     """Encrypt data using an HSM-managed key."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/encrypt", json=req)
@@ -370,6 +390,7 @@ async def proxy_hsm_decrypt(
 ):
     """Decrypt data using an HSM-managed key."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/decrypt", json=req)
@@ -385,6 +406,7 @@ async def proxy_hsm_key_status(
 ):
     """Check the status of an HSM key for a data subject."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/keys/{subject_id}/status")
@@ -399,6 +421,7 @@ async def proxy_hsm_list_keys(
 ):
     """List all HSM keys."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/keys")
@@ -414,6 +437,7 @@ async def proxy_hsm_delete_key(
 ):
     """Delete an HSM key (crypto-shredding)."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{main.HSM_URL}/keys/{subject_id}")
@@ -424,6 +448,7 @@ async def proxy_hsm_delete_key(
 
 # ── Credential vault proxy endpoints ────────────────────────────────────────
 
+
 @router.post("/credentials/register", tags=["Credentials"])
 async def register_credential(
     req: RegisterCredentialRequest,
@@ -433,6 +458,7 @@ async def register_credential(
 ):
     """Register a tool credential in the HSM vault for brokered execution."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     # SECURITY: value passes through to HSM immediately, never logged by gateway
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -451,6 +477,7 @@ async def list_credentials(
 ):
     """List registered tool credentials (metadata only, not values)."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials")
@@ -467,6 +494,7 @@ async def delete_credential(
 ):
     """Remove a tool credential from the vault."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{main.HSM_URL}/credentials/{tool_id}/{name}")
@@ -484,6 +512,7 @@ async def credential_status(
 ):
     """Check registration status of a tool credential."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials/{tool_id}/status")
@@ -498,6 +527,7 @@ async def credential_access_log(
 ):
     """View the credential access log (which credentials were used and when)."""
     import main
+
     await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials/access-log")
@@ -506,16 +536,20 @@ async def credential_access_log(
 
 # ── Policy replay endpoints ─────────────────────────────────────────────────
 
+
 async def _replay_with_opa(opa_input: dict, bundle_revision: str) -> dict:
     """Fetch the archived bundle and evaluate opa_input against it using a temp OPA."""
     import main
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
                 f"{main.BUNDLE_SERVER_URL}/bundles/vargate/archive/{bundle_revision}"
             )
             if resp.status_code != 200:
-                return {"error": f"Archived bundle {bundle_revision} not found (HTTP {resp.status_code})"}
+                return {
+                    "error": f"Archived bundle {bundle_revision} not found (HTTP {resp.status_code})"
+                }
             bundle_bytes = resp.content
     except Exception as e:
         return {"error": f"Failed to fetch archived bundle: {e}"}
@@ -526,18 +560,22 @@ async def _replay_with_opa(opa_input: dict, bundle_revision: str) -> dict:
         with open(bundle_path, "wb") as f:
             f.write(bundle_bytes)
 
-        import socket
         import asyncio
+        import socket
+
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
             port = s.getsockname()[1]
 
         proc = subprocess.Popen(
             [
-                "/usr/local/bin/opa", "run", "--server",
+                "/usr/local/bin/opa",
+                "run",
+                "--server",
                 f"--addr=127.0.0.1:{port}",
                 "--log-level=error",
-                "-b", bundle_path,
+                "-b",
+                bundle_path,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -587,18 +625,23 @@ def _build_replay_response(row, replayed_result: dict) -> dict:
     status = "MATCH" if all_match else "MISMATCH"
 
     if all_match:
-        viols_str = ", ".join(original_violations) if original_violations else "no violations"
+        viols_str = (
+            ", ".join(original_violations) if original_violations else "no violations"
+        )
         interpretation = (
-            f"The recorded decision is verified. Under policy {original_bundle}, "
-            f"this action was correctly {'denied for ' + viols_str if original_decision == 'deny' else 'allowed'}. "
-            f"This decision is reproducible and tamper-evident."
+            "The recorded decision is verified. Under policy {}, "
+            "this action was correctly {}. "
+            "This decision is reproducible and tamper-evident.".format(
+                original_bundle,
+                "denied for " + viols_str if original_decision == "deny" else "allowed",
+            )
         )
     else:
         interpretation = (
-            f"MISMATCH detected. The replayed decision differs from the original record. "
-            f"This indicates either: (a) the stored input document was modified, or "
-            f"(b) the policy bundle archive does not match what was deployed at the time. "
-            f"Recommend forensic investigation."
+            "MISMATCH detected. The replayed decision differs from the original record. "
+            "This indicates either: (a) the stored input document was modified, or "
+            "(b) the policy bundle archive does not match what was deployed at the time. "
+            "Recommend forensic investigation."
         )
 
     return {
@@ -633,6 +676,7 @@ def _build_replay_response(row, replayed_result: dict) -> dict:
 async def audit_replay(req: ReplayRequest):
     """Replay a single audit record against current OPA policy to check decision consistency."""
     import main
+
     conn = main.get_db()
     try:
         if req.action_id:
@@ -649,7 +693,9 @@ async def audit_replay(req: ReplayRequest):
                 "SELECT * FROM audit_log WHERE decision = 'deny' ORDER BY id DESC LIMIT 1"
             ).fetchone()
         else:
-            raise HTTPException(400, "Provide action_id, record_number, or last_block=true")
+            raise HTTPException(
+                400, "Provide action_id, record_number, or last_block=true"
+            )
 
         if not row:
             raise HTTPException(404, "Record not found")
@@ -658,7 +704,7 @@ async def audit_replay(req: ReplayRequest):
             raise HTTPException(
                 422,
                 f"Record {row['action_id']} predates Session 5 — no opa_input stored. "
-                f"Only records created after the replay feature can be replayed."
+                f"Only records created after the replay feature can be replayed.",
             )
 
         opa_input = json.loads(row["opa_input"])
@@ -677,6 +723,7 @@ async def audit_replay(req: ReplayRequest):
 async def audit_replay_bulk(req: BulkReplayRequest):
     """Replay multiple recent records against current policy for bulk verification."""
     import main
+
     conn = main.get_db()
     try:
         rows = conn.execute(
@@ -696,11 +743,13 @@ async def audit_replay_bulk(req: BulkReplayRequest):
         replayed_result = await _replay_with_opa(opa_input, row["bundle_revision"])
 
         if "error" in replayed_result:
-            results.append({
-                "action_id": row["action_id"],
-                "replay_status": "ERROR",
-                "error": replayed_result["error"],
-            })
+            results.append(
+                {
+                    "action_id": row["action_id"],
+                    "replay_status": "ERROR",
+                    "error": replayed_result["error"],
+                }
+            )
             skip_count += 1
             continue
 

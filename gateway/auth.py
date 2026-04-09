@@ -4,7 +4,6 @@ GitHub OAuth, email signup, JWT sessions, API key rotation.
 """
 
 import hashlib
-import hmac
 import os
 import re
 import secrets
@@ -20,7 +19,9 @@ import jwt
 
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
-GITHUB_REDIRECT_URI = os.getenv("GITHUB_REDIRECT_URI", "https://vargate.ai/api/auth/github/callback")
+GITHUB_REDIRECT_URI = os.getenv(
+    "GITHUB_REDIRECT_URI", "https://vargate.ai/api/auth/github/callback"
+)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "Vargate <no-reply@vargate.ai>")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
@@ -29,13 +30,17 @@ JWT_EXPIRY_SECONDS = 86400 * 7  # 7 days
 VARGATE_BASE_URL = os.getenv("VARGATE_BASE_URL", "https://vargate.ai")
 
 # Blocked email domains for abuse filtering
-_BLOCKED_DOMAINS = {"mailinator.com", "tempmail.com", "guerrillamail.com", "throwaway.email"}
+_BLOCKED_DOMAINS = {
+    "mailinator.com",
+    "tempmail.com",
+    "guerrillamail.com",
+    "throwaway.email",
+}
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 
 def _ensure_jwt_secret():
     """Ensure JWT_SECRET is set; raise if missing in production."""
-    global JWT_SECRET
     if not JWT_SECRET:
         raise RuntimeError(
             "JWT_SECRET environment variable is not set. "
@@ -44,6 +49,7 @@ def _ensure_jwt_secret():
 
 
 # ── JWT helpers ────────────────────────────────────────────────────────────
+
 
 def create_session_token(tenant_id: str, email: str) -> str:
     """Create a JWT session token for dashboard access."""
@@ -71,6 +77,7 @@ def verify_session_token(token: str) -> Optional[dict]:
 
 # ── Email verification ─────────────────────────────────────────────────────
 
+
 def _generate_verification_token() -> str:
     return secrets.token_urlsafe(32)
 
@@ -82,7 +89,10 @@ def _hash_verification_token(token: str) -> str:
 async def send_verification_email(email: str, token: str):
     """Send email verification via Resend API."""
     if not RESEND_API_KEY:
-        print(f"[AUTH] Resend not configured — verification link for {email}: {VARGATE_BASE_URL}/api/auth/verify-email?token={token}", flush=True)
+        print(
+            f"[AUTH] Resend not configured — verification link for {email}: {VARGATE_BASE_URL}/api/auth/verify-email?token={token}",
+            flush=True,
+        )
         return True
 
     verify_url = f"{VARGATE_BASE_URL}/api/auth/verify-email?token={token}"
@@ -117,6 +127,7 @@ async def send_verification_email(email: str, token: str):
 
 
 # ── GitHub OAuth ───────────────────────────────────────────────────────────
+
 
 def get_github_authorize_url(state: str) -> str:
     """Build GitHub OAuth authorization URL."""
@@ -183,6 +194,7 @@ async def exchange_github_code(code: str) -> Optional[dict]:
 
 # ── Tenant provisioning ───────────────────────────────────────────────────
 
+
 def provision_tenant(
     conn: sqlite3.Connection,
     tenant_id: str,
@@ -226,6 +238,7 @@ def generate_tenant_slug(name: str) -> str:
 
 # ── API key rotation ──────────────────────────────────────────────────────
 
+
 def rotate_api_key(conn: sqlite3.Connection, tenant_id: str) -> dict:
     """Generate a new API key for a tenant. Invalidates the old one immediately."""
     new_key = f"vg-{secrets.token_hex(24)}"
@@ -242,6 +255,7 @@ def rotate_api_key(conn: sqlite3.Connection, tenant_id: str) -> dict:
 
 # ── Validation ─────────────────────────────────────────────────────────────
 
+
 def validate_email(email: str) -> Optional[str]:
     """Validate email format and check for blocked domains. Returns error or None."""
     if not email or not _EMAIL_RE.match(email):
@@ -253,6 +267,7 @@ def validate_email(email: str) -> Optional[str]:
 
 
 # ── DB schema for users and pending signups ────────────────────────────────
+
 
 def init_auth_db(conn: sqlite3.Connection):
     """Create auth-related tables."""

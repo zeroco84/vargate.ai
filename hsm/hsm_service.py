@@ -10,16 +10,14 @@ import base64
 import hashlib
 import os
 import secrets
-import struct
 import sqlite3
 from datetime import datetime, timezone
 
 import pkcs11
-from pkcs11 import KeyType, ObjectClass, Mechanism, Attribute
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import uvicorn
-
+from fastapi import FastAPI, HTTPException
+from pkcs11 import Attribute, KeyType, Mechanism, ObjectClass
+from pydantic import BaseModel
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -28,6 +26,7 @@ TOKEN_LABEL = os.environ.get("HSM_TOKEN_LABEL", "vargate-prototype")
 TOKEN_PIN = os.environ.get("HSM_TOKEN_PIN", "1234")
 if TOKEN_PIN == "1234":
     import warnings
+
     warnings.warn(
         "HSM_TOKEN_PIN is using the default development value '1234'. "
         "Set HSM_TOKEN_PIN environment variable for production use.",
@@ -73,6 +72,7 @@ def _key_id(subject_id: str) -> str:
 
 # ── PKCS#11 padding helpers (PKCS7) ─────────────────────────────────────────
 
+
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len] * pad_len)
@@ -92,14 +92,19 @@ def _find_key(session, label):
     except pkcs11.NoSuchKey:
         return None
     except pkcs11.MultipleObjectsReturned:
-        keys = list(session.get_objects({
-            Attribute.CLASS: ObjectClass.SECRET_KEY,
-            Attribute.LABEL: label,
-        }))
+        keys = list(
+            session.get_objects(
+                {
+                    Attribute.CLASS: ObjectClass.SECRET_KEY,
+                    Attribute.LABEL: label,
+                }
+            )
+        )
         return keys[0] if keys else None
 
 
 # ── Request / Response models ────────────────────────────────────────────────
+
 
 class CreateKeyRequest(BaseModel):
     subject_id: str
@@ -122,6 +127,7 @@ class StoreCredentialRequest(BaseModel):
 
 
 # ── Credential SQLite setup ─────────────────────────────────────────────────
+
 
 def _get_cred_db() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(CRED_DB_PATH), exist_ok=True)
@@ -191,7 +197,9 @@ def _encrypt_credential(value: str) -> str:
         key = _ensure_cred_master_key(session)
         iv = secrets.token_bytes(16)
         plaintext_padded = _pkcs7_pad(value.encode("utf-8"))
-        ciphertext = key.encrypt(plaintext_padded, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        ciphertext = key.encrypt(
+            plaintext_padded, mechanism_param=iv, mechanism=Mechanism.AES_CBC
+        )
         combined = iv + ciphertext
         return base64.b64encode(combined).decode("ascii")
 
@@ -204,12 +212,15 @@ def _decrypt_credential(encrypted_b64: str) -> str:
         combined = base64.b64decode(encrypted_b64)
         iv = combined[:16]
         ciphertext = combined[16:]
-        plaintext_padded = key.decrypt(ciphertext, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        plaintext_padded = key.decrypt(
+            ciphertext, mechanism_param=iv, mechanism=Mechanism.AES_CBC
+        )
         plaintext_bytes = _pkcs7_unpad(plaintext_padded)
         return plaintext_bytes.decode("utf-8")
 
 
 # ── PII Key Endpoints (existing) ────────────────────────────────────────────
+
 
 @app.post("/keys")
 async def create_key(req: CreateKeyRequest):
@@ -267,11 +278,14 @@ async def encrypt(req: EncryptRequest):
     kid = _key_id(req.subject_id)
 
     if req.subject_id in _erased_keys:
-        raise HTTPException(410, {
-            "error": "key_not_found",
-            "subject_id": req.subject_id,
-            "erased": True,
-        })
+        raise HTTPException(
+            410,
+            {
+                "error": "key_not_found",
+                "subject_id": req.subject_id,
+                "erased": True,
+            },
+        )
 
     with get_session() as session:
         key = _find_key(session, label)
@@ -282,7 +296,9 @@ async def encrypt(req: EncryptRequest):
         plaintext_padded = _pkcs7_pad(req.plaintext.encode("utf-8"))
 
         # Use AES-CBC mechanism with IV
-        ciphertext = key.encrypt(plaintext_padded, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        ciphertext = key.encrypt(
+            plaintext_padded, mechanism_param=iv, mechanism=Mechanism.AES_CBC
+        )
 
         combined = iv + ciphertext
         ciphertext_b64 = base64.b64encode(combined).decode("ascii")
@@ -301,13 +317,19 @@ async def decrypt(req: DecryptRequest):
     with get_session() as session:
         key = _find_key(session, label)
         if not key:
-            return {"error": "key_not_found", "subject_id": req.subject_id, "erased": False}
+            return {
+                "error": "key_not_found",
+                "subject_id": req.subject_id,
+                "erased": False,
+            }
 
         combined = base64.b64decode(req.ciphertext_b64)
         iv = combined[:16]
         ciphertext = combined[16:]
 
-        plaintext_padded = key.decrypt(ciphertext, mechanism_param=iv, mechanism=Mechanism.AES_CBC)
+        plaintext_padded = key.decrypt(
+            ciphertext, mechanism_param=iv, mechanism=Mechanism.AES_CBC
+        )
         plaintext_bytes = _pkcs7_unpad(plaintext_padded)
 
     return {"plaintext": plaintext_bytes.decode("utf-8")}
@@ -324,10 +346,14 @@ async def delete_key(subject_id: str):
 
     with get_session() as session:
         destroyed = 0
-        keys = list(session.get_objects({
-            Attribute.CLASS: ObjectClass.SECRET_KEY,
-            Attribute.LABEL: label,
-        }))
+        keys = list(
+            session.get_objects(
+                {
+                    Attribute.CLASS: ObjectClass.SECRET_KEY,
+                    Attribute.LABEL: label,
+                }
+            )
+        )
         for key in keys:
             key.destroy()
             destroyed += 1
@@ -383,24 +409,29 @@ async def key_status(subject_id: str):
 async def list_keys():
     subjects = []
     for sid, meta in _key_metadata.items():
-        subjects.append({
-            "subject_id": sid,
-            "key_exists": True,
-            "key_id": meta["key_id"],
-            "created_at": meta.get("created_at"),
-            "erased_at": None,
-        })
+        subjects.append(
+            {
+                "subject_id": sid,
+                "key_exists": True,
+                "key_id": meta["key_id"],
+                "created_at": meta.get("created_at"),
+                "erased_at": None,
+            }
+        )
     for sid, info in _erased_keys.items():
-        subjects.append({
-            "subject_id": sid,
-            "key_exists": False,
-            "key_id": info.get("key_id"),
-            "erased_at": info.get("erased_at"),
-        })
+        subjects.append(
+            {
+                "subject_id": sid,
+                "key_exists": False,
+                "key_id": info.get("key_id"),
+                "erased_at": info.get("erased_at"),
+            }
+        )
     return {"subjects": subjects}
 
 
 # ── Credential Vault Endpoints (Stage 8) ────────────────────────────────────
+
 
 @app.post("/credentials")
 async def store_credential(req: StoreCredentialRequest):
@@ -430,11 +461,16 @@ async def list_credentials():
     """List registered tools and credential names. Values never returned."""
     conn = _get_cred_db()
     try:
-        rows = conn.execute("SELECT tool_id, name, created_at FROM credentials ORDER BY tool_id, name").fetchall()
+        rows = conn.execute(
+            "SELECT tool_id, name, created_at FROM credentials ORDER BY tool_id, name"
+        ).fetchall()
     finally:
         conn.close()
 
-    credentials = [{"tool_id": r["tool_id"], "name": r["name"], "created_at": r["created_at"]} for r in rows]
+    credentials = [
+        {"tool_id": r["tool_id"], "name": r["name"], "created_at": r["created_at"]}
+        for r in rows
+    ]
     return {"credentials": credentials}
 
 
@@ -443,7 +479,9 @@ async def delete_credential(tool_id: str, name: str):
     """Delete a stored credential."""
     conn = _get_cred_db()
     try:
-        result = conn.execute("DELETE FROM credentials WHERE tool_id = ? AND name = ?", (tool_id, name))
+        result = conn.execute(
+            "DELETE FROM credentials WHERE tool_id = ? AND name = ?", (tool_id, name)
+        )
         conn.commit()
         if result.rowcount == 0:
             raise HTTPException(404, f"No credential found for {tool_id}/{name}")
@@ -459,7 +497,9 @@ async def credential_status(tool_id: str):
     """Check whether credentials exist for a tool."""
     conn = _get_cred_db()
     try:
-        rows = conn.execute("SELECT name, created_at FROM credentials WHERE tool_id = ?", (tool_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT name, created_at FROM credentials WHERE tool_id = ?", (tool_id,)
+        ).fetchall()
     finally:
         conn.close()
 
@@ -537,11 +577,15 @@ async def fetch_credential_for_execution(
 
     # SECURITY: decrypt and return — value used only for execution, never logged
     plaintext = _decrypt_credential(row["encrypted"])
-    print(f"[HSM] Credential accessed: {tool_id}/{name} for action={action_id} agent={agent_id}", flush=True)
+    print(
+        f"[HSM] Credential accessed: {tool_id}/{name} for action={action_id} agent={agent_id}",
+        flush=True,
+    )
     return plaintext
 
 
 # ── Health ───────────────────────────────────────────────────────────────────
+
 
 @app.get("/health")
 async def health():
@@ -553,6 +597,7 @@ async def health():
 
 
 # ── Startup ──────────────────────────────────────────────────────────────────
+
 
 @app.on_event("startup")
 async def startup():
@@ -568,4 +613,3 @@ if __name__ == "__main__":
     print(f"[HSM] PKCS#11 lib: {PKCS11_LIB}", flush=True)
     print(f"[HSM] Token label: {TOKEN_LABEL}", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8300, log_level="info")
-

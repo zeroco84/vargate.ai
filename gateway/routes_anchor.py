@@ -5,17 +5,15 @@ Extracted from main.py for maintainability (Audit Item 14).
 """
 
 import hashlib as _hashlib
-import json
-from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
-from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, Header, HTTPException, Query
 
 router = APIRouter(tags=["Blockchain"])
 
 
 # ── Anchor trigger ──────────────────────────────────────────────────────────
+
 
 @router.post("/anchor/trigger")
 async def trigger_anchor():
@@ -31,7 +29,8 @@ async def trigger_anchor():
                 f"https://sepolia.etherscan.io/tx/{result['tx_hash']}"
             )
             main.write_anchor_audit_record(
-                conn, result,
+                conn,
+                result,
                 contract_address=main.merkle_blockchain_client.contract_address,
             )
             return result
@@ -71,9 +70,13 @@ async def verify_anchor():
 
     tip = main._get_chain_tip()
     if not main.blockchain_client:
-        return {"error": "blockchain unavailable",
-                "match": False, "computed_root": None, "on_chain_root": None,
-                "record_count": tip["record_count"]}
+        return {
+            "error": "blockchain unavailable",
+            "match": False,
+            "computed_root": None,
+            "on_chain_root": None,
+            "record_count": tip["record_count"],
+        }
 
     latest = main.blockchain_client.get_latest_anchor()
     if not latest:
@@ -123,9 +126,7 @@ async def anchor_proof(action_id: str):
         record_hash = row["record_hash"]
         tree = await main.tree_cache.get(conn)
 
-        all_rows = conn.execute(
-            "SELECT id FROM audit_log ORDER BY id ASC"
-        ).fetchall()
+        all_rows = conn.execute("SELECT id FROM audit_log ORDER BY id ASC").fetchall()
         record_ids = [r["id"] for r in all_rows]
 
         try:
@@ -180,8 +181,12 @@ async def verify_anchor_chain():
                 bytes.fromhex(prev_root) + bytes.fromhex(merkle_root)
             ).hexdigest()
 
-            prev_matches = (stored_prev.lstrip("0") or "0") == (prev_root.lstrip("0") or "0")
-            hash_matches = (stored_hash.lstrip("0") or "0") == (expected_hash.lstrip("0") or "0")
+            prev_matches = (stored_prev.lstrip("0") or "0") == (
+                prev_root.lstrip("0") or "0"
+            )
+            hash_matches = (stored_hash.lstrip("0") or "0") == (
+                expected_hash.lstrip("0") or "0"
+            )
             link_valid = prev_matches and hash_matches
 
             entry = {
@@ -214,6 +219,7 @@ async def verify_anchor_chain():
 async def get_merkle_roots():
     """Return all locally-recorded Merkle roots."""
     import main
+
     conn = main.get_db()
     try:
         rows = conn.execute(
@@ -242,6 +248,7 @@ async def get_merkle_roots():
 
 # ── Sprint 5: Hourly Merkle Tree API (AG-2.2 / AG-2.3) ─────────────────────
 
+
 @router.get("/audit/merkle/roots")
 async def audit_merkle_roots(
     limit: int = Query(default=100, le=500),
@@ -252,6 +259,7 @@ async def audit_merkle_roots(
     """Get Merkle tree roots for the tenant's audit records."""
     import main
     from merkle import build_hourly_trees
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -300,14 +308,17 @@ async def audit_merkle_proof(
 ):
     """Get a Merkle inclusion proof for a specific audit record hash."""
     import main
-    from merkle import get_inclusion_proof, build_hourly_trees
+    from merkle import build_hourly_trees, get_inclusion_proof
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         build_hourly_trees(conn, tenant["tenant_id"])
         result = get_inclusion_proof(conn, record_hash, tenant["tenant_id"])
         if not result:
-            raise HTTPException(404, "Record not found or not yet in a completed hourly tree")
+            raise HTTPException(
+                404, "Record not found or not yet in a completed hourly tree"
+            )
         return result
     finally:
         conn.close()
@@ -324,12 +335,15 @@ async def audit_merkle_consistency(
     """Verify consistency between two Merkle trees."""
     import main
     from merkle import get_consistency_proof
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         result = get_consistency_proof(conn, tenant["tenant_id"], tree_n, tree_m)
         if "error" in result:
-            raise HTTPException(400 if "must be less" in result["error"] else 404, result["error"])
+            raise HTTPException(
+                400 if "must be less" in result["error"] else 404, result["error"]
+            )
         return result
     finally:
         conn.close()
@@ -343,7 +357,8 @@ async def audit_merkle_verify(
 ):
     """Verify the overall Merkle tree integrity."""
     import main
-    from merkle import verify_merkle_chain, build_hourly_trees
+    from merkle import build_hourly_trees, verify_merkle_chain
+
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
@@ -454,6 +469,7 @@ async def consistency_proof(from_anchor_index: int, to_anchor_index: int):
 async def get_anchor_log():
     """Return all Merkle anchor records with explorer URLs."""
     import main
+
     conn = main.get_db()
     try:
         try:
@@ -470,7 +486,9 @@ async def get_anchor_log():
         anchors = []
         for r in rows:
             d = dict(r)
-            d["sepolia_explorer_url"] = f"https://sepolia.etherscan.io/tx/{d.get('tx_hash', '')}"
+            d["sepolia_explorer_url"] = (
+                f"https://sepolia.etherscan.io/tx/{d.get('tx_hash', '')}"
+            )
             d["source"] = "sepolia_merkle"
             anchors.append(d)
 
@@ -494,8 +512,12 @@ async def anchor_status():
     from blockchain_client import ANCHOR_MODE
 
     legacy_connected = main.blockchain_client is not None
-    legacy_addr = main.blockchain_client.contract_address if main.blockchain_client else None
-    legacy_count = main.blockchain_client.get_anchor_count() if main.blockchain_client else 0
+    legacy_addr = (
+        main.blockchain_client.contract_address if main.blockchain_client else None
+    )
+    legacy_count = (
+        main.blockchain_client.get_anchor_count() if main.blockchain_client else 0
+    )
 
     sepolia_connected = (
         main.merkle_blockchain_client is not None
@@ -512,9 +534,7 @@ async def anchor_status():
         else None
     )
     sepolia_count = (
-        main.merkle_blockchain_client.get_anchor_count()
-        if sepolia_connected
-        else 0
+        main.merkle_blockchain_client.get_anchor_count() if sepolia_connected else 0
     )
     latest_merkle = (
         await main.merkle_blockchain_client.get_latest_anchor()
@@ -541,8 +561,10 @@ async def anchor_status():
     connected_chains = main.chain_manager.connected_chains if main.chain_manager else []
 
     return {
-        "network": connected_chains[0] if connected_chains else (
-            "hardhat" if legacy_connected else None
+        "network": (
+            connected_chains[0]
+            if connected_chains
+            else ("hardhat" if legacy_connected else None)
         ),
         "connected_chains": connected_chains,
         "contract_address": sepolia_addr or legacy_addr,
@@ -550,10 +572,14 @@ async def anchor_status():
         "anchor_count": sepolia_count or legacy_count,
         "latest_merkle_root": latest_merkle["merkle_root"] if latest_merkle else None,
         "last_anchor_time": last_anchor_time,
-        "web3_connected": sepolia_connected or legacy_connected or bool(connected_chains),
+        "web3_connected": sepolia_connected
+        or legacy_connected
+        or bool(connected_chains),
         "anchor_interval_seconds": main.ANCHOR_INTERVAL_SECONDS,
         "anchor_mode": ANCHOR_MODE,
-        "blockchain_connected": legacy_connected or sepolia_connected or bool(connected_chains),
+        "blockchain_connected": legacy_connected
+        or sepolia_connected
+        or bool(connected_chains),
         "merkle_trees": {
             "total": tree_stats["total"] if tree_stats else 0,
             "anchored": tree_stats["anchored"] if tree_stats else 0,

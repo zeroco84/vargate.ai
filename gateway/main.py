@@ -15,29 +15,24 @@ import json
 import os
 import re
 import secrets
-import shutil
 import sqlite3
-import subprocess
-import tempfile
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
+import approval as approval_module
+import auth as auth_module
+import execution_engine
+import failure_modes
+import gtm_constraints
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
-from fastapi.responses import RedirectResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-import execution_engine
-import auth as auth_module
-import approval as approval_module
-import gtm_constraints
-import transparency as transparency_module
 import webhooks as webhooks_module
-import failure_modes
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -50,11 +45,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 HSM_URL = os.getenv("HSM_URL", "http://hsm:8300")
 MOCK_TOOLS_URL = os.getenv("MOCK_TOOLS_URL", "http://mock-tools:9000")
 BLOCKCHAIN_RPC_URL = os.getenv("BLOCKCHAIN_RPC_URL", "http://blockchain:8545")
-CONTRACT_ADDRESS_FILE = os.getenv("CONTRACT_ADDRESS_FILE", "/shared/contract_address.txt")
+CONTRACT_ADDRESS_FILE = os.getenv(
+    "CONTRACT_ADDRESS_FILE", "/shared/contract_address.txt"
+)
 CONTRACT_ABI_FILE = os.getenv("CONTRACT_ABI_FILE", "/shared/AuditAnchor.abi.json")
 ANCHOR_INTERVAL_SECONDS = int(os.getenv("ANCHOR_INTERVAL_SECONDS", "3600"))
 SEPOLIA_RPC_URL = os.getenv("SEPOLIA_RPC_URL", "")
-MERKLE_CONTRACT_FILE = os.getenv("MERKLE_CONTRACT_FILE", "/shared/MerkleAuditAnchor.json")
+MERKLE_CONTRACT_FILE = os.getenv(
+    "MERKLE_CONTRACT_FILE", "/shared/MerkleAuditAnchor.json"
+)
 
 # PII detection patterns
 _PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -80,13 +79,34 @@ app = FastAPI(
         "Implements AGCS v0.9 (Agent Governance Certification Standard)."
     ),
     openapi_tags=[
-        {"name": "Tool Calls", "description": "Core proxy endpoint — submit agent tool calls for governance evaluation"},
-        {"name": "Auth", "description": "Signup, email verification, GitHub OAuth, sessions, API key rotation"},
-        {"name": "Tenants", "description": "Tenant CRUD, dashboard settings, public dashboard"},
-        {"name": "Approval Queue", "description": "Human-in-the-loop approval workflow for flagged actions"},
-        {"name": "Audit", "description": "Hash-chained audit log, verification, GDPR erasure, replay"},
-        {"name": "Blockchain", "description": "Merkle tree anchoring, proofs, verification, multi-chain status"},
-        {"name": "Credentials", "description": "HSM-backed credential vault for agent-blind brokered execution"},
+        {
+            "name": "Tool Calls",
+            "description": "Core proxy endpoint — submit agent tool calls for governance evaluation",
+        },
+        {
+            "name": "Auth",
+            "description": "Signup, email verification, GitHub OAuth, sessions, API key rotation",
+        },
+        {
+            "name": "Tenants",
+            "description": "Tenant CRUD, dashboard settings, public dashboard",
+        },
+        {
+            "name": "Approval Queue",
+            "description": "Human-in-the-loop approval workflow for flagged actions",
+        },
+        {
+            "name": "Audit",
+            "description": "Hash-chained audit log, verification, GDPR erasure, replay",
+        },
+        {
+            "name": "Blockchain",
+            "description": "Merkle tree anchoring, proofs, verification, multi-chain status",
+        },
+        {
+            "name": "Credentials",
+            "description": "HSM-backed credential vault for agent-blind brokered execution",
+        },
         {"name": "Policy", "description": "OPA policy rules and bundle status"},
         {"name": "System", "description": "Health check, backup, metrics"},
     ],
@@ -106,18 +126,23 @@ app.add_middleware(
 
 # ── Prometheus metrics ─────────────────────────────────────────────────────
 
-import metrics as prom
+import metrics as prom  # noqa: E402
 
 # ── Request body size limit middleware ─────────────────────────────────────
+
 
 @app.middleware("http")
 async def limit_request_size(request, call_next):
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > 1_048_576:  # 1MB
-        return JSONResponse(status_code=413, content={"detail": "Request body too large"})
+        return JSONResponse(
+            status_code=413, content={"detail": "Request body too large"}
+        )
     return await call_next(request)
 
+
 # ── Request logging + metrics middleware ───────────────────────────────────
+
 
 @app.middleware("http")
 async def request_logging_middleware(request, call_next):
@@ -135,7 +160,9 @@ async def request_logging_middleware(request, call_next):
     prom.ACTIVE_REQUESTS.dec()
     path_label = request.url.path
     status_label = str(response.status_code)
-    prom.REQUEST_DURATION.labels(request.method, path_label, status_label).observe(duration)
+    prom.REQUEST_DURATION.labels(request.method, path_label, status_label).observe(
+        duration
+    )
     prom.REQUESTS_TOTAL.labels(request.method, path_label, status_label).inc()
     duration_ms = int(duration * 1000)
     client_ip = request.client.host if request.client else "unknown"
@@ -168,7 +195,7 @@ chain_manager = None
 _tree_anchor_task = None
 
 # Merkle tree cache (Fix 2 — avoids full rebuild on every proof/verify request)
-from tree_cache import tree_cache
+from tree_cache import tree_cache  # noqa: E402
 
 # Fix 5: Background task for local Merkle root recording
 _merkle_root_task = None
@@ -180,7 +207,9 @@ async def run_merkle_root_loop(get_db_fn):
     Merkle trees and records cumulative roots at regular intervals.
     Runs every MERKLE_ROOT_INTERVAL_SECONDS (default 3600s, must be ≤ 3600s).
     """
-    from merkle import MerkleTree as _MT, build_hourly_trees
+    from merkle import MerkleTree as _MT
+    from merkle import build_hourly_trees
+
     await asyncio.sleep(20)  # Initial delay
 
     while True:
@@ -225,41 +254,58 @@ async def run_merkle_root_loop(get_db_fn):
 
 # ── Request / Response models ────────────────────────────────────────────────
 
+
 class ContextOverride(BaseModel):
     is_business_hours: Optional[bool] = None
 
 
 class ToolCallRequest(BaseModel):
-    model_config = ConfigDict(json_schema_extra={
-        "examples": [{
-            "agent_id": "my-agent-v1",
-            "agent_type": "autonomous",
-            "agent_version": "1.0.0",
-            "tool": "http",
-            "method": "GET",
-            "params": {"url": "https://api.example.com/data", "headers": {"Accept": "application/json"}},
-        }]
-    })
-    agent_id: str = Field(..., min_length=1, max_length=256, pattern=r'^[a-zA-Z0-9_\-\.]+$')
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "agent_id": "my-agent-v1",
+                    "agent_type": "autonomous",
+                    "agent_version": "1.0.0",
+                    "tool": "http",
+                    "method": "GET",
+                    "params": {
+                        "url": "https://api.example.com/data",
+                        "headers": {"Accept": "application/json"},
+                    },
+                }
+            ]
+        }
+    )
+    agent_id: str = Field(
+        ..., min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_\-\.]+$"
+    )
     agent_type: str = Field(default="unknown", max_length=64)
-    agent_version: str = Field(default="0.0.0", max_length=32, pattern=r'^\d+\.\d+\.\d+.*$')
-    tool: str = Field(..., min_length=1, max_length=256, pattern=r'^[a-zA-Z0-9_\-\.:/]+$')
-    method: str = Field(..., min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9_\-\.]+$')
+    agent_version: str = Field(
+        default="0.0.0", max_length=32, pattern=r"^\d+\.\d+\.\d+.*$"
+    )
+    tool: str = Field(
+        ..., min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_\-\.:/]+$"
+    )
+    method: str = Field(
+        ..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.]+$"
+    )
     params: dict[str, Any] = Field(default={})
     context_override: Optional[ContextOverride] = None
 
-    @field_validator('params')
+    @field_validator("params")
     @classmethod
     def validate_params_size(cls, v):
         """Reject oversized params to prevent abuse."""
         serialized = json.dumps(v)
         if len(serialized) > 65536:  # 64KB max
-            raise ValueError('params payload exceeds 64KB limit')
+            raise ValueError("params payload exceeds 64KB limit")
         return v
 
 
 class AllowedResponse(BaseModel):
     """Returned when a tool call is allowed by policy."""
+
     status: str = "allowed"
     action_id: str
     execution_mode: Optional[str] = None
@@ -269,6 +315,7 @@ class AllowedResponse(BaseModel):
 
 class PendingApprovalResponse(BaseModel):
     """Returned when a tool call requires human approval."""
+
     status: str = "pending_approval"
     action_id: str
     message: str
@@ -276,6 +323,7 @@ class PendingApprovalResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     """Gateway health status including all dependency checks."""
+
     status: str
     service: str
     redis: bool
@@ -286,9 +334,9 @@ class HealthResponse(BaseModel):
     sepolia_merkle: bool
 
 
-
 class BlockedResponse(BaseModel):
     """Returned when a tool call is denied by policy."""
+
     status: str = "blocked"
     action_id: str
     violations: list[str]
@@ -297,6 +345,7 @@ class BlockedResponse(BaseModel):
 
 
 # ── SQLite setup ─────────────────────────────────────────────────────────────
+
 
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -443,9 +492,11 @@ def init_db():
     """)
     # Sprint 5 (AG-2.2): Hourly tenant-scoped Merkle trees
     from merkle import init_merkle_trees_table
+
     init_merkle_trees_table(conn)
     # Run schema migrations (Audit Item 15)
     from migrations import run_migrations
+
     run_migrations(conn)
     # ── Seed default tenant (Sprint 2) ──────────────────────────────
     existing = conn.execute(
@@ -465,7 +516,10 @@ def init_db():
                 200,
             ),
         )
-        print(f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (key={default_api_key[:20]}...)", flush=True)
+        print(
+            f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (key={default_api_key[:20]}...)",
+            flush=True,
+        )
     conn.commit()
     conn.close()
 
@@ -493,15 +547,20 @@ def _seed_gtm_tenant(conn: sqlite3.Connection):
                 gtm_api_key,
                 GTM_TENANT_NAME,
                 datetime.now(timezone.utc).isoformat(),
-                5,   # conservative rate limit for GTM agent
+                5,  # conservative rate limit for GTM agent
                 10,
-                1,   # public dashboard enabled
+                1,  # public dashboard enabled
                 "vargate-gtm-agent",
             ),
         )
         conn.commit()
-        print(f"[VARGATE] GTM tenant created: {GTM_TENANT_ID} (key={gtm_api_key[:20]}...)", flush=True)
-        print(f"[VARGATE] GTM public dashboard: /dashboard/vargate-gtm-agent", flush=True)
+        print(
+            f"[VARGATE] GTM tenant created: {GTM_TENANT_ID} (key={gtm_api_key[:20]}...)",
+            flush=True,
+        )
+        print(
+            "[VARGATE] GTM public dashboard: /dashboard/vargate-gtm-agent", flush=True
+        )
 
 
 MERKLE_ROOT_INTERVAL_SECONDS = int(os.getenv("MERKLE_ROOT_INTERVAL_SECONDS", "3600"))
@@ -509,6 +568,7 @@ MERKLE_ROOT_INTERVAL_SECONDS = int(os.getenv("MERKLE_ROOT_INTERVAL_SECONDS", "36
 # ── Hash-chain functions ────────────────────────────────────────────────────
 # Note: hash computation uses the original Session 1 fields only for
 # backward compatibility. New columns are NOT included in the hash.
+
 
 def compute_record_hash(
     action_id: str,
@@ -583,7 +643,11 @@ def write_audit_record(
     violations_str = json.dumps(violations, separators=(",", ":"))
     opa_input_str = json.dumps(opa_input, separators=(",", ":")) if opa_input else None
     pii_fields_str = json.dumps(pii_fields) if pii_fields else None
-    execution_result_str = json.dumps(execution_result, separators=(",", ":")) if execution_result else None
+    execution_result_str = (
+        json.dumps(execution_result, separators=(",", ":"))
+        if execution_result
+        else None
+    )
     prev_hash = get_prev_hash(conn, tenant_id=tenant_id)
 
     record_hash = compute_record_hash(
@@ -614,12 +678,32 @@ def write_audit_record(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            action_id, tenant_id, agent_id, tool, method, params_str, requested_at,
-            decision, violations_str, severity, alert_tier, bundle_revision,
-            prev_hash, record_hash, now,
-            evaluation_pass, anomaly_score_at_eval, opa_input_str,
-            contains_pii, pii_subject_id, pii_fields_str, "active",
-            execution_mode, execution_result_str, execution_latency_ms, credential_accessed,
+            action_id,
+            tenant_id,
+            agent_id,
+            tool,
+            method,
+            params_str,
+            requested_at,
+            decision,
+            violations_str,
+            severity,
+            alert_tier,
+            bundle_revision,
+            prev_hash,
+            record_hash,
+            now,
+            evaluation_pass,
+            anomaly_score_at_eval,
+            opa_input_str,
+            contains_pii,
+            pii_subject_id,
+            pii_fields_str,
+            "active",
+            execution_mode,
+            execution_result_str,
+            execution_latency_ms,
+            credential_accessed,
         ),
     )
     conn.commit()
@@ -638,7 +722,9 @@ def write_audit_record(
     tree_cache.invalidate()
 
 
-def write_anchor_audit_record(conn: sqlite3.Connection, anchor_result: dict, contract_address: str = None):
+def write_anchor_audit_record(
+    conn: sqlite3.Connection, anchor_result: dict, contract_address: str = None
+):
     """
     Fix 3 (AG-3.2): Write a blockchain anchor event into the hash-chained audit log.
 
@@ -696,16 +782,17 @@ def write_anchor_audit_record(conn: sqlite3.Connection, anchor_result: dict, con
 
 # ── Chain verification ───────────────────────────────────────────────────────
 
-def verify_chain_integrity(conn: sqlite3.Connection, tenant_id: Optional[str] = None) -> dict:
+
+def verify_chain_integrity(
+    conn: sqlite3.Connection, tenant_id: Optional[str] = None
+) -> dict:
     """Verify the hash chain. If tenant_id is given, verify only that tenant's chain.
     If tenant_id is None, verify all tenants independently."""
     if tenant_id is not None:
         return _verify_tenant_chain(conn, tenant_id)
 
     # Verify all tenants
-    tenant_rows = conn.execute(
-        "SELECT DISTINCT tenant_id FROM audit_log"
-    ).fetchall()
+    tenant_rows = conn.execute("SELECT DISTINCT tenant_id FROM audit_log").fetchall()
     if not tenant_rows:
         return {"valid": True, "record_count": 0}
 
@@ -771,6 +858,7 @@ def _verify_tenant_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
 
 # ── Helper: build OPA input ─────────────────────────────────────────────────
 
+
 def build_opa_input(
     req: ToolCallRequest,
     action_id: str,
@@ -798,7 +886,11 @@ def build_opa_input(
     policy_config = {}
     if tenant and tenant.get("policy_config"):
         try:
-            policy_config = json.loads(tenant["policy_config"]) if isinstance(tenant["policy_config"], str) else tenant["policy_config"]
+            policy_config = (
+                json.loads(tenant["policy_config"])
+                if isinstance(tenant["policy_config"], str)
+                else tenant["policy_config"]
+            )
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -948,14 +1040,14 @@ async def get_tenant(
 
 # ── Per-tenant rate limiting (Redis sliding window) ────────────────────────
 
+
 async def check_rate_limit(tenant: dict) -> bool:
     """Check and increment rate limit for a tenant. Returns True if allowed."""
-    global redis_pool
     if redis_pool is None:
         return True  # No Redis = no rate limiting
 
     tenant_id = tenant["tenant_id"]
-    rps = tenant["rate_limit_rps"]
+    _rps = tenant["rate_limit_rps"]  # noqa: F841
     burst = tenant["rate_limit_burst"]
     now_ts = time.time()
     window_key = f"t:{tenant_id}:ratelimit"
@@ -986,9 +1078,11 @@ async def check_rate_limit(tenant: dict) -> bool:
 
 # ── Redis behavioral history ────────────────────────────────────────────────
 
-async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> dict:
+
+async def fetch_behavioral_history(
+    agent_id: str, tenant_id: str = DEFAULT_TENANT_ID
+) -> dict:
     """Fetch agent behavioral history from Redis for Pass 2 enrichment."""
-    global redis_pool
     if redis_pool is None:
         return _default_history()
 
@@ -1011,14 +1105,24 @@ async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENAN
         action_count_24h = results[3] or 0
 
         anomaly_score = float(anomaly_raw) if anomaly_raw else 0.0
-        denied_10min = int(counters.get(b"denied_count_10min", counters.get("denied_count_10min", 0)))
-        high_value_24h = int(counters.get(b"high_value_count_24h", counters.get("high_value_count_24h", 0)))
-        violation_24h = int(counters.get(b"violation_count_24h", counters.get("violation_count_24h", 0)))
+        denied_10min = int(
+            counters.get(b"denied_count_10min", counters.get("denied_count_10min", 0))
+        )
+        high_value_24h = int(
+            counters.get(
+                b"high_value_count_24h", counters.get("high_value_count_24h", 0)
+            )
+        )
+        violation_24h = int(
+            counters.get(b"violation_count_24h", counters.get("violation_count_24h", 0))
+        )
 
         # Check 1-hour cooldown: active if 3+ violations in 24h AND last violation < 1h ago
         cooldown_active = False
         if violation_24h >= 3:
-            last_violation_ts = counters.get(b"last_violation_ts", counters.get("last_violation_ts", None))
+            last_violation_ts = counters.get(
+                b"last_violation_ts", counters.get("last_violation_ts", None)
+            )
             if last_violation_ts:
                 elapsed = now_ts - float(last_violation_ts)
                 cooldown_active = elapsed < 3600  # 1 hour cooldown
@@ -1045,7 +1149,11 @@ async def fetch_behavioral_history(agent_id: str, tenant_id: str = DEFAULT_TENAN
 def _default_history() -> dict:
     return {
         "last_10min": {"action_count": 0, "denied_count": 0},
-        "last_24h": {"high_value_transactions": 0, "policy_violations": 0, "action_count": 0},
+        "last_24h": {
+            "high_value_transactions": 0,
+            "policy_violations": 0,
+            "action_count": 0,
+        },
         "anomaly_score": 0.0,
         "flagged": False,
         "cooldown_active": False,
@@ -1060,7 +1168,6 @@ async def update_behavioral_history(
     tenant_id: str = DEFAULT_TENANT_ID,
 ):
     """Update Redis behavioral history after a decision."""
-    global redis_pool
     if redis_pool is None:
         return
 
@@ -1095,8 +1202,9 @@ async def update_behavioral_history(
             pipe.hincrby(f"{prefix}:counters", "high_value_count_24h", 1)
 
         # Update anomaly score
-        pipe.set(f"{prefix}:anomaly_score", str(round(new_score, 6)),
-                 ex=7 * 86400)  # 7 day TTL
+        pipe.set(
+            f"{prefix}:anomaly_score", str(round(new_score, 6)), ex=7 * 86400
+        )  # 7 day TTL
 
         # Add action to sorted set
         pipe.zadd(f"{prefix}:actions", {action_id: now_ts})
@@ -1114,7 +1222,6 @@ async def update_behavioral_history(
 
 async def flush_agent_history(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID):
     """Clear all Redis data for an agent (used by tests)."""
-    global redis_pool
     if redis_pool is None:
         return
     prefix = f"t:{tenant_id}:agent:{agent_id}"
@@ -1132,9 +1239,10 @@ async def flush_agent_history(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID)
         print(f"[REDIS] Error flushing agent {agent_id}: {e}", flush=True)
 
 
-async def get_agent_anomaly_score(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> float:
+async def get_agent_anomaly_score(
+    agent_id: str, tenant_id: str = DEFAULT_TENANT_ID
+) -> float:
     """Get current anomaly score for an agent."""
-    global redis_pool
     if redis_pool is None:
         return 0.0
     prefix = f"t:{tenant_id}:agent:{agent_id}"
@@ -1145,10 +1253,11 @@ async def get_agent_anomaly_score(agent_id: str, tenant_id: str = DEFAULT_TENANT
         return 0.0
 
 
-async def _agent_has_violations(agent_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> bool:
+async def _agent_has_violations(
+    agent_id: str, tenant_id: str = DEFAULT_TENANT_ID
+) -> bool:
     """Quick check: does this agent have any recorded violations?
     Single Redis HGET — fast enough for every request."""
-    global redis_pool
     if redis_pool is None:
         return False
     prefix = f"t:{tenant_id}:agent:{agent_id}"
@@ -1160,6 +1269,7 @@ async def _agent_has_violations(agent_id: str, tenant_id: str = DEFAULT_TENANT_I
 
 
 # ── OPA query helper ────────────────────────────────────────────────────────
+
 
 async def query_opa(opa_input: dict, tenant: dict = None) -> dict:
     """Send input to OPA and return the decision result.
@@ -1180,13 +1290,29 @@ async def query_opa(opa_input: dict, tenant: dict = None) -> dict:
             if tenant:
                 fm = failure_modes.handle_failure(tenant, "opa", e)
                 if fm["status"] == "allowed":
-                    print(f"[OPA-FAILOPEN] OPA unreachable, fail_open for tenant {tenant['tenant_id']}", flush=True)
-                    return {"allow": True, "violations": [], "severity": "none",
-                            "failure_mode": "fail_open", "warning": fm["warning"]}
+                    print(
+                        f"[OPA-FAILOPEN] OPA unreachable, fail_open for tenant {tenant['tenant_id']}",
+                        flush=True,
+                    )
+                    return {
+                        "allow": True,
+                        "violations": [],
+                        "severity": "none",
+                        "failure_mode": "fail_open",
+                        "warning": fm["warning"],
+                    }
                 elif fm["status"] == "escalated":
-                    print(f"[OPA-QUEUE] OPA unreachable, fail_to_queue for tenant {tenant['tenant_id']}", flush=True)
-                    return {"allow": True, "requires_human": True, "violations": [],
-                            "severity": "none", "failure_mode": "fail_to_queue"}
+                    print(
+                        f"[OPA-QUEUE] OPA unreachable, fail_to_queue for tenant {tenant['tenant_id']}",
+                        flush=True,
+                    )
+                    return {
+                        "allow": True,
+                        "requires_human": True,
+                        "violations": [],
+                        "severity": "none",
+                        "failure_mode": "fail_to_queue",
+                    }
             # Default: fail_closed
             raise HTTPException(
                 status_code=502,
@@ -1197,6 +1323,7 @@ async def query_opa(opa_input: dict, tenant: dict = None) -> dict:
 
 
 # ── Bundle revision ─────────────────────────────────────────────────────────
+
 
 async def get_bundle_revision() -> str:
     """Fetch the current bundle revision from the bundle server."""
@@ -1217,27 +1344,54 @@ POLICY_TEMPLATES = {
     "general": {
         "name": "General Purpose",
         "description": "Sensible defaults for any agent type — rate limits, anomaly detection, destructive action approval",
-        "config_keys": ["daily_action_limit", "anomaly_threshold", "cooldown_violations", "approve_destructive"],
+        "config_keys": [
+            "daily_action_limit",
+            "anomaly_threshold",
+            "cooldown_violations",
+            "approve_destructive",
+        ],
     },
     "financial": {
         "name": "Financial Services",
         "description": "Transaction limits, currency enforcement, business-hours controls, mandatory approval above threshold",
-        "config_keys": ["transaction_limit", "currency", "business_hours_only", "approval_threshold", "daily_transaction_cap"],
+        "config_keys": [
+            "transaction_limit",
+            "currency",
+            "business_hours_only",
+            "approval_threshold",
+            "daily_transaction_cap",
+        ],
     },
     "email": {
         "name": "Email & Outreach",
         "description": "Blocked recipient domains, daily send limits, AI disclosure mandates, first-contact approval",
-        "config_keys": ["daily_send_limit", "require_disclosure", "first_contact_approval", "blocked_domains"],
+        "config_keys": [
+            "daily_send_limit",
+            "require_disclosure",
+            "first_contact_approval",
+            "blocked_domains",
+        ],
     },
     "crm": {
         "name": "CRM & Sales",
         "description": "Record modification limits, field-level access control, bulk operation approval, export restrictions",
-        "config_keys": ["bulk_threshold", "allow_delete", "export_approval", "restricted_fields"],
+        "config_keys": [
+            "bulk_threshold",
+            "allow_delete",
+            "export_approval",
+            "restricted_fields",
+        ],
     },
     "data_access": {
         "name": "Data Access",
         "description": "PII handling, data residency controls, query scope limits, masking requirements",
-        "config_keys": ["max_row_limit", "pii_allowed", "allowed_regions", "require_masking", "daily_query_limit"],
+        "config_keys": [
+            "max_row_limit",
+            "pii_allowed",
+            "allowed_regions",
+            "require_masking",
+            "daily_query_limit",
+        ],
     },
 }
 
@@ -1251,11 +1405,11 @@ async def list_policy_templates():
 @app.get("/policy/rules", tags=["Policy"])
 async def policy_rules():
     """Parse active OPA policy files and return structured rule descriptions."""
-    import glob as glob_mod
-
     rules = []
-    policy_dir = "/app/policies" if os.path.isdir("/app/policies") else os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "policies"
+    policy_dir = (
+        "/app/policies"
+        if os.path.isdir("/app/policies")
+        else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "policies")
     )
 
     # Find all .rego files
@@ -1291,7 +1445,11 @@ async def policy_rules():
                 # Capture comments above rules
                 if stripped.startswith("#") and not in_violation:
                     comment_text = stripped.lstrip("#").strip()
-                    if comment_text and not comment_text.startswith("──") and not comment_text.startswith("═"):
+                    if (
+                        comment_text
+                        and not comment_text.startswith("──")
+                        and not comment_text.startswith("═")
+                    ):
                         current_comment = comment_text
                     continue
 
@@ -1310,12 +1468,15 @@ async def policy_rules():
                         rule_body = "\n".join(block_lines)
                         msg_match = re.search(r'msg\s*:=\s*"([^"]+)"', rule_body)
                         rule_id = msg_match.group(1) if msg_match else "unknown"
-                        rules.append({
-                            "id": rule_id,
-                            "description": current_comment or _rule_id_to_description(rule_id),
-                            "type": "deny",
-                            "source": fname,
-                        })
+                        rules.append(
+                            {
+                                "id": rule_id,
+                                "description": current_comment
+                                or _rule_id_to_description(rule_id),
+                                "type": "deny",
+                                "source": fname,
+                            }
+                        )
                         in_violation = False
                         current_comment = ""
                     continue
@@ -1323,12 +1484,14 @@ async def policy_rules():
                 # requires_human_approval rules
                 if "requires_human_approval if" in stripped:
                     desc = current_comment or "Requires human approval"
-                    rules.append({
-                        "id": f"requires_human_approval:{desc}",
-                        "description": desc,
-                        "type": "approval",
-                        "source": fname,
-                    })
+                    rules.append(
+                        {
+                            "id": f"requires_human_approval:{desc}",
+                            "description": desc,
+                            "type": "approval",
+                            "source": fname,
+                        }
+                    )
                     current_comment = ""
                     continue
 
@@ -1390,6 +1553,7 @@ async def bundle_status_proxy():
 
 # ── PII detection and HSM encryption ────────────────────────────────────────
 
+
 def detect_pii_fields(params: dict) -> list[str]:
     """Scan params for fields containing PII. Returns list of field names."""
     pii_fields = []
@@ -1444,7 +1608,9 @@ async def encrypt_pii_in_params(
                     f"[ENCRYPTED:{data['key_id']}:{data['ciphertext_b64']}]"
                 )
             else:
-                print(f"[VARGATE] HSM encrypt failed for {field}: {resp.text}", flush=True)
+                print(
+                    f"[VARGATE] HSM encrypt failed for {field}: {resp.text}", flush=True
+                )
 
     return encrypted_params
 
@@ -1455,7 +1621,7 @@ async def decrypt_field_value(value: str) -> dict:
         return {"plaintext": value, "encrypted": False}
 
     # Parse [ENCRYPTED:key_id:ciphertext_b64]
-    inner = value[len("[ENCRYPTED:"):-1]
+    inner = value[len("[ENCRYPTED:") : -1]
     parts = inner.split(":", 1)
     if len(parts) != 2:
         return {"error": "malformed_encrypted_field"}
@@ -1475,11 +1641,16 @@ async def decrypt_field_value(value: str) -> dict:
             data = resp.json()
             if "error" in data:
                 return data
-            return {"plaintext": data["plaintext"], "encrypted": True, "decrypted": True}
+            return {
+                "plaintext": data["plaintext"],
+                "encrypted": True,
+                "decrypted": True,
+            }
         return {"error": f"HSM returned {resp.status_code}", "encrypted": True}
 
 
 # ── Startup / Shutdown ──────────────────────────────────────────────────────
+
 
 @app.on_event("startup")
 async def startup():
@@ -1508,31 +1679,38 @@ async def startup():
         await redis_pool.ping()
         print("[VARGATE] Redis connected.", flush=True)
     except Exception as e:
-        print(f"[VARGATE] Redis not available ({e}), running without history.", flush=True)
+        print(
+            f"[VARGATE] Redis not available ({e}), running without history.", flush=True
+        )
         redis_pool = None
 
     # Initialize legacy blockchain anchoring (Hardhat)
     if _init_blockchain():
         _anchor_task = asyncio.create_task(_anchor_loop())
-        print(f"[VARGATE] Legacy anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).", flush=True)
+        print(
+            f"[VARGATE] Legacy anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).",
+            flush=True,
+        )
 
     # Sprint 5: Initialize multi-chain blockchain anchoring
     try:
+        from blockchain_client import CONTRACT_INFO_FILE as _SEPOLIA_CONTRACT
+        from blockchain_client import DEPLOYER_PRIVATE_KEY as _DEPLOYER_KEY
+        from blockchain_client import ETH_CONTRACT_FILE as _ETH_CONTRACT
+        from blockchain_client import ETH_MAINNET_PRIVATE_KEY as _ETH_KEY
+        from blockchain_client import ETH_MAINNET_RPC_URL as _ETH_RPC
+        from blockchain_client import POLYGON_CONTRACT_FILE as _POLYGON_CONTRACT
+        from blockchain_client import POLYGON_PRIVATE_KEY as _POLYGON_KEY
+        from blockchain_client import POLYGON_RPC_URL as _POLYGON_RPC
+        from blockchain_client import SEPOLIA_RPC_URL as _SEPOLIA_RPC
+        from blockchain_client import BlockchainClient as MerkleBlockchainClient
         from blockchain_client import (
-            BlockchainClient as MerkleBlockchainClient,
             ChainManager,
             EnvVarSigner,
-            run_anchor_loop as merkle_anchor_loop,
+        )
+        from blockchain_client import run_anchor_loop as merkle_anchor_loop
+        from blockchain_client import (
             run_tree_anchor_loop,
-            SEPOLIA_RPC_URL as _SEPOLIA_RPC,
-            POLYGON_RPC_URL as _POLYGON_RPC,
-            ETH_MAINNET_RPC_URL as _ETH_RPC,
-            POLYGON_PRIVATE_KEY as _POLYGON_KEY,
-            ETH_MAINNET_PRIVATE_KEY as _ETH_KEY,
-            DEPLOYER_PRIVATE_KEY as _DEPLOYER_KEY,
-            CONTRACT_INFO_FILE as _SEPOLIA_CONTRACT,
-            POLYGON_CONTRACT_FILE as _POLYGON_CONTRACT,
-            ETH_CONTRACT_FILE as _ETH_CONTRACT,
         )
 
         chain_manager = ChainManager()
@@ -1566,7 +1744,9 @@ async def startup():
         if _POLYGON_RPC and _POLYGON_KEY and "amoy" in _POLYGON_RPC.lower():
             # Already connected above as "polygon", re-label
             if "polygon" in chain_manager.clients:
-                chain_manager.clients["polygon_amoy"] = chain_manager.clients.pop("polygon")
+                chain_manager.clients["polygon_amoy"] = chain_manager.clients.pop(
+                    "polygon"
+                )
 
         # Initialize Ethereum mainnet (institutional tier)
         if _ETH_RPC and _ETH_KEY:
@@ -1584,13 +1764,18 @@ async def startup():
             # Start cumulative anchor loop on primary client
             primary = chain_manager.get_default_client()
             if primary:
+
                 def _post_anchor(conn, result):
                     write_anchor_audit_record(
-                        conn, result,
+                        conn,
+                        result,
                         contract_address=primary.contract_address,
                     )
+
                 _merkle_anchor_task = asyncio.create_task(
-                    merkle_anchor_loop(primary, get_db_threadsafe, post_anchor_fn=_post_anchor)
+                    merkle_anchor_loop(
+                        primary, get_db_threadsafe, post_anchor_fn=_post_anchor
+                    )
                 )
 
             # Start hourly tree anchor loop
@@ -1603,14 +1788,19 @@ async def startup():
                 flush=True,
             )
         else:
-            print("[VARGATE] No blockchain chains configured — anchoring disabled.", flush=True)
+            print(
+                "[VARGATE] No blockchain chains configured — anchoring disabled.",
+                flush=True,
+            )
     except Exception as e:
         print(f"[VARGATE] Blockchain init failed: {e}", flush=True)
         merkle_blockchain_client = None
         chain_manager = None
 
     # Fix 5 (AG-2.2): Start background Merkle root recording loop
-    _merkle_root_task = asyncio.create_task(run_merkle_root_loop(get_db_threadsafe))
+    _merkle_root_task = asyncio.create_task(  # noqa: F841
+        run_merkle_root_loop(get_db_threadsafe)
+    )
     print(
         f"[VARGATE] Merkle root recording started (interval: {MERKLE_ROOT_INTERVAL_SECONDS}s).",
         flush=True,
@@ -1618,7 +1808,10 @@ async def startup():
 
     # Initialize execution engine
     execution_engine.init(MOCK_TOOLS_URL)
-    print(f"[VARGATE] Execution engine initialized (mock-tools: {MOCK_TOOLS_URL}).", flush=True)
+    print(
+        f"[VARGATE] Execution engine initialized (mock-tools: {MOCK_TOOLS_URL}).",
+        flush=True,
+    )
 
     # Register mock tokens with the mock tool server for validation
     try:
@@ -1651,6 +1844,7 @@ async def startup():
 async def _backup_loop():
     """Run SQLite backup once per 24 hours."""
     import backup as backup_module
+
     while True:
         await asyncio.sleep(86400)  # 24 hours
         try:
@@ -1661,12 +1855,12 @@ async def _backup_loop():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global redis_pool
     if redis_pool:
         await redis_pool.close()
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
+
 
 @app.post("/mcp/tools/call", tags=["Tool Calls"])
 async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
@@ -1702,20 +1896,26 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             cred_resp = await client.get(f"{HSM_URL}/credentials")
             if cred_resp.status_code == 200:
                 cred_data = cred_resp.json()
-                credentials_registered = list(set(
-                    c["tool_id"] for c in cred_data.get("credentials", [])
-                ))
+                credentials_registered = list(
+                    set(c["tool_id"] for c in cred_data.get("credentials", []))
+                )
     except Exception as e:
         print(f"[VARGATE] Failed to fetch credential list: {e}", flush=True)
 
     # ── Pass 1: Fast path (no Redis) ─────────────────────────────
     opa_start = time.monotonic()
-    opa_input_p1 = build_opa_input(req, action_id, history=None, credentials_registered=credentials_registered, tenant=tenant)
+    opa_input_p1 = build_opa_input(
+        req,
+        action_id,
+        history=None,
+        credentials_registered=credentials_registered,
+        tenant=tenant,
+    )
     requested_at = opa_input_p1["action"]["requested_at"]
     result_p1 = await query_opa(opa_input_p1, tenant=tenant)
 
     allowed_p1 = result_p1.get("allow", False)
-    violations_p1 = result_p1.get("violations", [])
+    _violations_p1 = result_p1.get("violations", [])  # noqa: F841
     eval_mode = result_p1.get("evaluation_mode", "fast")
 
     evaluation_pass = 1
@@ -1732,7 +1932,13 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         evaluation_pass = 2
         history = await fetch_behavioral_history(req.agent_id, tenant_id=tenant_id)
         anomaly_score = history.get("anomaly_score", 0.0)
-        opa_input_p2 = build_opa_input(req, action_id, history=history, credentials_registered=credentials_registered, tenant=tenant)
+        opa_input_p2 = build_opa_input(
+            req,
+            action_id,
+            history=history,
+            credentials_registered=credentials_registered,
+            tenant=tenant,
+        )
         # Preserve the same requested_at from Pass 1
         opa_input_p2["action"]["requested_at"] = requested_at
         final_result = await query_opa(opa_input_p2, tenant=tenant)
@@ -1756,7 +1962,12 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         gtm_conn = get_db()
         try:
             gtm_violations = gtm_constraints.check_gtm_constraints(
-                gtm_conn, tenant_id, req.tool, req.method, req.params, action_id,
+                gtm_conn,
+                tenant_id,
+                req.tool,
+                req.method,
+                req.params,
+                action_id,
             )
         finally:
             gtm_conn.close()
@@ -1766,7 +1977,9 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             violations = violations + [v["rule"] for v in gtm_violations]
             severity = max(
                 [severity] + [v["severity"] for v in gtm_violations],
-                key=lambda s: {"critical": 3, "high": 2, "medium": 1, "none": 0}.get(s, 0),
+                key=lambda s: {"critical": 3, "high": 2, "medium": 1, "none": 0}.get(
+                    s, 0
+                ),
             )
             requires_human = False  # blocked outright, no approval queue
 
@@ -1776,9 +1989,15 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         # Enqueue action instead of executing it
         approval_conn = get_db()
         try:
-            queued = approval_module.enqueue_action(
-                approval_conn, action_id, tenant_id, req.agent_id,
-                req.tool, req.method, req.params, final_result,
+            _queued = approval_module.enqueue_action(  # noqa: F841
+                approval_conn,
+                action_id,
+                tenant_id,
+                req.agent_id,
+                req.tool,
+                req.method,
+                req.params,
+                final_result,
             )
         finally:
             approval_conn.close()
@@ -1812,7 +2031,9 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
                 fetch_resp = await client.get(
                     f"{HSM_URL}/credentials/{req.tool}/status"
                 )
-                if fetch_resp.status_code == 200 and fetch_resp.json().get("registered"):
+                if fetch_resp.status_code == 200 and fetch_resp.json().get(
+                    "registered"
+                ):
                     # Credential exists — do brokered execution
                     # SECURITY: fetch via HSM HTTP endpoint, logs access but never the value
                     cred_fetch_resp = await client.post(
@@ -1966,9 +2187,13 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
     if decision_str == "deny":
         await webhooks_module.dispatch_webhook(tenant, "action.denied", webhook_payload)
     elif pending_approval:
-        await webhooks_module.dispatch_webhook(tenant, "action.pending", webhook_payload)
+        await webhooks_module.dispatch_webhook(
+            tenant, "action.pending", webhook_payload
+        )
     elif allowed:
-        await webhooks_module.dispatch_webhook(tenant, "action.allowed", webhook_payload)
+        await webhooks_module.dispatch_webhook(
+            tenant, "action.allowed", webhook_payload
+        )
 
     # Return response
     if allowed:
@@ -2001,6 +2226,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
 
 # ── Agent history endpoints (for test scripts) ──────────────────────────────
 
+
 @app.delete("/agents/{agent_id}/history", tags=["Audit"])
 async def clear_agent_history(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear behavioral history for an agent. Used by test scripts."""
@@ -2018,7 +2244,6 @@ async def agent_anomaly_score(agent_id: str, tenant: dict = Depends(get_tenant))
 @app.delete("/agents/{agent_id}/counters", tags=["Audit"])
 async def clear_agent_counters(agent_id: str, tenant: dict = Depends(get_tenant)):
     """Clear counters and actions but keep anomaly_score. Used by test scripts."""
-    global redis_pool
     tenant_id = tenant["tenant_id"]
     prefix = f"t:{tenant_id}:agent:{agent_id}"
     if redis_pool:
@@ -2035,20 +2260,15 @@ async def clear_agent_counters(agent_id: str, tenant: dict = Depends(get_tenant)
     return {"status": "counters_cleared", "agent_id": agent_id}
 
 
-
-
-
-
-
-
-
 # ── Blockchain Anchoring ─────────────────────────────────────────────────────
+
 
 class BlockchainClient:
     """Interacts with the AuditAnchor smart contract on Hardhat local chain."""
 
     def __init__(self, rpc_url: str, contract_address: str, abi: list):
         from web3 import Web3
+
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
         self.contract = self.w3.eth.contract(
             address=Web3.to_checksum_address(contract_address),
@@ -2063,7 +2283,7 @@ class BlockchainClient:
         # Pad/truncate to bytes32
         hash_bytes = bytes.fromhex(chain_tip_hash)
         if len(hash_bytes) < 32:
-            hash_bytes = hash_bytes.ljust(32, b'\x00')
+            hash_bytes = hash_bytes.ljust(32, b"\x00")
         elif len(hash_bytes) > 32:
             hash_bytes = hash_bytes[:32]
 
@@ -2133,11 +2353,12 @@ def _get_chain_tip() -> dict:
 
 _last_anchored_count = 0
 
+
 async def submit_anchor(force=False):
     """Submit current chain state to the blockchain.
     Skips if no new records since last anchor (unless force=True).
     """
-    global blockchain_client, _last_anchored_count
+    global _last_anchored_count
     if not blockchain_client:
         return None
 
@@ -2215,14 +2436,19 @@ def _init_blockchain():
 
     try:
         if not os.path.exists(CONTRACT_ADDRESS_FILE):
-            print(f"[ANCHOR] Contract address file not found: {CONTRACT_ADDRESS_FILE}", flush=True)
+            print(
+                f"[ANCHOR] Contract address file not found: {CONTRACT_ADDRESS_FILE}",
+                flush=True,
+            )
             return False
 
         with open(CONTRACT_ADDRESS_FILE) as f:
             contract_address = f.read().strip()
 
         if not os.path.exists(CONTRACT_ABI_FILE):
-            print(f"[ANCHOR] Contract ABI file not found: {CONTRACT_ABI_FILE}", flush=True)
+            print(
+                f"[ANCHOR] Contract ABI file not found: {CONTRACT_ABI_FILE}", flush=True
+            )
             return False
 
         with open(CONTRACT_ABI_FILE) as f:
@@ -2237,9 +2463,6 @@ def _init_blockchain():
     except Exception as e:
         print(f"[ANCHOR] Failed to init blockchain: {e}", flush=True)
         return False
-
-
-
 
 
 async def get_session_tenant(
@@ -2292,12 +2515,9 @@ async def get_session_tenant(
                 return {**tenant, "is_public_viewer": True}
         raise HTTPException(403, "Dashboard is not public")
 
-    raise HTTPException(401, "Authentication required — provide Bearer token or X-API-Key")
-
-
-
-
-
+    raise HTTPException(
+        401, "Authentication required — provide Bearer token or X-API-Key"
+    )
 
 
 @app.get("/health", tags=["System"], response_model=HealthResponse)
@@ -2349,8 +2569,9 @@ async def health():
 @app.get("/metrics", tags=["System"])
 async def metrics_endpoint():
     """Prometheus metrics endpoint. Unauthenticated — only accessible from internal Docker network."""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
     from starlette.responses import Response
+
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -2358,8 +2579,12 @@ async def metrics_endpoint():
 async def trigger_backup(request: Request, tenant: dict = Depends(get_session_tenant)):
     """Trigger an immediate SQLite backup. Requires authentication. Rate-limited to 2/min."""
     from rate_limit import enforce_ip_rate_limit
-    await enforce_ip_rate_limit(redis_pool, request, "backup", max_requests=2, window_seconds=60)
+
+    await enforce_ip_rate_limit(
+        redis_pool, request, "backup", max_requests=2, window_seconds=60
+    )
     import backup as backup_module
+
     try:
         result = await asyncio.to_thread(backup_module.backup_database)
         return {"status": "ok", "backup": result}
@@ -2367,19 +2592,15 @@ async def trigger_backup(request: Request, tenant: dict = Depends(get_session_te
         raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
 
 
-
-
-
-
 # ── Route modules (Audit Item 14) ────────────────────────────────────────────
 # Routes are organized into separate modules for maintainability.
 # Each module uses late imports to avoid circular dependencies.
 
-from routes_audit import router as audit_router
-from routes_anchor import router as anchor_router
-from routes_tenant import router as tenant_router
-from routes_auth import router as auth_router
-from compliance_export import router as compliance_router
+from compliance_export import router as compliance_router  # noqa: E402
+from routes_anchor import router as anchor_router  # noqa: E402
+from routes_audit import router as audit_router  # noqa: E402
+from routes_auth import router as auth_router  # noqa: E402
+from routes_tenant import router as tenant_router  # noqa: E402
 
 app.include_router(audit_router)
 app.include_router(anchor_router)

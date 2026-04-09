@@ -10,7 +10,7 @@ GET /transparency/{tenant_id}  (if public dashboard enabled)
 
 import json
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
@@ -103,7 +103,12 @@ def get_transparency_data(
         args,
     ).fetchall()
     tool_stats = [
-        {"tool": r["tool"], "total": r["cnt"], "allowed": r["allowed"] or 0, "denied": r["denied"] or 0}
+        {
+            "tool": r["tool"],
+            "total": r["cnt"],
+            "allowed": r["allowed"] or 0,
+            "denied": r["denied"] or 0,
+        }
         for r in tool_rows
     ]
 
@@ -155,7 +160,9 @@ def get_transparency_data(
         ).fetchone()
         chain_info = {
             "total_records": total_records["cnt"] if total_records else 0,
-            "latest_hash": last_record["record_hash"][:16] + "..." if last_record else None,
+            "latest_hash": (
+                last_record["record_hash"][:16] + "..." if last_record else None
+            ),
             "latest_at": last_record["created_at"] if last_record else None,
         }
     except Exception:

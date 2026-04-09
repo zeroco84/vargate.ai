@@ -7,12 +7,9 @@ a human reviewer approves or rejects them, or the timeout expires.
 """
 
 import json
-import secrets
 import sqlite3
-import time
 from datetime import datetime, timezone
 from typing import Optional
-
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -20,6 +17,7 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 3600  # 1 hour
 
 
 # ── Database setup ─────────────────────────────────────────────────────────
+
 
 def init_approval_db(conn: sqlite3.Connection):
     """Create the pending_actions table if it doesn't exist."""
@@ -48,6 +46,7 @@ def init_approval_db(conn: sqlite3.Connection):
 
 
 # ── Queue operations ───────────────────────────────────────────────────────
+
 
 def enqueue_action(
     conn: sqlite3.Connection,

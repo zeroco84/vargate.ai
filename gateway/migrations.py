@@ -25,9 +25,7 @@ def _init_schema_version(conn: sqlite3.Connection):
 def _get_current_version(conn: sqlite3.Connection) -> int:
     """Get the highest applied migration version, or 0 if none."""
     try:
-        row = conn.execute(
-            "SELECT MAX(version) as v FROM schema_version"
-        ).fetchone()
+        row = conn.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
         return row["v"] or 0 if row else 0
     except sqlite3.OperationalError:
         return 0
@@ -119,11 +117,23 @@ def _migration_7_failure_config(conn: sqlite3.Connection):
 # Each entry: (version, description, migration_fn)
 MIGRATIONS = [
     (1, "Baseline schema — all existing tables", lambda conn: None),
-    (2, "Sprint 5: anchor_chain, merkle_anchor_log columns", _migration_2_sprint5_columns),
+    (
+        2,
+        "Sprint 5: anchor_chain, merkle_anchor_log columns",
+        _migration_2_sprint5_columns,
+    ),
     (3, "Sessions 2-8: audit_log additional columns", _migration_3_audit_columns),
     (4, "Merkle columns on legacy anchor_log", _migration_4_anchor_log_columns),
-    (5, "Sprint 7: policy_template and policy_config on tenants", _migration_5_policy_template),
-    (6, "Sprint 7.6: webhook_url, webhook_secret, webhook_events on tenants", _migration_6_webhook_columns),
+    (
+        5,
+        "Sprint 7: policy_template and policy_config on tenants",
+        _migration_5_policy_template,
+    ),
+    (
+        6,
+        "Sprint 7.6: webhook_url, webhook_secret, webhook_events on tenants",
+        _migration_6_webhook_columns,
+    ),
     (7, "Sprint 8.4: failure_config on tenants", _migration_7_failure_config),
 ]
 
@@ -149,6 +159,9 @@ def run_migrations(conn: sqlite3.Connection):
         applied += 1
 
     if applied:
-        print(f"[MIGRATION] Applied {applied} migration(s). Current version: {MIGRATIONS[-1][0]}", flush=True)
+        print(
+            f"[MIGRATION] Applied {applied} migration(s). Current version: {MIGRATIONS[-1][0]}",
+            flush=True,
+        )
     else:
         print(f"[MIGRATION] Schema up to date (v{current}).", flush=True)
