@@ -89,9 +89,7 @@ def main():
 
     print_step(1, "Clean slate")
     try:
-        resp = requests.delete(
-            f"{GATEWAY_URL}/agents/{TEST_AGENT}/history", timeout=5
-        )
+        resp = requests.delete(f"{GATEWAY_URL}/agents/{TEST_AGENT}/history", timeout=5)
         if resp.status_code == 200:
             print(f"  {GREEN}✓ Redis cleared for {TEST_AGENT}{RESET}")
             passed_steps += 1
@@ -127,8 +125,10 @@ def main():
         if code == 403:
             detail = body.get("detail", {})
             violations = detail.get("violations", [])
-            print(f"  {DIM}  Denial {i+1}/3: violations={violations} "
-                  f"anomaly_score={score:.4f}{RESET}")
+            print(
+                f"  {DIM}  Denial {i+1}/3: violations={violations} "
+                f"anomaly_score={score:.4f}{RESET}"
+            )
         else:
             print(f"  {RED}  Expected denial {i+1}/3, got HTTP {code}{RESET}")
             all_denials_ok = False
@@ -140,7 +140,9 @@ def main():
     if all_denials_ok:
         print(f"  {GREEN}✓ 3 denials recorded in behavioral history{RESET}")
         passed_steps += 1
-        pass1_count += 3  # High-value stripe → needs_enrichment → but denied on P1 anyway
+        pass1_count += (
+            3  # High-value stripe → needs_enrichment → but denied on P1 anyway
+        )
     else:
         print(f"  {RED}✗ Some denials failed{RESET}")
     print()
@@ -171,21 +173,33 @@ def main():
         detail = body.get("detail", {})
         violations = detail.get("violations", [])
         severity = detail.get("severity", "?")
-        if "repeated_violations_today" in violations:
-            print(f"  {GREEN}✓ £600 request BLOCKED due to 3 violations in history "
-                  f"(would normally be allowed){RESET}")
+        history_violation = (
+            "violation_cooldown_active" in violations
+            or "repeated_violations_today" in violations
+        )
+        if history_violation:
+            print(
+                f"  {GREEN}✓ £600 request BLOCKED due to 3 violations in history "
+                f"(would normally be allowed){RESET}"
+            )
             print(f"  {GREEN}  Violations: {violations}{RESET}")
-            print(f"  {GREEN}  Pass 2 enriched input used. "
-                  f"Anomaly score: {score:.4f}{RESET}")
+            print(
+                f"  {GREEN}  Pass 2 enriched input used. "
+                f"Anomaly score: {score:.4f}{RESET}"
+            )
             passed_steps += 1
             pass2_count += 1
             history_blocks += 1
         else:
-            print(f"  {YELLOW}⚠ Blocked, but not for repeated_violations_today: "
-                  f"{violations}{RESET}")
+            print(
+                f"  {YELLOW}⚠ Blocked, but not for history-related violation: "
+                f"{violations}{RESET}"
+            )
     elif code == 200:
-        print(f"  {RED}✗ Expected BLOCKED, got ALLOWED. "
-              f"History enrichment may not be working.{RESET}")
+        print(
+            f"  {RED}✗ Expected BLOCKED, got ALLOWED. "
+            f"History enrichment may not be working.{RESET}"
+        )
     else:
         print(f"  {RED}✗ Unexpected HTTP {code}: {body}{RESET}")
     print()
@@ -194,15 +208,15 @@ def main():
 
     print_step(4, "Show evaluation modes in audit log")
 
-    resp = requests.get(
-        f"{AUDIT_LOG_URL}?agent_id={TEST_AGENT}&limit=10", timeout=10
-    )
+    resp = requests.get(f"{AUDIT_LOG_URL}?agent_id={TEST_AGENT}&limit=10", timeout=10)
     records = resp.json().get("records", [])
     records.reverse()  # oldest first
 
     if records:
-        print(f"  {'#':<3} {'Decision':<8} {'Tool':<12} {'Method':<18} "
-              f"{'Pass':<6} {'Anomaly':<10} {'Violations'}")
+        print(
+            f"  {'#':<3} {'Decision':<8} {'Tool':<12} {'Method':<18} "
+            f"{'Pass':<6} {'Anomaly':<10} {'Violations'}"
+        )
         print(f"  {'─'*3} {'─'*8} {'─'*12} {'─'*18} {'─'*6} {'─'*10} {'─'*30}")
 
         for i, rec in enumerate(records):
@@ -266,16 +280,22 @@ def main():
         score = get_anomaly_score()
         decision = "ALLOWED" if code == 200 else "BLOCKED"
         colour = GREEN if code == 200 else RED
-        print(f"  {colour}  → After clean request {i+1}: "
-              f"anomaly_score={score:.4f} ({decision}){RESET}")
+        print(
+            f"  {colour}  → After clean request {i+1}: "
+            f"anomaly_score={score:.4f} ({decision}){RESET}"
+        )
         time.sleep(0.3)
 
     score_after = get_anomaly_score()
     if score_after < score_before:
-        print(f"  {GREEN}✓ Anomaly score decayed: {score_before:.4f} → {score_after:.4f}{RESET}")
+        print(
+            f"  {GREEN}✓ Anomaly score decayed: {score_before:.4f} → {score_after:.4f}{RESET}"
+        )
         passed_steps += 1
     else:
-        print(f"  {RED}✗ Anomaly score did not decay: {score_before:.4f} → {score_after:.4f}{RESET}")
+        print(
+            f"  {RED}✗ Anomaly score did not decay: {score_before:.4f} → {score_after:.4f}{RESET}"
+        )
     print()
 
     # ── STEP 6: Chain verification ───────────────────────────────────────
@@ -305,8 +325,10 @@ def main():
     p1_total = sum(1 for r in all_recs if r.get("evaluation_pass", 1) == 1)
     p2_total = sum(1 for r in all_recs if r.get("evaluation_pass", 1) == 2)
     hist_blocks = sum(
-        1 for r in all_recs
-        if "repeated_violations_today" in r.get("violations", [])
+        1
+        for r in all_recs
+        if "violation_cooldown_active" in r.get("violations", [])
+        or "repeated_violations_today" in r.get("violations", [])
         or "high_value_frequency_limit_exceeded" in r.get("violations", [])
     )
 
@@ -324,11 +346,15 @@ def main():
     print(f"{BOLD}{MAGENTA}{'='*70}{RESET}")
 
     summary_colour = GREEN if passed_steps == total_steps else YELLOW
-    print(f"  {summary_colour}{passed_steps}/{total_steps} steps completed successfully{RESET}")
+    print(
+        f"  {summary_colour}{passed_steps}/{total_steps} steps completed successfully{RESET}"
+    )
 
     if passed_steps == total_steps:
         print(f"\n  {GREEN}{BOLD}🎉 BEHAVIORAL HISTORY DEMO COMPLETE{RESET}")
-        print(f"  {GREEN}Same agent. Same request. Different history. Different outcome.{RESET}")
+        print(
+            f"  {GREEN}Same agent. Same request. Different history. Different outcome.{RESET}"
+        )
     else:
         print(f"\n  {YELLOW}{BOLD}⚠ Some steps did not complete as expected{RESET}")
 
