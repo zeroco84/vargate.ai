@@ -321,7 +321,7 @@ async def list_subjects(
     """List all PII subjects with encrypted records in the audit log."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         rows = conn.execute("""SELECT pii_subject_id, COUNT(*) as record_count,
@@ -359,7 +359,7 @@ async def proxy_hsm_create_key(
     """Create an HSM encryption key for a data subject."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/keys", json=req)
         return resp.json()
@@ -375,7 +375,7 @@ async def proxy_hsm_encrypt(
     """Encrypt data using an HSM-managed key."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/encrypt", json=req)
         return resp.json()
@@ -391,7 +391,7 @@ async def proxy_hsm_decrypt(
     """Decrypt data using an HSM-managed key."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(f"{main.HSM_URL}/decrypt", json=req)
         return resp.json()
@@ -407,7 +407,7 @@ async def proxy_hsm_key_status(
     """Check the status of an HSM key for a data subject."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/keys/{subject_id}/status")
         return resp.json()
@@ -422,7 +422,7 @@ async def proxy_hsm_list_keys(
     """List all HSM keys."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/keys")
         return resp.json()
@@ -438,7 +438,7 @@ async def proxy_hsm_delete_key(
     """Delete an HSM key (crypto-shredding)."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{main.HSM_URL}/keys/{subject_id}")
         if resp.status_code == 404:
@@ -459,7 +459,7 @@ async def register_credential(
     """Register a tool credential in the HSM vault for brokered execution."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     # SECURITY: value passes through to HSM immediately, never logged by gateway
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
@@ -478,7 +478,7 @@ async def list_credentials(
     """List registered tool credentials (metadata only, not values)."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials")
         return resp.json()
@@ -495,7 +495,7 @@ async def delete_credential(
     """Remove a tool credential from the vault."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.delete(f"{main.HSM_URL}/credentials/{tool_id}/{name}")
         if resp.status_code == 404:
@@ -513,7 +513,7 @@ async def credential_status(
     """Check registration status of a tool credential."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials/{tool_id}/status")
         return resp.json()
@@ -528,7 +528,7 @@ async def credential_access_log(
     """View the credential access log (which credentials were used and when)."""
     import main
 
-    await main.get_session_tenant(authorization, x_api_key, x_vargate_public_tenant)
+    await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{main.HSM_URL}/credentials/access-log")
         return resp.json()
