@@ -43,21 +43,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Start all services
+        run: docker compose up -d --build
+
+      - name: Wait for services to be healthy
         run: |
-          docker compose up -d --build
-          # Wait for all services to be healthy
           for i in $(seq 1 60); do
-            if docker compose ps --format json | python3 -c "
-import sys, json
-services = [json.loads(l) for l in sys.stdin if l.strip()]
-healthy = all(s.get('Health','') == 'healthy' for s in services if s.get('Health'))
-print('ready' if healthy and len(services) >= 7 else 'waiting')
-" | grep -q ready; then              echo "All services healthy"
+            HEALTHY=$(docker compose ps --format json | python3 -c "import sys,json;svcs=[json.loads(l) for l in sys.stdin if l.strip()];ok=all(s.get('Health','')=='healthy' for s in svcs if s.get('Health'));print('ready' if ok and len(svcs)>=7 else 'waiting')")
+            if [ "$HEALTHY" = "ready" ]; then
+              echo "All services healthy"
               break
             fi
             echo "Waiting for services... ($i/60)"
             sleep 5
           done
+          if [ "$HEALTHY" != "ready" ]; then
+            echo "Services did not become healthy in time"
+            docker compose ps
+            exit 1
+          fi
 
       - name: Install test dependencies
         run: pip install requests
