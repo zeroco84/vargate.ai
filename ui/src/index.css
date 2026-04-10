@@ -127,6 +127,11 @@ body {
   color: var(--text-primary);
 }
 
+.header-logo-img {
+  height: 26px;
+  width: auto;
+}
+
 .header-subtitle {
   font-size: 0.78rem;
   color: var(--text-muted);

@@ -71,7 +71,7 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
   return (
     <header className="header">
       <div className="header-left">
-        <span className="header-logo">VARGATE</span>
+        <img src="/vargate-logo.svg" alt="Vargate" className="header-logo-img" />
         <span className="header-subtitle">{isPublic ? 'Public Audit Dashboard' : 'Supervision Gateway'}</span>
         {isPublic && session?.tenantName && (
           <span style={{ color: 'var(--text-faint)', marginLeft: '8px', fontSize: '0.75rem' }}>
