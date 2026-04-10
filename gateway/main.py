@@ -403,7 +403,10 @@ def init_db():
             execution_mode        TEXT DEFAULT 'agent_direct',
             execution_result      TEXT,
             execution_latency_ms  INTEGER,
-            credential_accessed   TEXT
+            credential_accessed   TEXT,
+            source                TEXT DEFAULT 'direct',
+            managed_session_id    TEXT,
+            delegation_chain      TEXT
         )
     """)
     # Add columns if upgrading from earlier schemas
@@ -420,6 +423,9 @@ def init_db():
         "ALTER TABLE audit_log ADD COLUMN execution_latency_ms INTEGER",
         "ALTER TABLE audit_log ADD COLUMN credential_accessed TEXT",
         "ALTER TABLE audit_log ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'vargate-internal'",
+        "ALTER TABLE audit_log ADD COLUMN source TEXT DEFAULT 'direct'",
+        "ALTER TABLE audit_log ADD COLUMN managed_session_id TEXT",
+        "ALTER TABLE audit_log ADD COLUMN delegation_chain TEXT",
     ]:
         try:
             conn.execute(col_sql)
@@ -479,6 +485,47 @@ def init_db():
             conn.execute(col_sql)
         except sqlite3.OperationalError:
             pass
+    # Sprint 9.1: Managed agent sessions table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS managed_sessions (
+            id                    TEXT PRIMARY KEY,
+            anthropic_session_id  TEXT NOT NULL,
+            tenant_id             TEXT NOT NULL,
+            agent_id              TEXT NOT NULL,
+            anthropic_agent_id    TEXT,
+            environment_id        TEXT,
+            status                TEXT DEFAULT 'active',
+            governance_profile    TEXT,
+            system_prompt_hash    TEXT,
+            created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at              TIMESTAMP,
+            total_governed_calls  INTEGER DEFAULT 0,
+            total_observed_calls  INTEGER DEFAULT 0,
+            total_denied          INTEGER DEFAULT 0,
+            total_pending         INTEGER DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+        )
+    """)
+    # Sprint 9.1: Managed agent configs table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS managed_agent_configs (
+            id                    TEXT PRIMARY KEY,
+            tenant_id             TEXT NOT NULL,
+            name                  TEXT NOT NULL,
+            anthropic_model       TEXT DEFAULT 'claude-sonnet-4-6',
+            system_prompt         TEXT,
+            governance_profile    TEXT,
+            allowed_tools         TEXT,
+            max_session_hours     REAL,
+            max_daily_sessions    INTEGER,
+            require_human_approval TEXT,
+            parent_agent_id       TEXT,
+            max_delegation_depth  INTEGER DEFAULT 1,
+            created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id),
+            FOREIGN KEY (parent_agent_id) REFERENCES managed_agent_configs(id)
+        )
+    """)
     # Fix 5 (AG-2.2): Local Merkle root recording table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS merkle_root_log (
@@ -637,6 +684,9 @@ def write_audit_record(
     execution_result: Optional[dict] = None,
     execution_latency_ms: Optional[int] = None,
     credential_accessed: Optional[str] = None,
+    source: str = "direct",
+    managed_session_id: Optional[str] = None,
+    delegation_chain: Optional[list[str]] = None,
 ):
     """Write a hash-chained audit record to SQLite. Chain is scoped per tenant."""
     params_str = json.dumps(params, separators=(",", ":"))
@@ -646,6 +696,11 @@ def write_audit_record(
     execution_result_str = (
         json.dumps(execution_result, separators=(",", ":"))
         if execution_result
+        else None
+    )
+    delegation_chain_str = (
+        json.dumps(delegation_chain, separators=(",", ":"))
+        if delegation_chain
         else None
     )
     prev_hash = get_prev_hash(conn, tenant_id=tenant_id)
@@ -674,8 +729,9 @@ def write_audit_record(
              prev_hash, record_hash, created_at,
              evaluation_pass, anomaly_score_at_eval, opa_input,
              contains_pii, pii_subject_id, pii_fields, erasure_status,
-             execution_mode, execution_result, execution_latency_ms, credential_accessed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             execution_mode, execution_result, execution_latency_ms, credential_accessed,
+             source, managed_session_id, delegation_chain)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             action_id,
@@ -704,6 +760,9 @@ def write_audit_record(
             execution_result_str,
             execution_latency_ms,
             credential_accessed,
+            source,
+            managed_session_id,
+            delegation_chain_str,
         ),
     )
     conn.commit()
@@ -2597,6 +2656,7 @@ async def trigger_backup(request: Request, tenant: dict = Depends(get_session_te
 # Each module uses late imports to avoid circular dependencies.
 
 from compliance_export import router as compliance_router  # noqa: E402
+from mcp_server import router as mcp_server_router  # noqa: E402
 from routes_anchor import router as anchor_router  # noqa: E402
 from routes_audit import router as audit_router  # noqa: E402
 from routes_auth import router as auth_router  # noqa: E402
@@ -2607,3 +2667,4 @@ app.include_router(anchor_router)
 app.include_router(tenant_router)
 app.include_router(auth_router)
 app.include_router(compliance_router)
+app.include_router(mcp_server_router)

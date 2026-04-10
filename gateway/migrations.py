@@ -113,6 +113,66 @@ def _migration_7_failure_config(conn: sqlite3.Connection):
         pass
 
 
+def _migration_8_managed_agent_audit_columns(conn: sqlite3.Connection):
+    """Sprint 9.1: Add managed agent columns to audit_log."""
+    for sql in [
+        "ALTER TABLE audit_log ADD COLUMN source TEXT DEFAULT 'direct'",
+        "ALTER TABLE audit_log ADD COLUMN managed_session_id TEXT",
+        "ALTER TABLE audit_log ADD COLUMN delegation_chain TEXT",
+    ]:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+
+def _migration_9_managed_sessions(conn: sqlite3.Connection):
+    """Sprint 9.1: Create managed_sessions table."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS managed_sessions (
+            id                    TEXT PRIMARY KEY,
+            anthropic_session_id  TEXT NOT NULL,
+            tenant_id             TEXT NOT NULL,
+            agent_id              TEXT NOT NULL,
+            anthropic_agent_id    TEXT,
+            environment_id        TEXT,
+            status                TEXT DEFAULT 'active',
+            governance_profile    TEXT,
+            system_prompt_hash    TEXT,
+            created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            ended_at              TIMESTAMP,
+            total_governed_calls  INTEGER DEFAULT 0,
+            total_observed_calls  INTEGER DEFAULT 0,
+            total_denied          INTEGER DEFAULT 0,
+            total_pending         INTEGER DEFAULT 0,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+        )
+    """)
+
+
+def _migration_10_managed_agent_configs(conn: sqlite3.Connection):
+    """Sprint 9.1: Create managed_agent_configs table."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS managed_agent_configs (
+            id                    TEXT PRIMARY KEY,
+            tenant_id             TEXT NOT NULL,
+            name                  TEXT NOT NULL,
+            anthropic_model       TEXT DEFAULT 'claude-sonnet-4-6',
+            system_prompt         TEXT,
+            governance_profile    TEXT,
+            allowed_tools         TEXT,
+            max_session_hours     REAL,
+            max_daily_sessions    INTEGER,
+            require_human_approval TEXT,
+            parent_agent_id       TEXT,
+            max_delegation_depth  INTEGER DEFAULT 1,
+            created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id),
+            FOREIGN KEY (parent_agent_id) REFERENCES managed_agent_configs(id)
+        )
+    """)
+
+
 # Ordered list of migrations. Version 1 is the baseline (all existing tables).
 # Each entry: (version, description, migration_fn)
 MIGRATIONS = [
@@ -135,6 +195,21 @@ MIGRATIONS = [
         _migration_6_webhook_columns,
     ),
     (7, "Sprint 8.4: failure_config on tenants", _migration_7_failure_config),
+    (
+        8,
+        "Sprint 9.1: source, managed_session_id, delegation_chain on audit_log",
+        _migration_8_managed_agent_audit_columns,
+    ),
+    (
+        9,
+        "Sprint 9.1: managed_sessions table",
+        _migration_9_managed_sessions,
+    ),
+    (
+        10,
+        "Sprint 9.1: managed_agent_configs table",
+        _migration_10_managed_agent_configs,
+    ),
 ]
 
 
