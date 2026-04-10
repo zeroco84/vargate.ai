@@ -201,7 +201,7 @@ function AuthGate({ children }) {
         backdropFilter: 'blur(20px)',
         width: '380px',
       }}>
-        <div style={{ fontSize: '14px', fontWeight: 700, letterSpacing: '4px', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: '8px' }}>VARGATE</div>
+        <img src="/vargate-logo.svg" alt="Vargate" style={{ height: '40px', width: 'auto', marginBottom: '8px' }} />
         <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Audit Dashboard</div>
 
         {error && <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', padding: '8px', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{error}</div>}
