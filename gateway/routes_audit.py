@@ -112,9 +112,7 @@ async def audit_log(
             "anomaly_score_at_eval": r["anomaly_score_at_eval"],
             "contains_pii": bool(r["contains_pii"]),
             "pii_subject_id": r["pii_subject_id"],
-            "pii_fields": (
-                json.loads(r["pii_fields"]) if r["pii_fields"] else None
-            ),
+            "pii_fields": json.loads(r["pii_fields"]) if r["pii_fields"] else None,
             "erasure_status": r["erasure_status"],
             "execution_mode": r["execution_mode"],
         }
@@ -291,12 +289,13 @@ async def verify_erasure(
     results = {}
     for field in pii_fields:
         value = params.get(field, "")
-        if value.startswith("ENC:"):
-            decrypted = await main.decrypt_field_value(subject_id, value)
+        if value.startswith("[ENCRYPTED:"):
+            result = await main.decrypt_field_value(value)
+            erasure_ok = "error" in result
             results[field] = {
                 "encrypted_value": value[:30] + "...",
-                "decrypted": decrypted,
-                "erasure_verified": decrypted is None,
+                "result": result,
+                "erasure_verified": erasure_ok,
             }
 
     all_verified = (
@@ -308,10 +307,12 @@ async def verify_erasure(
         "fields_tested": len(results),
         "results": results,
         "erasure_verified": all_verified,
+        "decryption_result": "failed" if all_verified else "succeeded",
         "interpretation": (
             "All encrypted fields are now irrecoverable — the HSM key has been deleted."
             if all_verified
-            else "WARNING: Some fields could still be decrypted. Erasure may not be complete."
+            else "WARNING: Some fields could still be decrypted. "
+            "Erasure may not be complete."
         ),
     }
 
