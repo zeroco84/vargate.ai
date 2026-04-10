@@ -111,6 +111,10 @@ async def audit_log(
             "evaluation_pass": r["evaluation_pass"],
             "anomaly_score_at_eval": r["anomaly_score_at_eval"],
             "contains_pii": bool(r["contains_pii"]),
+            "pii_subject_id": r["pii_subject_id"],
+            "pii_fields": (
+                json.loads(r["pii_fields"]) if r["pii_fields"] else None
+            ),
             "erasure_status": r["erasure_status"],
             "execution_mode": r["execution_mode"],
         }
