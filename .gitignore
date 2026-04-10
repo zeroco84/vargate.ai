@@ -19,3 +19,6 @@ node_modules/
 *.p12
 credentials.json
 secrets.yaml
+
+# Sprint plans and internal docs — never commit
+*.docx
