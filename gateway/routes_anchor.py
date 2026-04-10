@@ -105,6 +105,12 @@ async def verify_anchor():
         },
         "match": match,
         "blockchain_connected": True,
+        "interpretation": (
+            "Chain tip matches latest on-chain anchor. Audit trail is consistent."
+            if match
+            else f"Chain has advanced since last anchor — "
+            f"{tip['record_count'] - latest['record_count']} new records pending."
+        ),
     }
 
 
