@@ -166,7 +166,7 @@ function AuthGate({ children }) {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #0a0e1a 0%, #0f172a 40%, #1a1040 100%)',
+      background: 'linear-gradient(135deg, #0a0e1a 0%, #0f172a 40%, #0a1a2a 100%)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -178,14 +178,14 @@ function AuthGate({ children }) {
         .auth-btn { padding: 12px 24px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e2e8f0; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; width: 100%; }
         .auth-btn:hover { background: rgba(255,255,255,0.1); }
         .auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .auth-btn-primary { background: #6366f1; border-color: #6366f1; }
-        .auth-btn-primary:hover { background: #5558e6; }
+        .auth-btn-primary { background: #22a7c3; border-color: #22a7c3; }
+        .auth-btn-primary:hover { background: #1d96b0; }
         .auth-btn-github { background: #24292e; border-color: #30363d; display: flex; align-items: center; justify-content: center; gap: 10px; }
         .auth-btn-github:hover { background: #30363d; }
         .auth-input { width: 100%; padding: 12px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #e2e8f0; font-size: 14px; outline: none; box-sizing: border-box; }
-        .auth-input:focus { border-color: #6366f1; }
+        .auth-input:focus { border-color: #22a7c3; }
         .auth-input::placeholder { color: rgba(255,255,255,0.3); }
-        .auth-link { color: #818cf8; cursor: pointer; font-size: 13px; }
+        .auth-link { color: #63B3ED; cursor: pointer; font-size: 13px; }
         .auth-link:hover { text-decoration: underline; }
         .pin-btn:hover { background: rgba(255,255,255,0.12) !important; }
         .pin-btn:active { background: rgba(255,255,255,0.2) !important; transform: scale(0.95); }
@@ -201,7 +201,7 @@ function AuthGate({ children }) {
         backdropFilter: 'blur(20px)',
         width: '380px',
       }}>
-        <img src="/vargate-logo.svg" alt="Vargate" style={{ height: '40px', width: 'auto', marginBottom: '8px' }} />
+        <img src="/vargate-logo.svg" alt="Vargate" style={{ height: '40px', width: 'auto', marginBottom: '8px', display: 'block', marginLeft: 'auto', marginRight: 'auto' }} />
         <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Audit Dashboard</div>
 
         {error && <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', padding: '8px', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{error}</div>}
@@ -263,8 +263,8 @@ function AuthGate({ children }) {
               {[0,1,2,3,4,5].map(i => (
                 <div key={i} style={{
                   width: '14px', height: '14px', borderRadius: '50%',
-                  border: `2px solid ${error ? '#ef4444' : pin.length > i ? '#6366f1' : 'rgba(255,255,255,0.2)'}`,
-                  background: pin.length > i ? (error ? '#ef4444' : '#6366f1') : 'transparent',
+                  border: `2px solid ${error ? '#ef4444' : pin.length > i ? '#22a7c3' : 'rgba(255,255,255,0.2)'}`,
+                  background: pin.length > i ? (error ? '#ef4444' : '#22a7c3') : 'transparent',
                   transition: 'all 0.15s ease',
                 }} />
               ))}
@@ -345,7 +345,7 @@ function PublicDashboardLoader({ slug }) {
           <div style={{ color: 'rgba(255,255,255,0.5)' }}>
             {status === 'private' ? 'This dashboard is not public' : 'Dashboard not found'}
           </div>
-          <a href="/dashboard/" style={{ color: '#818cf8', fontSize: '13px', marginTop: '16px', display: 'inline-block' }}>
+          <a href="/dashboard/" style={{ color: '#63B3ED', fontSize: '13px', marginTop: '16px', display: 'inline-block' }}>
             Sign in to your dashboard →
           </a>
         </div>
