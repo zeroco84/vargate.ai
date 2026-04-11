@@ -740,6 +740,21 @@ async def mcp_dispatch(
             "error": {"code": -32700, "message": "Parse error"},
         }, status_code=200)
 
+    # JSON-RPC batch requests are not supported — return error for arrays
+    if isinstance(body, list):
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Batch requests are not supported"},
+        }, status_code=200)
+
+    if not isinstance(body, dict):
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid request"},
+        }, status_code=200)
+
     method = body.get("method", "")
     jsonrpc_id = body.get("id")
 

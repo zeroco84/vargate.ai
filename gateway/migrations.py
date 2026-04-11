@@ -175,6 +175,19 @@ def _migration_10_managed_agent_configs(conn: sqlite3.Connection):
 
 # Ordered list of migrations. Version 1 is the baseline (all existing tables).
 # Each entry: (version, description, migration_fn)
+def _migration_11_managed_agents_tenant_flags(conn: sqlite3.Connection):
+    """Add managed_agents_enabled flag and governance_prompt_template to tenants."""
+    for sql in [
+        "ALTER TABLE tenants ADD COLUMN managed_agents_enabled INTEGER DEFAULT 1",
+        "ALTER TABLE tenants ADD COLUMN governance_prompt_template TEXT",
+    ]:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    conn.commit()
+
+
 MIGRATIONS = [
     (1, "Baseline schema — all existing tables", lambda conn: None),
     (
@@ -209,6 +222,11 @@ MIGRATIONS = [
         10,
         "Sprint 9.1: managed_agent_configs table",
         _migration_10_managed_agent_configs,
+    ),
+    (
+        11,
+        "Sprint 14: managed_agents_enabled and governance_prompt_template on tenants",
+        _migration_11_managed_agents_tenant_flags,
     ),
 ]
 

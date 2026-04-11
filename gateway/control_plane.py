@@ -372,9 +372,40 @@ async def create_session(
         if limit_error:
             raise HTTPException(status_code=429, detail=limit_error)
 
+        # 2b. Check gateway constraints (AG-2.9) — BUG-008 fix
+        try:
+            import gtm_constraints
+            allowed_tools = agent_config.get("allowed_tools")
+            if allowed_tools:
+                tools_list = json.loads(allowed_tools) if isinstance(allowed_tools, str) else allowed_tools
+                for tool_name in tools_list:
+                    constraint_result = gtm_constraints.check_managed_session_constraints(
+                        conn, tenant_id, tool_name
+                    )
+                    if constraint_result:
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Gateway constraint violation: {constraint_result}",
+                        )
+        except ImportError:
+            pass  # gtm_constraints may not have managed session support yet
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[CONTROL-PLANE] Gateway constraint check skipped: {e}", flush=True)
+
+        # 2c. Check managed_agents_enabled flag — BUG-006 fix
+        if not tenant.get("managed_agents_enabled", True):
+            raise HTTPException(
+                status_code=403,
+                detail="Managed agents not enabled for this tenant. Contact support.",
+            )
+
         # 3. Build governance-injected system prompt (Sprint 11.3)
+        # BUG-009 fix: fetch tenant's custom prompt template if stored
+        custom_template = tenant.get("governance_prompt_template")
         base_prompt = agent_config.get("system_prompt") or ""
-        governance_prompt = build_governance_prompt(tenant_name, agent_config)
+        governance_prompt = build_governance_prompt(tenant_name, agent_config, custom_template)
         full_prompt = f"{base_prompt}\n\n{governance_prompt}" if base_prompt else governance_prompt
         prompt_hash = hash_prompt(full_prompt)
 
@@ -866,6 +897,7 @@ async def list_consumers(
 async def session_compliance_export(
     session_id: str,
     tenant: dict = Depends(_get_tenant),
+    format: str = Query(default="json", description="Output format: json or pdf"),
 ):
     """
     Generate a compliance artifact for a single managed agent session.
@@ -1011,6 +1043,30 @@ async def session_compliance_export(
         # Compute export hash
         export_str = json.dumps(export, sort_keys=True, separators=(",", ":"))
         export["export_hash"] = hashlib.sha256(export_str.encode()).hexdigest()
+
+        # BUG-010: Support PDF output format
+        if format.lower() == "pdf":
+            try:
+                from compliance_export import generate_session_pdf
+                pdf_bytes = generate_session_pdf(export)
+                from fastapi.responses import Response
+                return Response(
+                    content=pdf_bytes,
+                    media_type="application/pdf",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="compliance-{session_id}.pdf"',
+                    },
+                )
+            except ImportError:
+                raise HTTPException(
+                    status_code=501,
+                    detail="PDF generation requires compliance_export module",
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"PDF generation failed: {e}",
+                )
 
         return export
     finally:

@@ -253,6 +253,8 @@ class ManagedAgentEventConsumer:
         self.total_events = 0
         self.total_tool_observations = 0
         self.total_anomalies = 0
+        self.reconnect_count = 0
+        self.backfilled_events = 0
 
     async def start(self):
         """Start consuming events (non-blocking, runs as background task)."""
@@ -299,6 +301,10 @@ class ManagedAgentEventConsumer:
 
     async def _connect_and_consume(self):
         """Connect to the SSE stream and process events."""
+        # BUG-001 fix: backfill missed events on reconnect before streaming
+        if self._last_event_id:
+            await self._backfill_missed_events()
+
         url = f"{self.api_base}/v1/sessions/{self.anthropic_session_id}/events"
         headers = {
             "Authorization": f"Bearer {self.anthropic_api_key}",
@@ -320,8 +326,10 @@ class ManagedAgentEventConsumer:
 
                 # Reset reconnect delay on successful connection
                 self._reconnect_delay = DEFAULT_RECONNECT_DELAY
+                self.reconnect_count += 1
                 print(
-                    f"[EVENT-CONSUMER] Connected to SSE stream for {self.session_id}",
+                    f"[EVENT-CONSUMER] Connected to SSE stream for {self.session_id}"
+                    f" (reconnect #{self.reconnect_count})" if self.reconnect_count > 1 else "",
                     flush=True,
                 )
 
@@ -334,6 +342,66 @@ class ManagedAgentEventConsumer:
                         self._last_event_id = sse_event.id
 
                     await self._handle_event(sse_event)
+
+    async def _backfill_missed_events(self):
+        """
+        BUG-001: Backfill missed events from Anthropic's event history API.
+
+        On reconnect, fetches events after _last_event_id to ensure no
+        audit gaps. Uses GET /v1/sessions/{id}/events with after_id param.
+        """
+        try:
+            url = f"{self.api_base}/v1/sessions/{self.anthropic_session_id}/events"
+            params = {}
+            if self._last_event_id:
+                params["after_id"] = self._last_event_id
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self.anthropic_api_key}",
+                        "anthropic-version": "2024-11-05",
+                    },
+                    params=params,
+                )
+                if resp.status_code != 200:
+                    print(
+                        f"[EVENT-CONSUMER] Backfill failed for {self.session_id}: "
+                        f"HTTP {resp.status_code}",
+                        flush=True,
+                    )
+                    return
+
+                events = resp.json()
+                if not isinstance(events, list):
+                    events = events.get("events", events.get("data", []))
+
+                backfilled = 0
+                for event_data in events:
+                    sse_event = SSEEvent(
+                        event=event_data.get("type", event_data.get("event", "")),
+                        data=json.dumps(event_data.get("data", event_data)),
+                        id=event_data.get("id", ""),
+                    )
+                    await self._handle_event(sse_event)
+                    self.total_events += 1
+                    self.backfilled_events += 1
+                    backfilled += 1
+                    if sse_event.id:
+                        self._last_event_id = sse_event.id
+
+                if backfilled > 0:
+                    print(
+                        f"[EVENT-CONSUMER] Backfilled {backfilled} events for "
+                        f"{self.session_id}",
+                        flush=True,
+                    )
+        except Exception as e:
+            print(
+                f"[EVENT-CONSUMER] Backfill error for {self.session_id}: {e}",
+                flush=True,
+            )
 
     async def _handle_event(self, sse_event: SSEEvent):
         """Dispatch a single SSE event to the appropriate handler."""

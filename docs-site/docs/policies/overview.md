@@ -62,3 +62,9 @@ Final Config = Default Config + Your Overrides
 ```
 
 For example, the financial template defaults to `transaction_limit: 5000`. If you set `policy_config: {"transaction_limit": 10000}`, only that value changes — all other defaults remain.
+
+---
+
+## Managed Agent Policies
+
+If you're governing Anthropic managed agents, see the dedicated [Managed Agent Policy Templates](../managed-agents/policies.md) for patterns specific to managed agent sessions, including read-only agents, approval-gated communication, budget-capped sessions, and PII-sensitive environments.

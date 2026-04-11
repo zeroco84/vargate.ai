@@ -15,6 +15,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
+from typing import Optional
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -255,3 +256,36 @@ def get_gtm_stats(conn: sqlite3.Connection, tenant_id: str) -> dict:
         "unique_recipients": unique_recipients["cnt"] if unique_recipients else 0,
         "cooldown_days": COOLDOWN_DAYS,
     }
+
+
+# ── Managed Agent Session Constraints (BUG-008) ─────────────────────────
+
+# Blocked tool patterns for managed agent sessions
+BLOCKED_MANAGED_TOOLS = {
+    "vargate_shell",      # Direct shell access should never be governed
+    "vargate_raw_sql",    # Raw SQL bypass
+}
+
+
+def check_managed_session_constraints(
+    conn: sqlite3.Connection,
+    tenant_id: str,
+    tool_name: str,
+) -> Optional[str]:
+    """
+    Check gateway-level constraints for managed agent session creation.
+    Returns error message if blocked, None if OK.
+
+    AG-2.9: Safety constraints evaluated before OPA.
+    """
+    # Block explicitly dangerous tool configurations
+    if tool_name.lower() in BLOCKED_MANAGED_TOOLS:
+        return f"Tool '{tool_name}' is blocked for managed agent sessions"
+
+    # Check daily send cap if email tools are in the config
+    if "email" in tool_name.lower() or "send" in tool_name.lower():
+        daily_count = _get_daily_send_count(conn, tenant_id)
+        if daily_count >= DAILY_SEND_CAP:
+            return f"Daily send cap reached ({daily_count}/{DAILY_SEND_CAP})"
+
+    return None

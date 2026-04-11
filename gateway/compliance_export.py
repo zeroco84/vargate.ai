@@ -546,3 +546,123 @@ async def export_compliance(
         )
     else:
         return JSONResponse(content=package, media_type="application/json")
+
+
+# ── Session-Level PDF Export (BUG-010) ────────────────────────────────────
+
+
+def generate_session_pdf(export: dict) -> bytes:
+    """Generate a PDF compliance report from a per-session compliance export."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, topMargin=0.75 * inch, bottomMargin=0.75 * inch
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "CustomTitle", parent=styles["Title"], fontSize=24, spaceAfter=20
+    )
+    heading_style = ParagraphStyle(
+        "CustomHeading", parent=styles["Heading2"], fontSize=14, spaceAfter=10
+    )
+    body_style = styles["BodyText"]
+
+    elements = []
+    session = export.get("session", {})
+    summary = export.get("summary", {})
+    chain_info = export.get("chain_verification", {})
+    agcs = export.get("agcs_controls", [])
+
+    # Cover page
+    elements.append(Spacer(1, 2 * inch))
+    elements.append(Paragraph("Vargate Session Compliance Report", title_style))
+    elements.append(Spacer(1, 0.3 * inch))
+    elements.append(Paragraph(f"Session ID: {session.get('id', '—')}", body_style))
+    elements.append(Paragraph(f"Tenant ID: {session.get('tenant_id', '—')}", body_style))
+    elements.append(Paragraph(f"Agent ID: {session.get('agent_id', '—')}", body_style))
+    elements.append(Paragraph(f"Status: {session.get('status', '—')}", body_style))
+    elements.append(Paragraph(f"Created: {session.get('created_at', '—')}", body_style))
+    elements.append(Paragraph(f"Ended: {session.get('ended_at', '—')}", body_style))
+    elements.append(Paragraph(f"System Prompt Hash: {session.get('system_prompt_hash', '—')}", body_style))
+    elements.append(Spacer(1, 0.3 * inch))
+    elements.append(Paragraph(f"Export Hash: {export.get('export_hash', '—')}", body_style))
+    elements.append(PageBreak())
+
+    # Summary
+    elements.append(Paragraph("Governance Summary", heading_style))
+    summary_data = [
+        ["Metric", "Value"],
+        ["Total Events", str(summary.get("total_events", 0))],
+        ["Governed Calls", str(summary.get("governed_calls", 0))],
+        ["Observed Calls", str(summary.get("observed_calls", 0))],
+        ["Denied", str(summary.get("denied", 0))],
+        ["Pending", str(summary.get("pending", 0))],
+        ["Anomalies", str(summary.get("anomalies", 0))],
+        ["Denial Rate", str(summary.get("denial_rate", 0))],
+        ["Chain Valid", "Yes" if chain_info.get("valid", True) else "NO - BROKEN"],
+    ]
+    t = Table(summary_data, colWidths=[3 * inch, 3 * inch])
+    t.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8f9fa"), colors.white]),
+        ])
+    )
+    elements.append(t)
+    elements.append(Spacer(1, 0.3 * inch))
+
+    # AGCS controls
+    if agcs:
+        elements.append(Paragraph("AGCS Controls Applied", heading_style))
+        if isinstance(agcs, list):
+            for ctrl in agcs:
+                elements.append(Paragraph(f"&bull; {ctrl}", body_style))
+        elif isinstance(agcs, dict):
+            for ctrl, desc in agcs.items():
+                elements.append(Paragraph(f"&bull; {ctrl}: {desc}", body_style))
+        elements.append(PageBreak())
+
+    # Timeline (first 50 events max for PDF)
+    timeline = export.get("timeline", [])[:50]
+    if timeline:
+        elements.append(Paragraph("Event Timeline (first 50)", heading_style))
+        tl_data = [["Action ID", "Tool", "Decision", "Source", "Time"]]
+        for event in timeline:
+            tl_data.append([
+                event.get("action_id", "—")[:16] + "...",
+                event.get("tool", "—")[:20],
+                event.get("decision", "—"),
+                event.get("source", "—"),
+                event.get("created_at", "—")[:19],
+            ])
+        t2 = Table(tl_data, colWidths=[1.3 * inch, 1.3 * inch, 1 * inch, 1.2 * inch, 1.2 * inch])
+        t2.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8f9fa"), colors.white]),
+            ])
+        )
+        elements.append(t2)
+
+    doc.build(elements)
+    return buf.getvalue()
