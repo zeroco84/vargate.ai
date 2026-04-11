@@ -2656,6 +2656,7 @@ async def trigger_backup(request: Request, tenant: dict = Depends(get_session_te
 # Each module uses late imports to avoid circular dependencies.
 
 from compliance_export import router as compliance_router  # noqa: E402
+from control_plane import router as control_plane_router  # noqa: E402
 from mcp_server import router as mcp_server_router  # noqa: E402
 from routes_anchor import router as anchor_router  # noqa: E402
 from routes_audit import router as audit_router  # noqa: E402
@@ -2667,4 +2668,5 @@ app.include_router(anchor_router)
 app.include_router(tenant_router)
 app.include_router(auth_router)
 app.include_router(compliance_router)
+app.include_router(control_plane_router)
 app.include_router(mcp_server_router)
