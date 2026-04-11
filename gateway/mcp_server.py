@@ -593,8 +593,11 @@ async def mcp_tools_call(
     # ── Update Redis behavioral history ────────────────────────────────
     try:
         await gateway_main.update_behavioral_history(
-            tenant_id, agent_id, vargate_tool, vargate_method,
-            decision, violations, severity,
+            agent_id=agent_id,
+            action_id=action_id,
+            decision=decision,
+            amount=arguments.get("amount"),
+            tenant_id=tenant_id,
         )
     except Exception:
         pass
