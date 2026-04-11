@@ -590,14 +590,22 @@ def generate_session_pdf(export: dict) -> bytes:
     elements.append(Paragraph("Vargate Session Compliance Report", title_style))
     elements.append(Spacer(1, 0.3 * inch))
     elements.append(Paragraph(f"Session ID: {session.get('id', '—')}", body_style))
-    elements.append(Paragraph(f"Tenant ID: {session.get('tenant_id', '—')}", body_style))
+    elements.append(
+        Paragraph(f"Tenant ID: {session.get('tenant_id', '—')}", body_style)
+    )
     elements.append(Paragraph(f"Agent ID: {session.get('agent_id', '—')}", body_style))
     elements.append(Paragraph(f"Status: {session.get('status', '—')}", body_style))
     elements.append(Paragraph(f"Created: {session.get('created_at', '—')}", body_style))
     elements.append(Paragraph(f"Ended: {session.get('ended_at', '—')}", body_style))
-    elements.append(Paragraph(f"System Prompt Hash: {session.get('system_prompt_hash', '—')}", body_style))
+    elements.append(
+        Paragraph(
+            f"System Prompt Hash: {session.get('system_prompt_hash', '—')}", body_style
+        )
+    )
     elements.append(Spacer(1, 0.3 * inch))
-    elements.append(Paragraph(f"Export Hash: {export.get('export_hash', '—')}", body_style))
+    elements.append(
+        Paragraph(f"Export Hash: {export.get('export_hash', '—')}", body_style)
+    )
     elements.append(PageBreak())
 
     # Summary
@@ -615,14 +623,21 @@ def generate_session_pdf(export: dict) -> bytes:
     ]
     t = Table(summary_data, colWidths=[3 * inch, 3 * inch])
     t.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8f9fa"), colors.white]),
-        ])
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor("#f8f9fa"), colors.white],
+                ),
+            ]
+        )
     )
     elements.append(t)
     elements.append(Spacer(1, 0.3 * inch))
@@ -644,23 +659,35 @@ def generate_session_pdf(export: dict) -> bytes:
         elements.append(Paragraph("Event Timeline (first 50)", heading_style))
         tl_data = [["Action ID", "Tool", "Decision", "Source", "Time"]]
         for event in timeline:
-            tl_data.append([
-                event.get("action_id", "—")[:16] + "...",
-                event.get("tool", "—")[:20],
-                event.get("decision", "—"),
-                event.get("source", "—"),
-                event.get("created_at", "—")[:19],
-            ])
-        t2 = Table(tl_data, colWidths=[1.3 * inch, 1.3 * inch, 1 * inch, 1.2 * inch, 1.2 * inch])
+            tl_data.append(
+                [
+                    event.get("action_id", "—")[:16] + "...",
+                    event.get("tool", "—")[:20],
+                    event.get("decision", "—"),
+                    event.get("source", "—"),
+                    event.get("created_at", "—")[:19],
+                ]
+            )
+        t2 = Table(
+            tl_data,
+            colWidths=[1.3 * inch, 1.3 * inch, 1 * inch, 1.2 * inch, 1.2 * inch],
+        )
         t2.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8f9fa"), colors.white]),
-            ])
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a1a2e")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [colors.HexColor("#f8f9fa"), colors.white],
+                    ),
+                ]
+            )
         )
         elements.append(t2)
 

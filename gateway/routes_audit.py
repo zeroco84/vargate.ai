@@ -116,7 +116,9 @@ async def audit_log(
             "erasure_status": r["erasure_status"],
             "execution_mode": r["execution_mode"],
             "source": r["source"] if "source" in r.keys() else "direct",
-            "managed_session_id": r["managed_session_id"] if "managed_session_id" in r.keys() else None,
+            "managed_session_id": (
+                r["managed_session_id"] if "managed_session_id" in r.keys() else None
+            ),
         }
         records.append(rec)
 

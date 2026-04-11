@@ -15,7 +15,6 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
-from typing import Optional
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -262,8 +261,8 @@ def get_gtm_stats(conn: sqlite3.Connection, tenant_id: str) -> dict:
 
 # Blocked tool patterns for managed agent sessions
 BLOCKED_MANAGED_TOOLS = {
-    "vargate_shell",      # Direct shell access should never be governed
-    "vargate_raw_sql",    # Raw SQL bypass
+    "vargate_shell",  # Direct shell access should never be governed
+    "vargate_raw_sql",  # Raw SQL bypass
 }
 
 

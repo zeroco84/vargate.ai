@@ -127,7 +127,11 @@ TOOL_CATALOG = [
             "type": "object",
             "properties": {
                 "amount": {"type": "number", "description": "Charge amount (GBP)"},
-                "currency": {"type": "string", "description": "Currency code", "default": "gbp"},
+                "currency": {
+                    "type": "string",
+                    "description": "Currency code",
+                    "default": "gbp",
+                },
                 "description": {"type": "string", "description": "Charge description"},
             },
             "required": ["amount"],
@@ -143,7 +147,10 @@ TOOL_CATALOG = [
             "properties": {
                 "amount": {"type": "number", "description": "Transfer amount (GBP)"},
                 "destination": {"type": "string", "description": "Destination account"},
-                "description": {"type": "string", "description": "Transfer description"},
+                "description": {
+                    "type": "string",
+                    "description": "Transfer description",
+                },
             },
             "required": ["amount", "destination"],
         },
@@ -197,6 +204,7 @@ def _check_ip_allowlist(request: Request):
 def _get_db():
     """Get the shared SQLite connection. Imported lazily to avoid circular imports."""
     import main as gateway_main
+
     return gateway_main.get_db()
 
 
@@ -227,6 +235,7 @@ async def _get_mcp_tenant(
         # Try as JWT
         try:
             import auth as auth_module
+
             payload = auth_module.verify_session_token(token)
             tenant = gateway_main._tenant_by_id.get(payload["tenant_id"])
             if tenant:
@@ -240,7 +249,9 @@ async def _get_mcp_tenant(
 # ── Agent Config Helpers ───────────────────────────────────────────────────
 
 
-def _get_agent_config(conn: sqlite3.Connection, agent_id: str, tenant_id: str) -> Optional[dict]:
+def _get_agent_config(
+    conn: sqlite3.Connection, agent_id: str, tenant_id: str
+) -> Optional[dict]:
     """Look up a managed agent config by ID and tenant."""
     row = conn.execute(
         "SELECT * FROM managed_agent_configs WHERE id = ? AND tenant_id = ?",
@@ -291,34 +302,36 @@ async def mcp_initialize(
         flush=True,
     )
 
-    return JSONResponse(content={
-        "jsonrpc": "2.0",
-        "id": req.id,
-        "result": {
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": {"listChanged": True},
+    return JSONResponse(
+        content={
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {"listChanged": True},
+                },
+                "serverInfo": {
+                    "name": MCP_SERVER_NAME,
+                    "version": MCP_SERVER_VERSION,
+                },
+                "vargate": {
+                    "session_id": session_id,
+                    "tenant_id": tenant_id,
+                    "governance": "active",
+                    "features": [
+                        "opa_policy_evaluation",
+                        "behavioral_analysis",
+                        "pii_detection",
+                        "credential_brokering",
+                        "hash_chain_audit",
+                        "merkle_tree_anchoring",
+                        "blockchain_anchoring",
+                    ],
+                },
             },
-            "serverInfo": {
-                "name": MCP_SERVER_NAME,
-                "version": MCP_SERVER_VERSION,
-            },
-            "vargate": {
-                "session_id": session_id,
-                "tenant_id": tenant_id,
-                "governance": "active",
-                "features": [
-                    "opa_policy_evaluation",
-                    "behavioral_analysis",
-                    "pii_detection",
-                    "credential_brokering",
-                    "hash_chain_audit",
-                    "merkle_tree_anchoring",
-                    "blockchain_anchoring",
-                ],
-            },
-        },
-    })
+        }
+    )
 
 
 @router.post("/tools/list")
@@ -343,11 +356,13 @@ async def mcp_tools_list(
     # Strip internal fields before returning to client
     clean_tools = []
     for t in tools:
-        clean_tools.append({
-            "name": t["name"],
-            "description": t["description"],
-            "inputSchema": t["inputSchema"],
-        })
+        clean_tools.append(
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "inputSchema": t["inputSchema"],
+            }
+        )
 
     print(
         f"[MCP] tools/list: tenant={tenant_id} agent={agent_id or 'default'} "
@@ -355,13 +370,15 @@ async def mcp_tools_list(
         flush=True,
     )
 
-    return JSONResponse(content={
-        "jsonrpc": "2.0",
-        "id": req.id,
-        "result": {
-            "tools": clean_tools,
-        },
-    })
+    return JSONResponse(
+        content={
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": {
+                "tools": clean_tools,
+            },
+        }
+    )
 
 
 @router.post("/tools/call")
@@ -385,14 +402,17 @@ async def mcp_tools_call(
     # Resolve MCP tool name to Vargate tool/method
     catalog_entry = _TOOL_INDEX.get(tool_name)
     if not catalog_entry:
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": req.id,
-            "error": {
-                "code": -32602,
-                "message": f"Unknown tool: {tool_name}",
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "error": {
+                    "code": -32602,
+                    "message": f"Unknown tool: {tool_name}",
+                },
             },
-        }, status_code=200)
+            status_code=200,
+        )
 
     vargate_tool = catalog_entry["_vargate_tool"]
     vargate_method = catalog_entry["_vargate_method"]
@@ -408,15 +428,18 @@ async def mcp_tools_call(
     # ── Rate limit check ───────────────────────────────────────────────
     rate_ok = await gateway_main.check_rate_limit(tenant)
     if not rate_ok:
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": req.id,
-            "error": {
-                "code": -32000,
-                "message": "Rate limit exceeded",
-                "data": {"vargate_action_id": action_id},
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "error": {
+                    "code": -32000,
+                    "message": "Rate limit exceeded",
+                    "data": {"vargate_action_id": action_id},
+                },
             },
-        }, status_code=200)
+            status_code=200,
+        )
 
     # ── OPA Pass 1: Fast path ──────────────────────────────────────────
     conn = _get_db()
@@ -433,7 +456,8 @@ async def mcp_tools_call(
             if cred_resp.status_code == 200:
                 creds = cred_resp.json()
                 credentials_registered = [
-                    c.get("tool_id", c.get("tool")) for c in creds
+                    c.get("tool_id", c.get("tool"))
+                    for c in creds
                     if isinstance(c, dict)
                 ]
     except Exception:
@@ -442,6 +466,7 @@ async def mcp_tools_call(
     # Build OPA input
     class _FakeReq:
         """Minimal request-like object for build_opa_input."""
+
         def __init__(self, agent_id, tool, method, params):
             self.agent_id = agent_id
             self.agent_type = "managed"
@@ -453,7 +478,9 @@ async def mcp_tools_call(
 
     fake_req = _FakeReq(agent_id, vargate_tool, vargate_method, arguments)
     opa_input = gateway_main.build_opa_input(
-        fake_req, action_id, history=None,
+        fake_req,
+        action_id,
+        history=None,
         credentials_registered=credentials_registered,
         tenant=tenant,
     )
@@ -472,12 +499,12 @@ async def mcp_tools_call(
 
     if needs_enrichment or not allow:
         try:
-            history = await gateway_main.fetch_behavioral_history(
-                tenant_id, agent_id
-            )
+            history = await gateway_main.fetch_behavioral_history(tenant_id, agent_id)
             if history:
                 opa_input_p2 = gateway_main.build_opa_input(
-                    fake_req, action_id, history=history,
+                    fake_req,
+                    action_id,
+                    history=history,
                     credentials_registered=credentials_registered,
                     tenant=tenant,
                 )
@@ -509,6 +536,7 @@ async def mcp_tools_call(
     if decision == "allow":
         try:
             import execution_engine
+
             async with gateway_main.httpx.AsyncClient() as client:
                 cred_resp = await client.get(
                     f"{gateway_main.HSM_URL}/credentials/{vargate_tool}/status",
@@ -550,7 +578,11 @@ async def mcp_tools_call(
         if detected:
             contains_pii = 1
             pii_fields = detected
-            pii_subject_id = arguments.get("email") or arguments.get("to") or arguments.get("record_id")
+            pii_subject_id = (
+                arguments.get("email")
+                or arguments.get("to")
+                or arguments.get("record_id")
+            )
     except Exception:
         pass
 
@@ -604,13 +636,15 @@ async def mcp_tools_call(
     # ── Webhook dispatch ───────────────────────────────────────────────
     try:
         import webhooks as webhooks_module
+
         event_type = {
             "allow": "action.allowed",
             "deny": "action.denied",
             "pending_approval": "action.pending",
         }.get(decision, "action.denied")
         await webhooks_module.dispatch_webhook(
-            tenant, event_type,
+            tenant,
+            event_type,
             {
                 "action_id": action_id,
                 "tool": vargate_tool,
@@ -632,77 +666,95 @@ async def mcp_tools_call(
     if decision == "allow":
         content_parts = []
         if execution_result:
-            content_parts.append({
-                "type": "text",
-                "text": json.dumps(execution_result),
-            })
+            content_parts.append(
+                {
+                    "type": "text",
+                    "text": json.dumps(execution_result),
+                }
+            )
         else:
-            content_parts.append({
-                "type": "text",
-                "text": json.dumps({"status": "allowed", "executed": True}),
-            })
+            content_parts.append(
+                {
+                    "type": "text",
+                    "text": json.dumps({"status": "allowed", "executed": True}),
+                }
+            )
 
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": req.id,
-            "result": {
-                "content": content_parts,
-                "isError": False,
-                "_vargate": {
-                    "action_id": action_id,
-                    "decision": "allowed",
-                    "source": "mcp_governed",
-                    "execution_mode": execution_mode,
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "result": {
+                    "content": content_parts,
+                    "isError": False,
+                    "_vargate": {
+                        "action_id": action_id,
+                        "decision": "allowed",
+                        "source": "mcp_governed",
+                        "execution_mode": execution_mode,
+                    },
                 },
-            },
-        })
+            }
+        )
 
     elif decision == "pending_approval":
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": req.id,
-            "result": {
-                "content": [{
-                    "type": "text",
-                    "text": json.dumps({
-                        "status": "pending_approval",
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "status": "pending_approval",
+                                    "action_id": action_id,
+                                    "message": "This action requires human approval. "
+                                    "Check back using the action_id.",
+                                }
+                            ),
+                        }
+                    ],
+                    "isError": False,
+                    "_vargate": {
                         "action_id": action_id,
-                        "message": "This action requires human approval. "
-                                   "Check back using the action_id.",
-                    }),
-                }],
-                "isError": False,
-                "_vargate": {
-                    "action_id": action_id,
-                    "decision": "pending_approval",
-                    "source": "mcp_governed",
+                        "decision": "pending_approval",
+                        "source": "mcp_governed",
+                    },
                 },
-            },
-        })
+            }
+        )
 
     else:  # denied
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": req.id,
-            "result": {
-                "content": [{
-                    "type": "text",
-                    "text": json.dumps({
-                        "status": "blocked",
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "status": "blocked",
+                                    "violations": violations,
+                                    "severity": severity,
+                                }
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                    "_vargate": {
+                        "action_id": action_id,
+                        "decision": "denied",
                         "violations": violations,
                         "severity": severity,
-                    }),
-                }],
-                "isError": True,
-                "_vargate": {
-                    "action_id": action_id,
-                    "decision": "denied",
-                    "violations": violations,
-                    "severity": severity,
-                    "source": "mcp_governed",
+                        "source": "mcp_governed",
+                    },
                 },
-            },
-        })
+            }
+        )
 
 
 # ── Health check for MCP server ────────────────────────────────────────────
@@ -711,7 +763,11 @@ async def mcp_tools_call(
 @router.get("/health")
 async def mcp_health():
     """MCP server health check."""
-    return {"status": "ok", "service": "vargate-mcp-server", "protocol_version": MCP_PROTOCOL_VERSION}
+    return {
+        "status": "ok",
+        "service": "vargate-mcp-server",
+        "protocol_version": MCP_PROTOCOL_VERSION,
+    }
 
 
 # ── Unified JSON-RPC dispatcher (Streamable HTTP transport) ────────────────
@@ -733,26 +789,38 @@ async def mcp_dispatch(
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32700, "message": "Parse error"},
-        }, status_code=200)
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            },
+            status_code=200,
+        )
 
     # JSON-RPC batch requests are not supported — return error for arrays
     if isinstance(body, list):
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32600, "message": "Batch requests are not supported"},
-        }, status_code=200)
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": "Batch requests are not supported",
+                },
+            },
+            status_code=200,
+        )
 
     if not isinstance(body, dict):
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32600, "message": "Invalid request"},
-        }, status_code=200)
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32600, "message": "Invalid request"},
+            },
+            status_code=200,
+        )
 
     method = body.get("method", "")
     jsonrpc_id = body.get("id")
@@ -773,28 +841,35 @@ async def mcp_dispatch(
 
     elif method == "notifications/initialized":
         # Client acknowledgement after initialize — no response needed
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": jsonrpc_id,
-            "result": {},
-        })
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "result": {},
+            }
+        )
 
     elif method == "ping":
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": jsonrpc_id,
-            "result": {},
-        })
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "result": {},
+            }
+        )
 
     else:
-        return JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": jsonrpc_id,
-            "error": {
-                "code": -32601,
-                "message": f"Method not found: {method}",
+        return JSONResponse(
+            content={
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}",
+                },
             },
-        }, status_code=200)
+            status_code=200,
+        )
 
 
 # ── SSE transport endpoint (GET) ──────────────────────────────────────────
@@ -817,7 +892,7 @@ async def mcp_sse_endpoint(
 
     async def event_stream():
         # Send initial endpoint message per MCP SSE transport spec
-        yield f"event: endpoint\ndata: /mcp/server\n\n"
+        yield "event: endpoint\ndata: /mcp/server\n\n"
 
         # Keep connection alive with periodic pings
         try:
