@@ -516,7 +516,6 @@ async def mcp_tools_call(
                     timeout=5.0,
                 )
                 if cred_resp.status_code == 200:
-                    cred_data = cred_resp.json()
                     cred_value_resp = await client.get(
                         f"{gateway_main.HSM_URL}/credentials/{vargate_tool}",
                         headers={"X-Tenant-Id": tenant_id},

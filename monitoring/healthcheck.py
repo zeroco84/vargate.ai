@@ -21,9 +21,13 @@ consecutive_failures = 0
 alert_sent = False
 
 def check_health():
+    if not VARGATE_URL.startswith(("http://", "https://")):
+        print(f"[HEALTHCHECK] Failed: Invalid URL scheme in {VARGATE_URL}")
+        return False
+
     try:
         req = urllib.request.Request(VARGATE_URL, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             if resp.status == 200:
                 return True
     except Exception as e:

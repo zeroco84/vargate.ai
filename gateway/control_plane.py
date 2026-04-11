@@ -12,14 +12,12 @@ import hashlib
 import json
 import os
 import sqlite3
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # ── Configuration ──────────────────────────────────────────────────────────
