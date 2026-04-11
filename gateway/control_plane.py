@@ -143,9 +143,10 @@ async def _get_tenant(
     request: Request,
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
 ) -> dict:
     import main as gateway_main
-    return await gateway_main.get_tenant(x_api_key, authorization)
+    return await gateway_main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
 
 
 def _get_anthropic_key(tenant_id: str) -> Optional[str]:
