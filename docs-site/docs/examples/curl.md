@@ -175,3 +175,75 @@ curl -X POST "$VARGATE_URL/api-keys/rotate" \
   -H "X-API-Key: $VARGATE_API_KEY"
 # Save the new key from the response!
 ```
+
+---
+
+## Managed Agent Sessions
+
+### Create Agent Config
+
+```bash
+curl -X POST "$VARGATE_URL/managed/agents" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $VARGATE_API_KEY" \
+  -d '{
+    "name": "Research Assistant",
+    "anthropic_model": "claude-sonnet-4-6",
+    "allowed_tools": ["vargate_web_search", "vargate_send_email"],
+    "require_human_approval": ["vargate_send_email"],
+    "max_session_hours": 2.0,
+    "max_daily_sessions": 10
+  }'
+```
+
+### Create Governed Session
+
+```bash
+curl -X POST "$VARGATE_URL/managed/sessions" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $VARGATE_API_KEY" \
+  -d '{
+    "agent_id": "agent-a1b2c3d4e5f6",
+    "user_message": "Research AI governance trends."
+  }'
+```
+
+### Check Session Status
+
+```bash
+curl "$VARGATE_URL/managed/sessions/vs-a1b2c3d4e5f6g7h8/status" \
+  -H "X-API-Key: $VARGATE_API_KEY"
+```
+
+### View Session Audit Trail
+
+```bash
+curl "$VARGATE_URL/managed/sessions/vs-a1b2c3d4e5f6g7h8/audit?limit=50" \
+  -H "X-API-Key: $VARGATE_API_KEY"
+```
+
+### Emergency Interrupt
+
+```bash
+curl -X POST "$VARGATE_URL/managed/sessions/vs-a1b2c3d4e5f6g7h8/interrupt" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $VARGATE_API_KEY" \
+  -d '{"reason": "Agent accessed production credentials"}'
+```
+
+### Download Compliance Export
+
+```bash
+curl "$VARGATE_URL/managed/sessions/vs-a1b2c3d4e5f6g7h8/compliance" \
+  -H "X-API-Key: $VARGATE_API_KEY" \
+  -o session-compliance.json
+```
+
+### Replay Session Decisions
+
+```bash
+curl -X POST "$VARGATE_URL/managed/sessions/vs-a1b2c3d4e5f6g7h8/replay" \
+  -H "X-API-Key: $VARGATE_API_KEY"
+```
+
+See the full [Managed Agents Setup Guide](../managed-agents/setup.md) for detailed walkthrough.

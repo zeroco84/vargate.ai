@@ -160,3 +160,68 @@ interface PendingResponse {
   message: string;
 }
 ```
+
+---
+
+## Managed Agents Example
+
+Create and govern an Anthropic managed agent session:
+
+```javascript
+const VARGATE_URL = process.env.VARGATE_URL || "https://vargate.ai/api";
+const API_KEY = process.env.VARGATE_API_KEY;
+
+async function managedAgentSession() {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-API-Key": API_KEY,
+  };
+
+  // Create agent config
+  const agent = await fetch(`${VARGATE_URL}/managed/agents`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      name: "Research Assistant",
+      anthropic_model: "claude-sonnet-4-6",
+      allowed_tools: ["vargate_web_search", "vargate_send_email"],
+      require_human_approval: ["vargate_send_email"],
+      max_session_hours: 2.0,
+    }),
+  }).then(r => r.json());
+  console.log(`Agent: ${agent.id}`);
+
+  // Create governed session
+  const session = await fetch(`${VARGATE_URL}/managed/sessions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      agent_id: agent.id,
+      user_message: "Research AI governance trends.",
+    }),
+  }).then(r => r.json());
+  console.log(`Session: ${session.session_id}`);
+
+  // Poll status
+  let status;
+  do {
+    await new Promise(r => setTimeout(r, 5000));
+    status = await fetch(
+      `${VARGATE_URL}/managed/sessions/${session.session_id}/status`,
+      { headers: { "X-API-Key": API_KEY } }
+    ).then(r => r.json());
+    console.log(`  Governed: ${status.total_governed_calls} | Observed: ${status.total_observed_calls}`);
+  } while (status.status === "active");
+
+  // Download compliance artifact
+  const compliance = await fetch(
+    `${VARGATE_URL}/managed/sessions/${session.session_id}/compliance`,
+    { headers: { "X-API-Key": API_KEY } }
+  ).then(r => r.json());
+  console.log(`Events: ${compliance.summary.total_events}`);
+}
+
+managedAgentSession().catch(console.error);
+```
+
+See the full [Managed Agents Setup Guide](../managed-agents/setup.md) for detailed walkthrough.

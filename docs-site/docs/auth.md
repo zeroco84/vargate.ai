@@ -74,6 +74,7 @@ Alternative signup and login via GitHub:
 - **Scope access:** Each tenant has its own key with isolated data
 - **Monitor access:** Check `GET /credentials/access-log` for credential usage
 - **HTTPS only:** All API requests must use HTTPS in production
+- **Managed agents:** When using [managed agents](managed-agents/overview.md), your Vargate API key authenticates the MCP server connection. Store the Anthropic API key separately in the [HSM vault](api/credentials.md).
 
 ```python
 import os

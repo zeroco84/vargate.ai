@@ -42,6 +42,14 @@ If you're building or deploying AI agents and need governance, audit, and compli
 
     [:octicons-arrow-right-24: Browse Templates](policies/overview.md)
 
+-   :material-robot:{ .lg .middle } **Managed Agents**
+
+    ---
+
+    Govern Anthropic managed agents with active policy enforcement, passive observability, and session lifecycle control.
+
+    [:octicons-arrow-right-24: Managed Agents Guide](managed-agents/overview.md)
+
 </div>
 
 ---

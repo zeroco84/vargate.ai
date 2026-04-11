@@ -186,5 +186,6 @@ Available templates: `general`, `financial`, `email`, `crm`, `data_access`. See 
 
 - [Authentication](auth.md) — API keys, JWT sessions, OAuth
 - [API Reference](api/overview.md) — full endpoint documentation
+- [Managed Agents](managed-agents/overview.md) — govern Anthropic managed agents with full audit and compliance
 - [CLI Guide](cli/install.md) — terminal-based management
 - [Webhooks](api/webhooks.md) — real-time notifications

@@ -64,9 +64,14 @@ nav:
     - Quick Start: quickstart.md
     - Authentication: auth.md
     - Your First Governed Action: first-action.md
+  - Managed Agents:
+    - Overview: managed-agents/overview.md
+    - Setup Guide: managed-agents/setup.md
+    - Policy Templates: managed-agents/policies.md
   - API Reference:
     - Overview: api/overview.md
     - Tool Calls: api/tool-calls.md
+    - Managed Agents: api/managed-agents.md
     - Audit Trail: api/audit.md
     - Blockchain & Merkle: api/blockchain.md
     - Approval Queue: api/approvals.md

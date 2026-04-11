@@ -147,3 +147,52 @@ except httpx.HTTPStatusError as e:
     else:
         raise
 ```
+
+---
+
+## Managed Agents Example
+
+Create and govern an Anthropic managed agent session:
+
+```python
+import os
+import time
+import httpx
+
+client = httpx.Client(
+    base_url="https://vargate.ai/api",
+    headers={"X-API-Key": os.environ["VARGATE_API_KEY"]},
+    timeout=30,
+)
+
+# Create agent config
+agent = client.post("/managed/agents", json={
+    "name": "Research Assistant",
+    "anthropic_model": "claude-sonnet-4-6",
+    "allowed_tools": ["vargate_web_search", "vargate_send_email"],
+    "require_human_approval": ["vargate_send_email"],
+    "max_session_hours": 2.0,
+}).json()
+print(f"Agent config: {agent['id']}")
+
+# Create governed session
+session = client.post("/managed/sessions", json={
+    "agent_id": agent["id"],
+    "user_message": "Research AI governance trends.",
+}).json()
+print(f"Session: {session['session_id']}")
+
+# Monitor session
+while True:
+    status = client.get(f"/managed/sessions/{session['session_id']}/status").json()
+    print(f"  Governed: {status['total_governed_calls']} | Observed: {status['total_observed_calls']}")
+    if status["status"] != "active":
+        break
+    time.sleep(5)
+
+# Download compliance artifact
+compliance = client.get(f"/managed/sessions/{session['session_id']}/compliance").json()
+print(f"Events: {compliance['summary']['total_events']}")
+```
+
+See the full [Managed Agents Setup Guide](../managed-agents/setup.md) for detailed walkthrough.
