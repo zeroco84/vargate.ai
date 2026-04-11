@@ -73,7 +73,9 @@ def get_transparency_data(
 
     # ── Violation breakdown ────────────────────────────────────────────────
     violation_rows = conn.execute(
-        "SELECT violations FROM audit_log " + where + " AND decision = 'deny'",  # nosec B608
+        "SELECT violations FROM audit_log "
+        + where
+        + " AND decision = 'deny'",  # nosec B608
         args,
     ).fetchall()
     violation_counts = {}
@@ -151,7 +153,9 @@ def get_transparency_data(
     chain_info = None
     try:
         last_record = conn.execute(
-            "SELECT record_hash, created_at FROM audit_log " + where + " ORDER BY id DESC LIMIT 1",  # nosec B608
+            "SELECT record_hash, created_at FROM audit_log "
+            + where
+            + " ORDER BY id DESC LIMIT 1",  # nosec B608
             args,
         ).fetchone()
         total_records = conn.execute(

@@ -16,7 +16,14 @@ from datetime import datetime, timezone
 import httpx
 
 # Supported event types
-WEBHOOK_EVENTS = ["action.denied", "action.pending", "action.allowed", "chain.anchored", "anomaly.detected", "session.interrupted"]
+WEBHOOK_EVENTS = [
+    "action.denied",
+    "action.pending",
+    "action.allowed",
+    "chain.anchored",
+    "anomaly.detected",
+    "session.interrupted",
+]
 
 # Retry config
 MAX_RETRIES = 3

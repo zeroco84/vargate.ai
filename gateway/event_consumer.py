@@ -10,10 +10,9 @@ AGCS Controls: AG-1.2, AG-1.5, AG-1.10, AG-2.1, AG-2.2
 import asyncio
 import json
 import re
-import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import httpx
 
@@ -29,16 +28,36 @@ SSE_TIMEOUT = 300  # 5 min idle timeout before reconnect
 
 BASH_DANGEROUS_PATTERNS = [
     # Destructive commands
-    (re.compile(r"\brm\s+(-[rfR]+\s+|--force|--recursive)"), "destructive_command", "high"),
+    (
+        re.compile(r"\brm\s+(-[rfR]+\s+|--force|--recursive)"),
+        "destructive_command",
+        "high",
+    ),
     (re.compile(r"\bmkfs\b"), "destructive_command", "critical"),
     (re.compile(r"\bdd\s+.*of=/dev/"), "destructive_command", "critical"),
     # Credential access
-    (re.compile(r"cat\s+.*(\.env|credentials|secret|password|\.pem|\.key|id_rsa)"), "credential_file_access", "high"),
-    (re.compile(r"(cat|less|more|head|tail)\s+.*(/etc/passwd|/etc/shadow)"), "credential_file_access", "critical"),
+    (
+        re.compile(r"cat\s+.*(\.env|credentials|secret|password|\.pem|\.key|id_rsa)"),
+        "credential_file_access",
+        "high",
+    ),
+    (
+        re.compile(r"(cat|less|more|head|tail)\s+.*(/etc/passwd|/etc/shadow)"),
+        "credential_file_access",
+        "critical",
+    ),
     # Exfiltration patterns
-    (re.compile(r"curl\s+.*(-d|--data|--upload-file|--form|-F|-T)"), "potential_exfiltration", "medium"),
+    (
+        re.compile(r"curl\s+.*(-d|--data|--upload-file|--form|-F|-T)"),
+        "potential_exfiltration",
+        "medium",
+    ),
     (re.compile(r"wget\s+.*--post"), "potential_exfiltration", "medium"),
-    (re.compile(r"base64\s+(-e|--encode)?\s+.*\|.*curl"), "encoded_exfiltration", "high"),
+    (
+        re.compile(r"base64\s+(-e|--encode)?\s+.*\|.*curl"),
+        "encoded_exfiltration",
+        "high",
+    ),
     (re.compile(r"curl\s+.*\|\s*bash"), "remote_code_execution", "critical"),
     (re.compile(r"wget\s+.*\|\s*bash"), "remote_code_execution", "critical"),
     # Privilege escalation
@@ -51,7 +70,11 @@ BASH_DANGEROUS_PATTERNS = [
 ]
 
 FILE_DANGEROUS_PATTERNS = [
-    (re.compile(r"(\.env|credentials|secret|password|\.pem|\.key|id_rsa|\.ssh/)"), "sensitive_file_access", "high"),
+    (
+        re.compile(r"(\.env|credentials|secret|password|\.pem|\.key|id_rsa|\.ssh/)"),
+        "sensitive_file_access",
+        "high",
+    ),
     (re.compile(r"/proc/|/sys/|/dev/"), "system_file_access", "medium"),
     (re.compile(r"\.\./\.\./"), "directory_traversal", "high"),
 ]
@@ -127,12 +150,14 @@ class AnomalyResult:
         self.anomalies: list[dict] = []
 
     def add(self, pattern_name: str, severity: str, detail: str = ""):
-        self.anomalies.append({
-            "pattern": pattern_name,
-            "severity": severity,
-            "detail": detail,
-            "detected_at": datetime.now(timezone.utc).isoformat(),
-        })
+        self.anomalies.append(
+            {
+                "pattern": pattern_name,
+                "severity": severity,
+                "detail": detail,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
 
     @property
     def is_anomalous(self) -> bool:
@@ -308,9 +333,14 @@ class ManagedAgentEventConsumer:
         if self._last_event_id:
             headers["Last-Event-ID"] = self._last_event_id
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(
-            connect=10.0, read=SSE_TIMEOUT, write=10.0, pool=10.0,
-        )) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=SSE_TIMEOUT,
+                write=10.0,
+                pool=10.0,
+            )
+        ) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code != 200:
                     body = await response.aread()
@@ -349,8 +379,12 @@ class ManagedAgentEventConsumer:
             await self._handle_tool_result(data)
         elif event_type == "agent.message":
             await self._handle_message(data)
-        elif event_type in ("session.status_idled", "session.status_active",
-                            "session.completed", "session.failed"):
+        elif event_type in (
+            "session.status_idled",
+            "session.status_active",
+            "session.completed",
+            "session.failed",
+        ):
             await self._handle_session_status(event_type, data)
 
     async def _handle_tool_use(self, data: dict):
@@ -378,9 +412,7 @@ class ManagedAgentEventConsumer:
             arguments = {}
 
         # Run anomaly detection
-        anomaly_result = detect_anomalies(
-            tool_name, arguments, self.domain_allowlist
-        )
+        anomaly_result = detect_anomalies(tool_name, arguments, self.domain_allowlist)
 
         self.total_tool_observations += 1
 
@@ -392,7 +424,11 @@ class ManagedAgentEventConsumer:
                 agent_id=self.agent_id,
                 tool_name=tool_name,
                 arguments=arguments,
-                result=result_content if isinstance(result_content, str) else json.dumps(result_content),
+                result=(
+                    result_content
+                    if isinstance(result_content, str)
+                    else json.dumps(result_content)
+                ),
                 anomaly_result=anomaly_result,
             )
 
@@ -480,7 +516,11 @@ async def log_observed_tool(
 
     # Determine severity from anomalies
     severity = anomaly_result.max_severity if anomaly_result.is_anomalous else "none"
-    violations = [a["pattern"] for a in anomaly_result.anomalies] if anomaly_result.is_anomalous else []
+    violations = (
+        [a["pattern"] for a in anomaly_result.anomalies]
+        if anomaly_result.is_anomalous
+        else []
+    )
 
     try:
         bundle_revision = await gateway_main.get_bundle_revision()
@@ -582,7 +622,8 @@ async def handle_anomaly_detected(
             if row:
                 tenant = dict(row)
                 await webhooks_module.dispatch_webhook(
-                    tenant, "anomaly.detected",
+                    tenant,
+                    "anomaly.detected",
                     {
                         "session_id": session_id,
                         "agent_id": agent_id,

@@ -12,14 +12,12 @@ import hashlib
 import json
 import os
 import sqlite3
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -102,7 +100,11 @@ def build_governance_prompt(
     allowed_tools = agent_config.get("allowed_tools")
     if allowed_tools:
         try:
-            tools = json.loads(allowed_tools) if isinstance(allowed_tools, str) else allowed_tools
+            tools = (
+                json.loads(allowed_tools)
+                if isinstance(allowed_tools, str)
+                else allowed_tools
+            )
             extras.append(f"Allowed governed tools: {', '.join(tools)}")
         except (json.JSONDecodeError, TypeError):
             pass
@@ -110,7 +112,11 @@ def build_governance_prompt(
     approval_rules = agent_config.get("require_human_approval")
     if approval_rules:
         try:
-            rules = json.loads(approval_rules) if isinstance(approval_rules, str) else approval_rules
+            rules = (
+                json.loads(approval_rules)
+                if isinstance(approval_rules, str)
+                else approval_rules
+            )
             extras.append(f"Tools requiring human approval: {', '.join(rules)}")
         except (json.JSONDecodeError, TypeError):
             pass
@@ -120,7 +126,9 @@ def build_governance_prompt(
         extras.append(f"Session time limit: {max_hours} hours")
 
     if extras:
-        template += "\n\nSession-specific constraints:\n" + "\n".join(f"- {e}" for e in extras)
+        template += "\n\nSession-specific constraints:\n" + "\n".join(
+            f"- {e}" for e in extras
+        )
 
     template += f"\n\nOrganization: {tenant_name}"
     return template
@@ -136,6 +144,7 @@ def hash_prompt(prompt: str) -> str:
 
 def _get_db():
     import main as gateway_main
+
     return gateway_main.get_db()
 
 
@@ -146,12 +155,16 @@ async def _get_tenant(
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ) -> dict:
     import main as gateway_main
-    return await gateway_main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
+
+    return await gateway_main.get_tenant(
+        x_api_key, authorization, x_vargate_public_tenant
+    )
 
 
 def _get_anthropic_key(tenant_id: str) -> Optional[str]:
     """Retrieve the tenant's Anthropic API key from HSM vault (sync for now)."""
     import main as gateway_main
+
     try:
         resp = httpx.get(
             f"{gateway_main.HSM_URL}/credentials/anthropic",
@@ -191,9 +204,11 @@ def _check_session_limits(
         return f"Max concurrent sessions exceeded ({active}/{DEFAULT_MAX_CONCURRENT_SESSIONS})"
 
     # Count sessions created today
-    today_start = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).isoformat()
+    today_start = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
     daily = conn.execute(
         "SELECT COUNT(*) FROM managed_sessions WHERE tenant_id = ? AND created_at >= ?",
         (tenant_id, today_start),
@@ -210,7 +225,9 @@ def _check_session_limits(
             (tenant_id, agent_config["id"], today_start),
         ).fetchone()[0]
         if agent_daily >= agent_max_daily:
-            return f"Agent daily session limit exceeded ({agent_daily}/{agent_max_daily})"
+            return (
+                f"Agent daily session limit exceeded ({agent_daily}/{agent_max_daily})"
+            )
 
     return None
 
@@ -236,7 +253,9 @@ async def create_agent_config(
                 (req.parent_agent_id, tenant_id),
             ).fetchone()
             if not parent:
-                raise HTTPException(status_code=404, detail="Parent agent config not found")
+                raise HTTPException(
+                    status_code=404, detail="Parent agent config not found"
+                )
 
         conn.execute(
             """INSERT INTO managed_agent_configs
@@ -255,7 +274,11 @@ async def create_agent_config(
                 json.dumps(req.allowed_tools) if req.allowed_tools else None,
                 req.max_session_hours,
                 req.max_daily_sessions,
-                json.dumps(req.require_human_approval) if req.require_human_approval else None,
+                (
+                    json.dumps(req.require_human_approval)
+                    if req.require_human_approval
+                    else None
+                ),
                 req.parent_agent_id,
                 req.max_delegation_depth,
                 datetime.now(timezone.utc).isoformat(),
@@ -263,7 +286,10 @@ async def create_agent_config(
         )
         conn.commit()
 
-        print(f"[CONTROL-PLANE] Agent config created: {config_id} tenant={tenant_id}", flush=True)
+        print(
+            f"[CONTROL-PLANE] Agent config created: {config_id} tenant={tenant_id}",
+            flush=True,
+        )
 
         return {
             "id": config_id,
@@ -294,17 +320,21 @@ async def list_agent_configs(
 
         configs = []
         for r in rows:
-            configs.append({
-                "id": r["id"],
-                "name": r["name"],
-                "anthropic_model": r["anthropic_model"],
-                "allowed_tools": json.loads(r["allowed_tools"]) if r["allowed_tools"] else None,
-                "max_session_hours": r["max_session_hours"],
-                "max_daily_sessions": r["max_daily_sessions"],
-                "max_delegation_depth": r["max_delegation_depth"],
-                "parent_agent_id": r["parent_agent_id"],
-                "created_at": r["created_at"],
-            })
+            configs.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "anthropic_model": r["anthropic_model"],
+                    "allowed_tools": (
+                        json.loads(r["allowed_tools"]) if r["allowed_tools"] else None
+                    ),
+                    "max_session_hours": r["max_session_hours"],
+                    "max_daily_sessions": r["max_daily_sessions"],
+                    "max_delegation_depth": r["max_delegation_depth"],
+                    "parent_agent_id": r["parent_agent_id"],
+                    "created_at": r["created_at"],
+                }
+            )
         return {"configs": configs, "count": len(configs)}
     finally:
         conn.close()
@@ -375,7 +405,11 @@ async def create_session(
         # 3. Build governance-injected system prompt (Sprint 11.3)
         base_prompt = agent_config.get("system_prompt") or ""
         governance_prompt = build_governance_prompt(tenant_name, agent_config)
-        full_prompt = f"{base_prompt}\n\n{governance_prompt}" if base_prompt else governance_prompt
+        full_prompt = (
+            f"{base_prompt}\n\n{governance_prompt}"
+            if base_prompt
+            else governance_prompt
+        )
         prompt_hash = hash_prompt(full_prompt)
 
         # 4. Call Anthropic API to create session
@@ -393,14 +427,18 @@ async def create_session(
                             "Content-Type": "application/json",
                         },
                         json={
-                            "model": agent_config.get("anthropic_model", "claude-sonnet-4-6"),
+                            "model": agent_config.get(
+                                "anthropic_model", "claude-sonnet-4-6"
+                            ),
                             "system": full_prompt,
-                            "mcp_servers": [{
-                                "type": "url",
-                                "url": VARGATE_MCP_SERVER_URL,
-                                "name": "vargate-governance",
-                                "authorization_token": tenant.get("api_key", ""),
-                            }],
+                            "mcp_servers": [
+                                {
+                                    "type": "url",
+                                    "url": VARGATE_MCP_SERVER_URL,
+                                    "name": "vargate-governance",
+                                    "authorization_token": tenant.get("api_key", ""),
+                                }
+                            ],
                         },
                     )
                     if resp.status_code in (200, 201):
@@ -434,7 +472,11 @@ async def create_session(
                 None,
                 req.environment_id,
                 "active",
-                json.dumps(agent_config.get("governance_profile")) if agent_config.get("governance_profile") else None,
+                (
+                    json.dumps(agent_config.get("governance_profile"))
+                    if agent_config.get("governance_profile")
+                    else None
+                ),
                 prompt_hash,
                 now,
             ),
@@ -445,6 +487,7 @@ async def create_session(
         if anthropic_api_key and not anthropic_session_id.startswith("sim-"):
             try:
                 import event_consumer
+
                 await event_consumer.start_consumer(
                     session_id=session_id,
                     anthropic_session_id=anthropic_session_id,
@@ -457,6 +500,7 @@ async def create_session(
 
         # Log session creation to audit chain
         import main as gateway_main
+
         audit_conn = gateway_main.get_db()
         try:
             gateway_main.write_audit_record(
@@ -529,18 +573,20 @@ async def list_sessions(
 
         sessions = []
         for r in rows:
-            sessions.append({
-                "id": r["id"],
-                "anthropic_session_id": r["anthropic_session_id"],
-                "agent_id": r["agent_id"],
-                "status": r["status"],
-                "created_at": r["created_at"],
-                "ended_at": r["ended_at"],
-                "total_governed_calls": r["total_governed_calls"],
-                "total_observed_calls": r["total_observed_calls"],
-                "total_denied": r["total_denied"],
-                "total_pending": r["total_pending"],
-            })
+            sessions.append(
+                {
+                    "id": r["id"],
+                    "anthropic_session_id": r["anthropic_session_id"],
+                    "agent_id": r["agent_id"],
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                    "ended_at": r["ended_at"],
+                    "total_governed_calls": r["total_governed_calls"],
+                    "total_observed_calls": r["total_observed_calls"],
+                    "total_denied": r["total_denied"],
+                    "total_pending": r["total_pending"],
+                }
+            )
 
         return {"sessions": sessions, "count": len(sessions), "tenant_id": tenant_id}
     finally:
@@ -591,6 +637,7 @@ async def get_session_status(
 
         # Check for active event consumer
         import event_consumer
+
         consumer = event_consumer.get_consumer(session_id)
 
         return {
@@ -607,11 +654,15 @@ async def get_session_status(
                 "total_denied": audit_counts["denied"] or 0,
                 "total_pending": audit_counts["pending"] or 0,
             },
-            "event_consumer": {
-                "active": consumer is not None and consumer._running,
-                "total_events": consumer.total_events if consumer else 0,
-                "total_anomalies": consumer.total_anomalies if consumer else 0,
-            } if consumer else {"active": False},
+            "event_consumer": (
+                {
+                    "active": consumer is not None and consumer._running,
+                    "total_events": consumer.total_events if consumer else 0,
+                    "total_anomalies": consumer.total_anomalies if consumer else 0,
+                }
+                if consumer
+                else {"active": False}
+            ),
         }
     finally:
         conn.close()
@@ -644,19 +695,23 @@ async def get_session_audit(
 
         records = []
         for r in rows:
-            records.append({
-                "id": r["id"],
-                "action_id": r["action_id"],
-                "agent_id": r["agent_id"],
-                "tool": r["tool"],
-                "method": r["method"],
-                "decision": r["decision"],
-                "violations": json.loads(r["violations"]) if r["violations"] else [],
-                "severity": r["severity"],
-                "source": r["source"] if "source" in r.keys() else "direct",
-                "created_at": r["created_at"],
-                "execution_mode": r["execution_mode"],
-            })
+            records.append(
+                {
+                    "id": r["id"],
+                    "action_id": r["action_id"],
+                    "agent_id": r["agent_id"],
+                    "tool": r["tool"],
+                    "method": r["method"],
+                    "decision": r["decision"],
+                    "violations": (
+                        json.loads(r["violations"]) if r["violations"] else []
+                    ),
+                    "severity": r["severity"],
+                    "source": r["source"] if "source" in r.keys() else "direct",
+                    "created_at": r["created_at"],
+                    "execution_mode": r["execution_mode"],
+                }
+            )
 
         return {"session_id": session_id, "records": records, "count": len(records)}
     finally:
@@ -723,6 +778,7 @@ async def interrupt_session(
 
         # Stop event consumer
         import event_consumer
+
         await event_consumer.stop_consumer(session_id)
 
         # Update session status
@@ -735,6 +791,7 @@ async def interrupt_session(
 
         # Log interrupt to audit chain
         import main as gateway_main
+
         audit_conn = gateway_main.get_db()
         try:
             gateway_main.write_audit_record(
@@ -764,8 +821,10 @@ async def interrupt_session(
         # Fire webhook
         try:
             import webhooks as webhooks_module
+
             await webhooks_module.dispatch_webhook(
-                tenant, "session.interrupted",
+                tenant,
+                "session.interrupted",
                 {
                     "session_id": session_id,
                     "reason": req.reason,
@@ -853,6 +912,7 @@ async def list_consumers(
 ):
     """List all active event consumers (admin view)."""
     import event_consumer
+
     consumers = event_consumer.list_active_consumers()
     # Filter to tenant's consumers
     tenant_consumers = [c for c in consumers if c["tenant_id"] == tenant["tenant_id"]]
@@ -874,7 +934,6 @@ async def session_compliance_export(
     verification, Merkle inclusion proofs, blockchain anchor references,
     and summary statistics. (AG-2.1, AG-2.3, AG-2.4)
     """
-    import main as gateway_main
 
     tenant_id = tenant["tenant_id"]
     conn = _get_db()
@@ -950,17 +1009,21 @@ async def session_compliance_export(
         for i in range(1, len(records)):
             if records[i]["prev_hash"] != records[i - 1]["record_hash"]:
                 chain_valid = False
-                broken_links.append({
-                    "record_id": records[i]["id"],
-                    "expected_prev": records[i - 1]["record_hash"][:16],
-                    "actual_prev": (records[i]["prev_hash"] or "")[:16],
-                })
+                broken_links.append(
+                    {
+                        "record_id": records[i]["id"],
+                        "expected_prev": records[i - 1]["record_hash"][:16],
+                        "actual_prev": (records[i]["prev_hash"] or "")[:16],
+                    }
+                )
 
         # Compute duration
         duration_hours = None
         if session.get("created_at") and session.get("ended_at"):
             try:
-                start = datetime.fromisoformat(session["created_at"].replace("Z", "+00:00"))
+                start = datetime.fromisoformat(
+                    session["created_at"].replace("Z", "+00:00")
+                )
                 end = datetime.fromisoformat(session["ended_at"].replace("Z", "+00:00"))
                 duration_hours = round((end - start).total_seconds() / 3600, 2)
             except Exception:
@@ -983,13 +1046,27 @@ async def session_compliance_export(
                 "ended_at": session.get("ended_at"),
                 "duration_hours": duration_hours,
             },
-            "agent_config": {
-                "id": agent_config["id"] if agent_config else None,
-                "name": agent_config["name"] if agent_config else None,
-                "model": agent_config.get("anthropic_model") if agent_config else None,
-                "allowed_tools": json.loads(agent_config["allowed_tools"]) if agent_config and agent_config.get("allowed_tools") else None,
-                "max_delegation_depth": agent_config.get("max_delegation_depth") if agent_config else None,
-            } if agent_config else None,
+            "agent_config": (
+                {
+                    "id": agent_config["id"] if agent_config else None,
+                    "name": agent_config["name"] if agent_config else None,
+                    "model": (
+                        agent_config.get("anthropic_model") if agent_config else None
+                    ),
+                    "allowed_tools": (
+                        json.loads(agent_config["allowed_tools"])
+                        if agent_config and agent_config.get("allowed_tools")
+                        else None
+                    ),
+                    "max_delegation_depth": (
+                        agent_config.get("max_delegation_depth")
+                        if agent_config
+                        else None
+                    ),
+                }
+                if agent_config
+                else None
+            ),
             "summary": {
                 "total_events": len(records),
                 "governed_calls": governed_count,
@@ -1005,7 +1082,15 @@ async def session_compliance_export(
                 "broken_links": broken_links,
             },
             "timeline": records,
-            "agcs_controls": ["AG-1.1", "AG-1.2", "AG-1.3", "AG-1.5", "AG-2.1", "AG-2.2", "AG-2.3"],
+            "agcs_controls": [
+                "AG-1.1",
+                "AG-1.2",
+                "AG-1.3",
+                "AG-1.5",
+                "AG-2.1",
+                "AG-2.2",
+                "AG-2.3",
+            ],
         }
 
         # Compute export hash
@@ -1076,10 +1161,13 @@ async def replay_session(
                     new_decision = "allow" if new_allow else "deny"
 
                     orig_decision = r["decision"]
-                    orig_violations = json.loads(r["violations"]) if r["violations"] else []
+                    orig_violations = (
+                        json.loads(r["violations"]) if r["violations"] else []
+                    )
 
                     decision_match = (orig_decision == new_decision) or (
-                        orig_decision in ("deny", "pending_approval") and new_decision == "deny"
+                        orig_decision in ("deny", "pending_approval")
+                        and new_decision == "deny"
                     )
 
                     if decision_match:
@@ -1089,39 +1177,45 @@ async def replay_session(
                         mismatched += 1
                         status = "MISMATCH"
 
-                    results.append({
-                        "action_id": r["action_id"],
-                        "tool": r["tool"],
-                        "method": r["method"],
-                        "source": source,
-                        "replay_status": status,
-                        "original": {
-                            "decision": orig_decision,
-                            "violations": orig_violations,
-                            "severity": r["severity"],
-                        },
-                        "replayed": {
-                            "decision": new_decision,
-                            "violations": new_violations,
-                            "severity": new_severity,
-                        },
-                    })
+                    results.append(
+                        {
+                            "action_id": r["action_id"],
+                            "tool": r["tool"],
+                            "method": r["method"],
+                            "source": source,
+                            "replay_status": status,
+                            "original": {
+                                "decision": orig_decision,
+                                "violations": orig_violations,
+                                "severity": r["severity"],
+                            },
+                            "replayed": {
+                                "decision": new_decision,
+                                "violations": new_violations,
+                                "severity": new_severity,
+                            },
+                        }
+                    )
                 except Exception as e:
                     errors += 1
-                    results.append({
-                        "action_id": r["action_id"],
-                        "tool": r["tool"],
-                        "source": source,
-                        "replay_status": "ERROR",
-                        "error": str(e),
-                    })
+                    results.append(
+                        {
+                            "action_id": r["action_id"],
+                            "tool": r["tool"],
+                            "source": source,
+                            "replay_status": "ERROR",
+                            "error": str(e),
+                        }
+                    )
 
             elif source == "mcp_observed":
                 # Replay anomaly detection
                 try:
                     params = json.loads(r["params"]) if r["params"] else {}
                     anomaly_result = detect_anomalies(r["tool"], params)
-                    orig_violations = json.loads(r["violations"]) if r["violations"] else []
+                    orig_violations = (
+                        json.loads(r["violations"]) if r["violations"] else []
+                    )
 
                     new_violations = [a["pattern"] for a in anomaly_result.anomalies]
                     violations_match = set(orig_violations) == set(new_violations)
@@ -1133,44 +1227,50 @@ async def replay_session(
                         mismatched += 1
                         status = "MISMATCH"
 
-                    results.append({
-                        "action_id": r["action_id"],
-                        "tool": r["tool"],
-                        "method": r["method"],
-                        "source": source,
-                        "replay_status": status,
-                        "original": {
-                            "decision": "observed",
-                            "violations": orig_violations,
-                            "severity": r["severity"],
-                        },
-                        "replayed": {
-                            "decision": "observed",
-                            "violations": new_violations,
-                            "severity": anomaly_result.max_severity,
-                        },
-                    })
+                    results.append(
+                        {
+                            "action_id": r["action_id"],
+                            "tool": r["tool"],
+                            "method": r["method"],
+                            "source": source,
+                            "replay_status": status,
+                            "original": {
+                                "decision": "observed",
+                                "violations": orig_violations,
+                                "severity": r["severity"],
+                            },
+                            "replayed": {
+                                "decision": "observed",
+                                "violations": new_violations,
+                                "severity": anomaly_result.max_severity,
+                            },
+                        }
+                    )
                 except Exception as e:
                     errors += 1
-                    results.append({
-                        "action_id": r["action_id"],
-                        "tool": r["tool"],
-                        "source": source,
-                        "replay_status": "ERROR",
-                        "error": str(e),
-                    })
+                    results.append(
+                        {
+                            "action_id": r["action_id"],
+                            "tool": r["tool"],
+                            "source": source,
+                            "replay_status": "ERROR",
+                            "error": str(e),
+                        }
+                    )
 
             elif source == "control_plane":
                 # Control plane events are not replayed
                 matched += 1
-                results.append({
-                    "action_id": r["action_id"],
-                    "tool": r["tool"],
-                    "method": r["method"],
-                    "source": source,
-                    "replay_status": "SKIP",
-                    "reason": "Control plane events are not policy-evaluated",
-                })
+                results.append(
+                    {
+                        "action_id": r["action_id"],
+                        "tool": r["tool"],
+                        "method": r["method"],
+                        "source": source,
+                        "replay_status": "SKIP",
+                        "reason": "Control plane events are not policy-evaluated",
+                    }
+                )
 
         return {
             "session_id": session_id,
