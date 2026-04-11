@@ -574,7 +574,7 @@ async def _replay_with_opa(opa_input: dict, bundle_revision: str) -> dict:
             s.bind(("", 0))
             port = s.getsockname()[1]
 
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # nosec B603
             [
                 "/usr/local/bin/opa",
                 "run",

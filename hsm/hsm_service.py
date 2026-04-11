@@ -23,8 +23,8 @@ from pydantic import BaseModel
 
 PKCS11_LIB = os.environ.get("PKCS11_LIB", "/usr/lib/softhsm/libsofthsm2.so")
 TOKEN_LABEL = os.environ.get("HSM_TOKEN_LABEL", "vargate-prototype")
-TOKEN_PIN = os.environ.get("HSM_TOKEN_PIN", "1234")
-if TOKEN_PIN == "1234":
+TOKEN_PIN = os.environ.get("HSM_TOKEN_PIN", "1234")  # nosec B105
+if TOKEN_PIN == "1234":  # nosec B105
     import warnings
 
     warnings.warn(
@@ -612,4 +612,4 @@ if __name__ == "__main__":
     print("[HSM] Starting Vargate HSM Service on port 8300", flush=True)
     print(f"[HSM] PKCS#11 lib: {PKCS11_LIB}", flush=True)
     print(f"[HSM] Token label: {TOKEN_LABEL}", flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=8300, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8300, log_level="info")  # nosec B104

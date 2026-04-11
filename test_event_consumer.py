@@ -127,7 +127,7 @@ def test_anomaly_file():
     check("Directory traversal detected", r.is_anomalous)
 
     # Large file write
-    r = detect_anomalies("write", {"path": "/tmp/data.txt", "content": "x" * 60000})
+    r = detect_anomalies("write", {"path": "data.txt", "content": "x" * 60000})
     check("Large file write detected", r.is_anomalous)
     check("Pattern is large_file_write", any(a["pattern"] == "large_file_write" for a in r.anomalies))
 

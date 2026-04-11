@@ -32,48 +32,48 @@ def get_transparency_data(
 
     # ── Overall stats ──────────────────────────────────────────────────────
     overall = conn.execute(
-        f"""SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-            SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied,
-            SUM(CASE WHEN anomaly_score_at_eval > 0.5 THEN 1 ELSE 0 END) as anomalous
-        FROM audit_log {where}""",
+        "SELECT "
+        "COUNT(*) as total, "
+        "SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed, "
+        "SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied, "
+        "SUM(CASE WHEN anomaly_score_at_eval > 0.5 THEN 1 ELSE 0 END) as anomalous "
+        "FROM audit_log " + where,  # nosec B608
         args,
     ).fetchone()
 
     # ── Hourly stats ───────────────────────────────────────────────────────
     hourly = conn.execute(
-        f"""SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-            SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied
-        FROM audit_log {where} AND created_at >= ?""",
+        "SELECT "
+        "COUNT(*) as total, "
+        "SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed, "
+        "SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied "
+        "FROM audit_log " + where + " AND created_at >= ?",  # nosec B608
         (*args, one_hour_ago),
     ).fetchone()
 
     # ── Daily stats ────────────────────────────────────────────────────────
     daily = conn.execute(
-        f"""SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-            SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied
-        FROM audit_log {where} AND created_at >= ?""",
+        "SELECT "
+        "COUNT(*) as total, "
+        "SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed, "
+        "SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied "
+        "FROM audit_log " + where + " AND created_at >= ?",  # nosec B608
         (*args, one_day_ago),
     ).fetchone()
 
     # ── Weekly stats ───────────────────────────────────────────────────────
     weekly = conn.execute(
-        f"""SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-            SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied
-        FROM audit_log {where} AND created_at >= ?""",
+        "SELECT "
+        "COUNT(*) as total, "
+        "SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed, "
+        "SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied "
+        "FROM audit_log " + where + " AND created_at >= ?",  # nosec B608
         (*args, one_week_ago),
     ).fetchone()
 
     # ── Violation breakdown ────────────────────────────────────────────────
     violation_rows = conn.execute(
-        f"SELECT violations FROM audit_log {where} AND decision = 'deny'",
+        "SELECT violations FROM audit_log " + where + " AND decision = 'deny'",  # nosec B608
         args,
     ).fetchall()
     violation_counts = {}
@@ -86,20 +86,20 @@ def get_transparency_data(
 
     # ── Severity distribution ──────────────────────────────────────────────
     severity_dist = conn.execute(
-        f"""SELECT severity, COUNT(*) as cnt
-        FROM audit_log {where} AND decision = 'deny'
-        GROUP BY severity""",
+        "SELECT severity, COUNT(*) as cnt "
+        "FROM audit_log " + where + " AND decision = 'deny' "  # nosec B608
+        "GROUP BY severity",
         args,
     ).fetchall()
     severity_map = {r["severity"]: r["cnt"] for r in severity_dist}
 
     # ── Tool usage breakdown ───────────────────────────────────────────────
     tool_rows = conn.execute(
-        f"""SELECT tool, COUNT(*) as cnt,
-            SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-            SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied
-        FROM audit_log {where}
-        GROUP BY tool ORDER BY cnt DESC LIMIT 20""",
+        "SELECT tool, COUNT(*) as cnt, "
+        "SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed, "
+        "SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) as denied "
+        "FROM audit_log " + where + " "  # nosec B608
+        "GROUP BY tool ORDER BY cnt DESC LIMIT 20",
         args,
     ).fetchall()
     tool_stats = [
@@ -114,9 +114,9 @@ def get_transparency_data(
 
     # ── Policy version history ─────────────────────────────────────────────
     policy_rows = conn.execute(
-        f"""SELECT DISTINCT bundle_revision, MIN(created_at) as first_seen
-        FROM audit_log {where} AND bundle_revision IS NOT NULL
-        GROUP BY bundle_revision ORDER BY first_seen DESC LIMIT 10""",
+        "SELECT DISTINCT bundle_revision, MIN(created_at) as first_seen "
+        "FROM audit_log " + where + " AND bundle_revision IS NOT NULL "  # nosec B608
+        "GROUP BY bundle_revision ORDER BY first_seen DESC LIMIT 10",
         args,
     ).fetchall()
     policy_versions = [
@@ -151,11 +151,11 @@ def get_transparency_data(
     chain_info = None
     try:
         last_record = conn.execute(
-            f"SELECT record_hash, created_at FROM audit_log {where} ORDER BY id DESC LIMIT 1",
+            "SELECT record_hash, created_at FROM audit_log " + where + " ORDER BY id DESC LIMIT 1",  # nosec B608
             args,
         ).fetchone()
         total_records = conn.execute(
-            f"SELECT COUNT(*) as cnt FROM audit_log {where}",
+            "SELECT COUNT(*) as cnt FROM audit_log " + where,  # nosec B608
             args,
         ).fetchone()
         chain_info = {

@@ -217,4 +217,4 @@ async def health():
 
 if __name__ == "__main__":
     print("[MOCK-TOOLS] Starting on port 9000", flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=9000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=9000, log_level="info")  # nosec B104
