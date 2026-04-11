@@ -517,6 +517,76 @@ print(f"Compliance: {compliance['summary']['total_events']} events, {compliance[
 
 ---
 
+## Deployment
+
+### Docker Compose (Recommended)
+
+Vargate ships as a Docker Compose stack. The managed agents integration requires no additional services -- the MCP server and event consumer run inside the existing gateway container.
+
+```bash
+# Clone and configure
+git clone https://github.com/your-org/vargate.git
+cd vargate
+cp .env.example .env
+# Edit .env: set ANTHROPIC_API_KEY, DATABASE_URL, etc.
+
+# Start all services (production)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# Verify health
+curl https://your-domain.com/api/health
+curl https://your-domain.com/api/mcp/server/health
+```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | For creating managed agent sessions via Anthropic API |
+| `VARGATE_MCP_SERVER_URL` | No | Override MCP server URL (default: `https://vargate.ai/api/mcp/server`) |
+| `DEFAULT_MAX_CONCURRENT_SESSIONS` | No | Max active sessions per tenant (default: 10) |
+| `SSE_TIMEOUT` | No | Event consumer idle timeout in seconds (default: 300) |
+
+### Nginx Configuration
+
+The production overlay exposes managed agent endpoints through nginx. Ensure your nginx config includes:
+
+```nginx
+# MCP server (Streamable HTTP transport)
+location /api/mcp/ {
+    proxy_pass http://gateway:8000/mcp/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 300s;  # SSE connections need longer timeout
+}
+
+# Control plane
+location /api/managed/ {
+    proxy_pass http://gateway:8000/managed/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+### Database Migrations
+
+Schema migrations run automatically on gateway startup. To verify:
+
+```bash
+docker compose exec gateway python3 -c "
+import sqlite3
+conn = sqlite3.connect('/data/audit.db')
+conn.row_factory = sqlite3.Row
+rows = conn.execute('SELECT version, description FROM schema_version ORDER BY version').fetchall()
+for r in rows:
+    print(f'  v{r[\"version\"]}: {r[\"description\"]}')
+"
+```
+
+Current schema version should be **11** (Sprint 14: managed agent tenant flags).
+
+---
+
 ## Next Steps
 
 - [Policy Templates](policies.md) -- pre-built OPA/Rego policies for common governance scenarios

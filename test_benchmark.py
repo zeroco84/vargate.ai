@@ -83,13 +83,95 @@ async def run_benchmark(url: str, concurrency: int, duration: int, api_key: str)
     else:
         print(f"\033[91mFAIL: p99 ({p99:.1f}ms) >= {target_p99}ms target\033[0m")
 
+    return {"p50": p50, "p95": p95, "p99": p99, "rps": rps, "errors": errors, "total": total}
+
+
+async def run_mcp_benchmark(url: str, concurrency: int, duration: int, api_key: str):
+    """Run concurrent MCP tool calls (managed agent flow) and collect latencies."""
+    latencies = []
+    errors = 0
+    stop_time = time.monotonic() + duration
+    lock = asyncio.Lock()
+
+    mcp_url = f"{url}/mcp/server"
+
+    async def worker(worker_id: int):
+        nonlocal errors
+        async with httpx.AsyncClient(timeout=30) as client:
+            while time.monotonic() < stop_time:
+                start = time.monotonic()
+                try:
+                    r = await client.post(mcp_url, json={
+                        "jsonrpc": "2.0",
+                        "id": worker_id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "vargate_read_crm",
+                            "arguments": {"record_id": f"bench-{worker_id}"},
+                        },
+                    }, headers={"X-API-Key": api_key, "Content-Type": "application/json"} if api_key else {})
+                    elapsed = (time.monotonic() - start) * 1000
+                    async with lock:
+                        latencies.append(elapsed)
+                    if r.status_code >= 500:
+                        async with lock:
+                            errors += 1
+                except Exception:
+                    async with lock:
+                        errors += 1
+
+    print(f"\nStarting MCP benchmark: {concurrency} workers, {duration}s duration...")
+    print(f"Target: {mcp_url} (tools/call)")
+    print()
+
+    workers = [asyncio.create_task(worker(i)) for i in range(concurrency)]
+    await asyncio.gather(*workers)
+
+    if not latencies:
+        print("No successful requests!")
+        return None
+
+    latencies.sort()
+    total = len(latencies)
+    p50 = latencies[int(total * 0.50)]
+    p95 = latencies[int(total * 0.95)]
+    p99 = latencies[min(int(total * 0.99), total - 1)]
+    rps = total / duration
+    mean = sum(latencies) / total
+
+    print(f"{'='*60}")
+    print(f"MCP Benchmark Results — {concurrency} concurrent workers, {duration}s")
+    print(f"{'='*60}")
+    print(f"Total requests:  {total}")
+    print(f"Errors:          {errors}")
+    print(f"Throughput:      {rps:.1f} req/s")
+    print(f"Latency mean:    {mean:.1f}ms")
+    print(f"Latency p50:     {p50:.1f}ms")
+    print(f"Latency p95:     {p95:.1f}ms")
+    print(f"Latency p99:     {p99:.1f}ms")
+    print(f"Latency max:     {max(latencies):.1f}ms")
+    print(f"Latency min:     {min(latencies):.1f}ms")
+    print(f"{'='*60}")
+
+    target_p99 = 200  # MCP has slightly more overhead
+    if p99 < target_p99:
+        print(f"\033[92mPASS: MCP p99 ({p99:.1f}ms) < {target_p99}ms target\033[0m")
+    else:
+        print(f"\033[91mFAIL: MCP p99 ({p99:.1f}ms) >= {target_p99}ms target\033[0m")
+
+    return {"p50": p50, "p95": p95, "p99": p99, "rps": rps, "errors": errors, "total": total}
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vargate performance benchmark")
     parser.add_argument("--url", default="http://localhost:8000", help="Gateway URL")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent workers")
+    parser.add_argument("--concurrency", type=int, default=50, help="Concurrent workers (default: 50)")
     parser.add_argument("--duration", type=int, default=30, help="Duration in seconds")
     parser.add_argument("--api-key", default="", help="API key (optional)")
+    parser.add_argument("--mcp", action="store_true", help="Also run MCP server benchmark")
     args = parser.parse_args()
 
     asyncio.run(run_benchmark(args.url, args.concurrency, args.duration, args.api_key))
+
+    if args.mcp and args.api_key:
+        asyncio.run(run_mcp_benchmark(args.url, args.concurrency, args.duration, args.api_key))
