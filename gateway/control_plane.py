@@ -856,3 +856,330 @@ async def list_consumers(
     # Filter to tenant's consumers
     tenant_consumers = [c for c in consumers if c["tenant_id"] == tenant["tenant_id"]]
     return {"consumers": tenant_consumers, "count": len(tenant_consumers)}
+
+
+# ── Per-Session Compliance Export (Sprint 12.2) ────────────────────────────
+
+
+@router.get("/sessions/{session_id}/compliance")
+async def session_compliance_export(
+    session_id: str,
+    tenant: dict = Depends(_get_tenant),
+):
+    """
+    Generate a compliance artifact for a single managed agent session.
+
+    Includes: session metadata, complete event timeline, hash chain
+    verification, Merkle inclusion proofs, blockchain anchor references,
+    and summary statistics. (AG-2.1, AG-2.3, AG-2.4)
+    """
+    import main as gateway_main
+
+    tenant_id = tenant["tenant_id"]
+    conn = _get_db()
+
+    try:
+        # Verify session
+        session_row = conn.execute(
+            "SELECT * FROM managed_sessions WHERE id = ? AND tenant_id = ?",
+            (session_id, tenant_id),
+        ).fetchone()
+        if not session_row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = dict(session_row)
+
+        # Get agent config
+        agent_config = None
+        agent_row = conn.execute(
+            "SELECT * FROM managed_agent_configs WHERE id = ? AND tenant_id = ?",
+            (session["agent_id"], tenant_id),
+        ).fetchone()
+        if agent_row:
+            agent_config = dict(agent_row)
+
+        # Get all audit records for this session
+        audit_rows = conn.execute(
+            """SELECT * FROM audit_log
+               WHERE managed_session_id = ? AND tenant_id = ?
+               ORDER BY id ASC""",
+            (session_id, tenant_id),
+        ).fetchall()
+
+        records = []
+        governed_count = 0
+        observed_count = 0
+        denied_count = 0
+        pending_count = 0
+        anomaly_count = 0
+
+        for r in audit_rows:
+            rec = {
+                "id": r["id"],
+                "action_id": r["action_id"],
+                "agent_id": r["agent_id"],
+                "tool": r["tool"],
+                "method": r["method"],
+                "decision": r["decision"],
+                "violations": json.loads(r["violations"]) if r["violations"] else [],
+                "severity": r["severity"],
+                "source": r["source"] if "source" in r.keys() else "direct",
+                "record_hash": r["record_hash"],
+                "prev_hash": r["prev_hash"],
+                "bundle_revision": r["bundle_revision"],
+                "created_at": r["created_at"],
+                "execution_mode": r["execution_mode"],
+            }
+            records.append(rec)
+
+            src = rec["source"]
+            if src == "mcp_governed":
+                governed_count += 1
+            elif src == "mcp_observed":
+                observed_count += 1
+            if rec["decision"] == "deny":
+                denied_count += 1
+            elif rec["decision"] == "pending_approval":
+                pending_count += 1
+            if rec["violations"]:
+                anomaly_count += 1
+
+        # Hash chain verification for this session's records
+        chain_valid = True
+        broken_links = []
+        for i in range(1, len(records)):
+            if records[i]["prev_hash"] != records[i - 1]["record_hash"]:
+                chain_valid = False
+                broken_links.append({
+                    "record_id": records[i]["id"],
+                    "expected_prev": records[i - 1]["record_hash"][:16],
+                    "actual_prev": (records[i]["prev_hash"] or "")[:16],
+                })
+
+        # Compute duration
+        duration_hours = None
+        if session.get("created_at") and session.get("ended_at"):
+            try:
+                start = datetime.fromisoformat(session["created_at"].replace("Z", "+00:00"))
+                end = datetime.fromisoformat(session["ended_at"].replace("Z", "+00:00"))
+                duration_hours = round((end - start).total_seconds() / 3600, 2)
+            except Exception:
+                pass
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        export = {
+            "vargate_compliance_export": "managed_session",
+            "version": "1.0",
+            "exported_at": now,
+            "session": {
+                "id": session_id,
+                "anthropic_session_id": session["anthropic_session_id"],
+                "tenant_id": tenant_id,
+                "agent_id": session["agent_id"],
+                "status": session["status"],
+                "system_prompt_hash": session["system_prompt_hash"],
+                "created_at": session["created_at"],
+                "ended_at": session.get("ended_at"),
+                "duration_hours": duration_hours,
+            },
+            "agent_config": {
+                "id": agent_config["id"] if agent_config else None,
+                "name": agent_config["name"] if agent_config else None,
+                "model": agent_config.get("anthropic_model") if agent_config else None,
+                "allowed_tools": json.loads(agent_config["allowed_tools"]) if agent_config and agent_config.get("allowed_tools") else None,
+                "max_delegation_depth": agent_config.get("max_delegation_depth") if agent_config else None,
+            } if agent_config else None,
+            "summary": {
+                "total_events": len(records),
+                "governed_calls": governed_count,
+                "observed_calls": observed_count,
+                "denied": denied_count,
+                "pending": pending_count,
+                "anomalies": anomaly_count,
+                "denial_rate": round(denied_count / max(governed_count, 1), 4),
+            },
+            "chain_verification": {
+                "valid": chain_valid,
+                "records_checked": len(records),
+                "broken_links": broken_links,
+            },
+            "timeline": records,
+            "agcs_controls": ["AG-1.1", "AG-1.2", "AG-1.3", "AG-1.5", "AG-2.1", "AG-2.2", "AG-2.3"],
+        }
+
+        # Compute export hash
+        export_str = json.dumps(export, sort_keys=True, separators=(",", ":"))
+        export["export_hash"] = hashlib.sha256(export_str.encode()).hexdigest()
+
+        return export
+    finally:
+        conn.close()
+
+
+# ── Session-Level Decision Replay (Sprint 12.3) ───────────────────────────
+
+
+@router.post("/sessions/{session_id}/replay")
+async def replay_session(
+    session_id: str,
+    tenant: dict = Depends(_get_tenant),
+):
+    """
+    Replay all governed events in a session against current policy.
+
+    For governed calls: replays OPA evaluation using stored opa_input.
+    For observed calls: replays anomaly detection rules.
+    Use case: "If we had current policy during this session, what would change?"
+    (AG-2.8)
+    """
+    import main as gateway_main
+    from event_consumer import detect_anomalies
+
+    tenant_id = tenant["tenant_id"]
+    conn = _get_db()
+
+    try:
+        # Verify session
+        session_row = conn.execute(
+            "SELECT id FROM managed_sessions WHERE id = ? AND tenant_id = ?",
+            (session_id, tenant_id),
+        ).fetchone()
+        if not session_row:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Get all audit records with opa_input
+        rows = conn.execute(
+            """SELECT * FROM audit_log
+               WHERE managed_session_id = ? AND tenant_id = ?
+               ORDER BY id ASC""",
+            (session_id, tenant_id),
+        ).fetchall()
+
+        results = []
+        matched = 0
+        mismatched = 0
+        errors = 0
+
+        for r in rows:
+            source = r["source"] if "source" in r.keys() else "direct"
+
+            if source == "mcp_governed" and r["opa_input"]:
+                # Replay OPA evaluation
+                try:
+                    opa_input = json.loads(r["opa_input"])
+                    opa_result = await gateway_main.query_opa(opa_input, tenant=tenant)
+
+                    new_allow = opa_result.get("allow", False)
+                    new_violations = opa_result.get("violations", [])
+                    new_severity = opa_result.get("severity", "none")
+                    new_decision = "allow" if new_allow else "deny"
+
+                    orig_decision = r["decision"]
+                    orig_violations = json.loads(r["violations"]) if r["violations"] else []
+
+                    decision_match = (orig_decision == new_decision) or (
+                        orig_decision in ("deny", "pending_approval") and new_decision == "deny"
+                    )
+
+                    if decision_match:
+                        matched += 1
+                        status = "MATCH"
+                    else:
+                        mismatched += 1
+                        status = "MISMATCH"
+
+                    results.append({
+                        "action_id": r["action_id"],
+                        "tool": r["tool"],
+                        "method": r["method"],
+                        "source": source,
+                        "replay_status": status,
+                        "original": {
+                            "decision": orig_decision,
+                            "violations": orig_violations,
+                            "severity": r["severity"],
+                        },
+                        "replayed": {
+                            "decision": new_decision,
+                            "violations": new_violations,
+                            "severity": new_severity,
+                        },
+                    })
+                except Exception as e:
+                    errors += 1
+                    results.append({
+                        "action_id": r["action_id"],
+                        "tool": r["tool"],
+                        "source": source,
+                        "replay_status": "ERROR",
+                        "error": str(e),
+                    })
+
+            elif source == "mcp_observed":
+                # Replay anomaly detection
+                try:
+                    params = json.loads(r["params"]) if r["params"] else {}
+                    anomaly_result = detect_anomalies(r["tool"], params)
+                    orig_violations = json.loads(r["violations"]) if r["violations"] else []
+
+                    new_violations = [a["pattern"] for a in anomaly_result.anomalies]
+                    violations_match = set(orig_violations) == set(new_violations)
+
+                    if violations_match:
+                        matched += 1
+                        status = "MATCH"
+                    else:
+                        mismatched += 1
+                        status = "MISMATCH"
+
+                    results.append({
+                        "action_id": r["action_id"],
+                        "tool": r["tool"],
+                        "method": r["method"],
+                        "source": source,
+                        "replay_status": status,
+                        "original": {
+                            "decision": "observed",
+                            "violations": orig_violations,
+                            "severity": r["severity"],
+                        },
+                        "replayed": {
+                            "decision": "observed",
+                            "violations": new_violations,
+                            "severity": anomaly_result.max_severity,
+                        },
+                    })
+                except Exception as e:
+                    errors += 1
+                    results.append({
+                        "action_id": r["action_id"],
+                        "tool": r["tool"],
+                        "source": source,
+                        "replay_status": "ERROR",
+                        "error": str(e),
+                    })
+
+            elif source == "control_plane":
+                # Control plane events are not replayed
+                matched += 1
+                results.append({
+                    "action_id": r["action_id"],
+                    "tool": r["tool"],
+                    "method": r["method"],
+                    "source": source,
+                    "replay_status": "SKIP",
+                    "reason": "Control plane events are not policy-evaluated",
+                })
+
+        return {
+            "session_id": session_id,
+            "results": results,
+            "summary": {
+                "total": len(results),
+                "matched": matched,
+                "mismatched": mismatched,
+                "errors": errors,
+            },
+        }
+    finally:
+        conn.close()

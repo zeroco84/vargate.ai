@@ -24,6 +24,10 @@ import SettingsPage from './components/Settings';
 // Sprint 4
 import ApprovalQueue from './components/ApprovalQueue';
 
+// Sprint 12 — Managed Agent Sessions
+import ManagedSessionList from './components/ManagedSessionList';
+import ManagedSessionDetail from './components/ManagedSessionDetail';
+
 // API helpers
 import {
   fetchAuditLog,
@@ -41,7 +45,8 @@ export default function App({ session, onLogout }) {
 
   // ── State ──────────────────────────────────────────────────────────────────
 
-  const [view, setView] = useState('dashboard');       // 'dashboard' | 'settings' | 'account'
+  const [view, setView] = useState('dashboard');       // 'dashboard' | 'settings' | 'account' | 'sessions'
+  const [selectedSession, setSelectedSession] = useState(null);
   const [liveMode, setLiveMode] = useState(true);
   const [showOnboarding, setShowOnboarding] = useState(() => !isPublic && !localStorage.getItem('vargate_onboarding_done'));
 
@@ -134,9 +139,27 @@ export default function App({ session, onLogout }) {
       ) : view === 'approvals' ? (
         <div className="settings-layout">
           <button className="settings-back" onClick={() => setView('dashboard')}>
-            ← Back to Dashboard
+            &larr; Back to Dashboard
           </button>
           <ApprovalQueue />
+        </div>
+      ) : view === 'sessions' ? (
+        <div className="settings-layout">
+          {selectedSession ? (
+            <ManagedSessionDetail
+              sessionId={selectedSession}
+              onBack={() => setSelectedSession(null)}
+            />
+          ) : (
+            <>
+              <button className="settings-back" onClick={() => setView('dashboard')}>
+                &larr; Back to Dashboard
+              </button>
+              <ManagedSessionList
+                onSelectSession={(id) => setSelectedSession(id)}
+              />
+            </>
+          )}
         </div>
       ) : view === 'dashboard' ? (
         <div className="main-content">

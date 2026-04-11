@@ -174,6 +174,12 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
         {!isPublic && (
           <>
             <button
+              className={`header-nav-btn ${view === 'sessions' ? 'active' : ''}`}
+              onClick={() => setView('sessions')}
+            >
+              Sessions
+            </button>
+            <button
               className={`header-nav-btn ${view === 'approvals' ? 'active' : ''}`}
               onClick={() => setView('approvals')}
             >

@@ -204,6 +204,41 @@ export async function switchTenant(tenantId) {
   });
 }
 
+// ── Managed Agents (Sprint 12) ──────────────────────────────────────────────
+
+export async function fetchManagedSessions(params = {}) {
+  const q = new URLSearchParams(params).toString();
+  return fetchJSON(`/managed/sessions${q ? '?' + q : ''}`);
+}
+
+export async function fetchSessionStatus(sessionId) {
+  return fetchJSON(`/managed/sessions/${sessionId}/status`);
+}
+
+export async function fetchSessionAudit(sessionId, limit = 200) {
+  return fetchJSON(`/managed/sessions/${sessionId}/audit?limit=${limit}`);
+}
+
+export async function fetchSessionCompliance(sessionId) {
+  return fetchJSON(`/managed/sessions/${sessionId}/compliance`);
+}
+
+export async function interruptSession(sessionId, reason) {
+  return fetchJSON(`/managed/sessions/${sessionId}/interrupt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason, auto_triggered: false }),
+  });
+}
+
+export async function replaySession(sessionId) {
+  return fetchJSON(`/managed/sessions/${sessionId}/replay`, { method: 'POST' });
+}
+
+export async function fetchManagedAgents() {
+  return fetchJSON('/managed/agents');
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 export function formatTime(iso) {
