@@ -710,3 +710,112 @@ async def mcp_tools_call(
 async def mcp_health():
     """MCP server health check."""
     return {"status": "ok", "service": "vargate-mcp-server", "protocol_version": MCP_PROTOCOL_VERSION}
+
+
+# ── Unified JSON-RPC dispatcher (Streamable HTTP transport) ────────────────
+# MCP Streamable HTTP sends all requests to a single POST endpoint with the
+# JSON-RPC method field determining which handler to invoke.
+
+
+@router.post("")
+async def mcp_dispatch(
+    request: Request,
+    tenant: dict = Depends(_get_mcp_tenant),
+):
+    """
+    Unified MCP endpoint — dispatches JSON-RPC requests by method field.
+
+    The MCP Streamable HTTP transport POSTs all messages to the base server URL.
+    This handler reads the `method` field and delegates to the appropriate handler.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32700, "message": "Parse error"},
+        }, status_code=200)
+
+    method = body.get("method", "")
+    jsonrpc_id = body.get("id")
+
+    print(f"[MCP] Dispatch: method={method} tenant={tenant['tenant_id']}", flush=True)
+
+    if method == "initialize":
+        req = MCPInitializeRequest(**body)
+        return await mcp_initialize(req, request, tenant)
+
+    elif method == "tools/list":
+        req = MCPToolsListRequest(**body)
+        return await mcp_tools_list(req, request, tenant)
+
+    elif method == "tools/call":
+        req = MCPToolCallRequest(**body)
+        return await mcp_tools_call(req, request, tenant)
+
+    elif method == "notifications/initialized":
+        # Client acknowledgement after initialize — no response needed
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "result": {},
+        })
+
+    elif method == "ping":
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "result": {},
+        })
+
+    else:
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": jsonrpc_id,
+            "error": {
+                "code": -32601,
+                "message": f"Method not found: {method}",
+            },
+        }, status_code=200)
+
+
+# ── SSE transport endpoint (GET) ──────────────────────────────────────────
+
+from fastapi.responses import StreamingResponse  # noqa: E402
+
+
+@router.get("")
+async def mcp_sse_endpoint(
+    request: Request,
+    tenant: dict = Depends(_get_mcp_tenant),
+):
+    """
+    SSE transport endpoint for MCP.
+
+    Returns a Server-Sent Events stream. The client POSTs JSON-RPC messages
+    to the base URL and receives responses via this SSE connection.
+    """
+    import asyncio
+
+    async def event_stream():
+        # Send initial endpoint message per MCP SSE transport spec
+        yield f"event: endpoint\ndata: /mcp/server\n\n"
+
+        # Keep connection alive with periodic pings
+        try:
+            while True:
+                await asyncio.sleep(30)
+                yield f"event: ping\ndata: {json.dumps({'type': 'ping'})}\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
