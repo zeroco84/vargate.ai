@@ -832,7 +832,12 @@ class ChainManager:
 
 
 async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=None):
-    """Background task anchoring every ANCHOR_INTERVAL_SECONDS."""
+    """Background task anchoring every ANCHOR_INTERVAL_SECONDS.
+
+    Skips the anchor cycle when no new audit_log records exist since the
+    last successful anchor (checked via merkle_anchor_log.to_record).
+    The very first anchor after a fresh deploy always proceeds.
+    """
     await asyncio.sleep(15)
 
     while True:
@@ -840,13 +845,30 @@ async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=No
             if client.connected:
                 conn = get_db_fn()
                 try:
-                    count = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+                    # Check if there are new records since last anchor
+                    last_anchor = conn.execute(
+                        "SELECT to_record FROM merkle_anchor_log ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                    last_anchored_id = (
+                        (
+                            last_anchor["to_record"]
+                            if isinstance(last_anchor, sqlite3.Row)
+                            else last_anchor[0]
+                        )
+                        if last_anchor
+                        else 0
+                    )
+                    new_count = conn.execute(
+                        "SELECT COUNT(*) FROM audit_log WHERE id > ?",
+                        (last_anchored_id,),
+                    ).fetchone()[0]
                 finally:
                     conn.close()
-                if count > 0:
+
+                if new_count > 0:
                     # Pass get_db_fn so the sync thread creates its own connection
                     result = await client.anchor_now(get_db_fn)
-                    if post_anchor_fn and result:
+                    if post_anchor_fn and result and not result.get("skipped"):
                         cb_conn = get_db_fn()
                         try:
                             post_anchor_fn(cb_conn, result)
@@ -854,7 +876,7 @@ async def run_anchor_loop(client: BlockchainClient, get_db_fn, post_anchor_fn=No
                             cb_conn.close()
                 else:
                     print(
-                        f"[ANCHOR-{client.chain_name}] No records to anchor yet.",
+                        f"[ANCHOR-{client.chain_name}] No new records since last anchor, skipping.",
                         flush=True,
                     )
         except Exception as e:

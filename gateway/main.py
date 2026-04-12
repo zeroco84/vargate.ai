@@ -1749,6 +1749,18 @@ async def startup():
 
     # Initialize legacy blockchain anchoring (Hardhat)
     if _init_blockchain():
+        # Hydrate _last_anchored_count from anchor_log to avoid redundant anchor on restart
+        global _last_anchored_count
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT record_count FROM anchor_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                _last_anchored_count = row["record_count"]
+                print(f"[ANCHOR] Hydrated last anchored count: {_last_anchored_count}", flush=True)
+        finally:
+            conn.close()
         _anchor_task = asyncio.create_task(_anchor_loop())
         print(
             f"[VARGATE] Legacy anchor task started (interval: {ANCHOR_INTERVAL_SECONDS}s).",
@@ -2555,7 +2567,7 @@ def _get_chain_tip() -> dict:
     return {"record_hash": "GENESIS", "record_count": 0}
 
 
-_last_anchored_count = 0
+_last_anchored_count = 0  # Hydrated from anchor_log on startup if available
 
 
 async def submit_anchor(force=False):
