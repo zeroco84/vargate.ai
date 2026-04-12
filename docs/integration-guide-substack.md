@@ -153,9 +153,15 @@ Delete a Substack Note by ID. Destructive action -- requires approval.
 
 ## API Notes
 
-Substack does not publish a public API. The endpoints used by this integration are inferred from Substack's internal API:
+Substack does not publish a public API. The endpoints used by this integration were confirmed via live testing (2026-04-12):
 
-- **Posts:** `POST /api/v1/drafts`
-- **Notes:** `POST /api/v1/notes`, `GET /api/v1/notes`, `DELETE /api/v1/notes/{id}`
+- **Posts:** `POST /api/v1/drafts` (publication subdomain)
+- **Notes (create):** `POST /api/v1/comment/feed` (publication subdomain)
+- **Notes (list):** `GET /api/v1/notes` (publication subdomain)
+- **Notes (delete):** `DELETE /api/v1/comment/{id}` (publication subdomain)
+
+Notes are internally stored as comments with `type: "feed"`. The body uses ProseMirror document format with `schemaVersion: "v1"`.
+
+**CSRF:** POST and DELETE endpoints require an `Origin` header matching the publication URL. Without it, Substack returns 403.
 
 These endpoints may change without notice. If requests start failing, inspect the Substack web app's network requests to confirm current endpoint paths.

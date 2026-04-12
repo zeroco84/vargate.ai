@@ -17,6 +17,8 @@ RESEND_FROM_EMAIL = os.environ.get(
     "RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>"
 )
 SUBSTACK_BASE_URL = os.environ.get("SUBSTACK_BASE_URL", "")
+# User-Agent required for Substack API — Cloudflare blocks requests without one
+_BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 
 def init(mock_tools_url: str):
@@ -212,7 +214,12 @@ async def _substack_create_post(params: dict, session_cookie: str, start: float)
                 api_url,
                 json=payload,
                 cookies={"substack.sid": session_cookie},
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": SUBSTACK_BASE_URL,
+                    "Referer": f"{SUBSTACK_BASE_URL}/publish",
+                    "User-Agent": _BROWSER_UA,
+                },
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -255,16 +262,19 @@ async def _substack_create_post(params: dict, session_cookie: str, start: float)
 
 
 # ── Substack Notes ─────────────────────────────────────────────────────────
-# NOTE: Substack's API is undocumented. The Notes endpoints below are inferred
-# from the Posts API pattern (/api/v1/drafts → /api/v1/notes). These may need
-# adjustment after live testing against the actual Substack backend.
+# Substack Notes are short-form content stored as comments with type="feed".
+# Confirmed endpoints (undocumented API, verified 2026-04-12):
+#   Create: POST /api/v1/comment/feed   (requires Origin header for CSRF)
+#   List:   GET  /api/v1/notes
+#   Delete: DELETE /api/v1/comment/{id}  (requires Origin header for CSRF)
 
 
 async def _substack_create_note(params: dict, session_cookie: str, start: float) -> dict:
     """Create a new Substack Note (short-form content).
 
     Notes are Substack's short-form format (similar to tweets).
-    Auth via substack.sid session cookie.
+    Internally stored as comments with type="feed".
+    Auth via substack.sid session cookie. Requires Origin header for CSRF.
     """
     if not SUBSTACK_BASE_URL:
         return {
@@ -277,7 +287,7 @@ async def _substack_create_note(params: dict, session_cookie: str, start: float)
     attachment_url = params.get("attachment_url")
     attachment_image = params.get("attachment_image")
 
-    # Build ProseMirror body content
+    # Build ProseMirror body content (Substack's editor format)
     body_content = []
     for para in body.split("\n\n"):
         para = para.strip()
@@ -288,21 +298,28 @@ async def _substack_create_note(params: dict, session_cookie: str, start: float)
             "content": [{"type": "text", "text": para}],
         })
 
-    payload = {
-        "body": json.dumps({"type": "doc", "content": body_content}),
+    body_json = {
+        "type": "doc",
+        "attrs": {"schemaVersion": "v1"},
+        "content": body_content,
     }
 
-    # Optional link attachment
-    if attachment_url:
-        payload["attachments"] = [{"type": "link", "url": attachment_url}]
+    payload = {
+        "bodyJson": body_json,
+        "body": body,
+        "type": "feed",
+    }
 
-    # Optional image attachment
+    # Optional attachments
+    attachments = []
+    if attachment_url:
+        attachments.append({"type": "link", "url": attachment_url})
     if attachment_image:
-        attachments = payload.get("attachments", [])
         attachments.append({"type": "image", "url": attachment_image})
+    if attachments:
         payload["attachments"] = attachments
 
-    api_url = f"{SUBSTACK_BASE_URL}/api/v1/notes"
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/comment/feed"
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -310,7 +327,12 @@ async def _substack_create_note(params: dict, session_cookie: str, start: float)
                 api_url,
                 json=payload,
                 cookies={"substack.sid": session_cookie},
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": SUBSTACK_BASE_URL,
+                    "Referer": f"{SUBSTACK_BASE_URL}/notes",
+                    "User-Agent": _BROWSER_UA,
+                },
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -371,18 +393,30 @@ async def _substack_get_notes(params: dict, session_cookie: str, start: float) -
             resp = await client.get(
                 api_url,
                 cookies={"substack.sid": session_cookie},
+                headers={"User-Agent": _BROWSER_UA},
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             if resp.status_code == 200:
                 result = resp.json()
-                # Normalize: result may be a list or wrapped in an object
-                notes = result if isinstance(result, list) else result.get("notes", result)
+                # Response is {items: [...]} where each item has a .comment field
+                items = result.get("items", [])
+                notes = []
+                for item in items:
+                    comment = item.get("comment", {})
+                    notes.append({
+                        "note_id": comment.get("id"),
+                        "body": comment.get("body", ""),
+                        "date": comment.get("date"),
+                        "reaction_count": comment.get("reaction_count", 0),
+                        "restacks": comment.get("restacks", 0),
+                        "children_count": comment.get("children_count", 0),
+                    })
                 return {
                     "result": {
                         "status": "ok",
                         "notes": notes,
-                        "count": len(notes) if isinstance(notes, list) else 0,
+                        "count": len(notes),
                     },
                     "execution_ms": elapsed_ms,
                     "simulated": False,
@@ -415,7 +449,7 @@ async def _substack_get_notes(params: dict, session_cookie: str, start: float) -
 async def _substack_delete_note(params: dict, session_cookie: str, start: float) -> dict:
     """Delete a Substack Note by ID.
 
-    Auth via substack.sid session cookie.
+    Auth via substack.sid session cookie. Requires Origin header for CSRF.
     """
     if not SUBSTACK_BASE_URL:
         return {
@@ -432,13 +466,18 @@ async def _substack_delete_note(params: dict, session_cookie: str, start: float)
             "simulated": False,
         }
 
-    api_url = f"{SUBSTACK_BASE_URL}/api/v1/notes/{note_id}"
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/comment/{note_id}"
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.delete(
                 api_url,
                 cookies={"substack.sid": session_cookie},
+                headers={
+                    "Origin": SUBSTACK_BASE_URL,
+                    "Referer": f"{SUBSTACK_BASE_URL}/notes",
+                    "User-Agent": _BROWSER_UA,
+                },
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
