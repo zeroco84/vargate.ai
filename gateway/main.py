@@ -54,6 +54,10 @@ SEPOLIA_RPC_URL = os.getenv("SEPOLIA_RPC_URL", "")
 MERKLE_CONTRACT_FILE = os.getenv(
     "MERKLE_CONTRACT_FILE", "/shared/MerkleAuditAnchor.json"
 )
+REPEAT_USAGE_THRESHOLD = int(os.getenv("REPEAT_USAGE_THRESHOLD", "10"))
+
+# Internal tenants excluded from product usage metrics
+_INTERNAL_TENANTS = {"vargate-internal", "vargate-gtm-agent"}
 
 # PII detection patterns
 _PII_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -1897,6 +1901,39 @@ async def startup():
     asyncio.create_task(_backup_loop())
     print("[VARGATE] SQLite backup task started (interval: 24h).", flush=True)
 
+    # ── Product usage: hydrate activated tenants set from SQLite ─────
+    try:
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT tenant_id FROM audit_log"
+            ).fetchall()
+            activated = {
+                r["tenant_id"]
+                for r in rows
+                if r["tenant_id"] not in _INTERNAL_TENANTS
+            }
+            if redis_pool and activated:
+                await redis_pool.sadd(
+                    "vargate:activated_tenants",
+                    *[t.encode() for t in activated],
+                )
+            # Set counter to match hydrated set size
+            prom.ACTIVATIONS_TOTAL.inc(len(activated))
+            print(
+                f"[USAGE] Hydrated {len(activated)} activated tenant(s) from SQLite.",
+                flush=True,
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[USAGE] Activation hydration failed: {e}", flush=True)
+
+    # Start product usage background tasks
+    asyncio.create_task(_daily_active_tenants_loop())
+    asyncio.create_task(_funnel_snapshot_loop())
+    print("[USAGE] Product usage background tasks started.", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
 
 
@@ -1910,6 +1947,67 @@ async def _backup_loop():
             await asyncio.to_thread(backup_module.backup_database)
         except Exception as e:
             print(f"[BACKUP] Scheduled backup failed: {e}", flush=True)
+
+
+async def _daily_active_tenants_loop():
+    """Update daily active tenants gauge every 60 seconds."""
+    while True:
+        try:
+            conn = get_db_threadsafe()
+            try:
+                placeholders = ",".join("?" for _ in _INTERNAL_TENANTS)
+                row = conn.execute(
+                    f"""SELECT COUNT(DISTINCT tenant_id) AS cnt FROM audit_log
+                        WHERE created_at >= date('now', 'start of day')
+                        AND tenant_id NOT IN ({placeholders})""",
+                    tuple(_INTERNAL_TENANTS),
+                ).fetchone()
+                prom.DAILY_ACTIVE_TENANTS.set(row["cnt"] if row else 0)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[USAGE] Daily active tenants update failed: {e}", flush=True)
+        await asyncio.sleep(60)
+
+
+async def _funnel_snapshot_loop():
+    """Update funnel gauges from SQLite every 5 minutes."""
+    while True:
+        try:
+            conn = get_db_threadsafe()
+            try:
+                placeholders = ",".join("?" for _ in _INTERNAL_TENANTS)
+                params = tuple(_INTERNAL_TENANTS)
+
+                total_signups = conn.execute(
+                    f"""SELECT COUNT(*) AS cnt FROM tenants
+                        WHERE tenant_id NOT IN ({placeholders})""",
+                    params,
+                ).fetchone()["cnt"]
+
+                total_activated = conn.execute(
+                    f"""SELECT COUNT(DISTINCT tenant_id) AS cnt FROM audit_log
+                        WHERE tenant_id NOT IN ({placeholders})""",
+                    params,
+                ).fetchone()["cnt"]
+
+                repeat_tenants = conn.execute(
+                    f"""SELECT COUNT(*) AS cnt FROM (
+                            SELECT tenant_id FROM audit_log
+                            WHERE tenant_id NOT IN ({placeholders})
+                            GROUP BY tenant_id HAVING COUNT(*) >= ?
+                        )""",
+                    (*params, REPEAT_USAGE_THRESHOLD),
+                ).fetchone()["cnt"]
+
+                prom.FUNNEL_TOTAL_SIGNUPS.set(total_signups)
+                prom.FUNNEL_TOTAL_ACTIVATED.set(total_activated)
+                prom.FUNNEL_REPEAT_TENANTS.set(repeat_tenants)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[USAGE] Funnel snapshot failed: {e}", flush=True)
+        await asyncio.sleep(300)
 
 
 @app.on_event("shutdown")
@@ -2191,6 +2289,21 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
 
     # Record Prometheus metrics
     prom.ACTIONS_TOTAL.labels(decision=decision_str, tenant_id=tenant_id).inc()
+
+    # Product usage metrics (governed actions + activation tracking)
+    if tenant_id not in _INTERNAL_TENANTS:
+        prom.GOVERNED_ACTIONS_TOTAL.labels(
+            tenant_id=tenant_id, decision=decision_str
+        ).inc()
+        if redis_pool:
+            try:
+                added = await redis_pool.sadd(
+                    "vargate:activated_tenants", tenant_id.encode()
+                )
+                if added:
+                    prom.ACTIVATIONS_TOTAL.inc()
+            except Exception as e:
+                print(f"[USAGE] Activation tracking error: {e}", flush=True)
 
     # Write audit record
     conn = get_db()

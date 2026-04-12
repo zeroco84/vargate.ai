@@ -61,6 +61,45 @@ ANCHOR_LAST_SUCCESS = Gauge(
     "Unix epoch seconds of last successful blockchain anchor",
 )
 
+# ── Product usage (Usage Dashboard spec) ───────────────────────────────────
+
+SIGNUPS_TOTAL = Counter(
+    "gateway_signups_total",
+    "Total tenant signups",
+    labelnames=["method"],
+)
+
+ACTIVATIONS_TOTAL = Counter(
+    "gateway_activations_total",
+    "Total first-time activations (one per tenant)",
+)
+
+GOVERNED_ACTIONS_TOTAL = Counter(
+    "gateway_governed_actions_total",
+    "All governed tool calls with tenant and decision granularity",
+    labelnames=["tenant_id", "decision"],
+)
+
+DAILY_ACTIVE_TENANTS = Gauge(
+    "gateway_daily_active_tenants",
+    "Distinct tenants with at least 1 action today (UTC)",
+)
+
+FUNNEL_TOTAL_SIGNUPS = Gauge(
+    "gateway_funnel_total_signups",
+    "Cumulative tenant count from SQLite",
+)
+
+FUNNEL_TOTAL_ACTIVATED = Gauge(
+    "gateway_funnel_total_activated",
+    "Cumulative activated tenants (at least 1 audit_log entry)",
+)
+
+FUNNEL_REPEAT_TENANTS = Gauge(
+    "gateway_funnel_repeat_tenants",
+    "Tenants exceeding repeat usage threshold",
+)
+
 # ── Errors ──────────────────────────────────────────────────────────────────
 
 ERRORS_TOTAL = Counter(

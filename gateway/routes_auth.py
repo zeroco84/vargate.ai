@@ -119,6 +119,10 @@ async def verify_email(request: Request, token: str = Query(...)):
 
         main._refresh_tenant_cache()
 
+        import metrics as prom
+
+        prom.SIGNUPS_TOTAL.labels(method="email").inc()
+
         session_token = auth_module.create_session_token(slug, email)
 
         return {
@@ -207,6 +211,10 @@ async def github_callback(
         conn.execute("UPDATE tenants SET slug = ? WHERE tenant_id = ?", (slug, slug))
         conn.commit()
         main._refresh_tenant_cache()
+
+        import metrics as prom
+
+        prom.SIGNUPS_TOTAL.labels(method="github").inc()
 
         session_token = auth_module.create_session_token(slug, profile["email"])
         from urllib.parse import urlencode
