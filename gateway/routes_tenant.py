@@ -544,7 +544,34 @@ async def approve_action(
         )
 
         try:
-            exec_resp = await execution_engine.execute_tool_call(tool, method, params)
+            # Fetch credential from HSM (same flow as main.py brokered execution)
+            import httpx
+
+            credential_value = None
+            agent_id = action_row["agent_id"] if action_row else "unknown"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                cred_resp = await client.get(f"{main.HSM_URL}/credentials")
+                if cred_resp.status_code == 200:
+                    creds = cred_resp.json().get("credentials", [])
+                    cred_match = next(
+                        (c for c in creds if c["tool_id"] == tool), None
+                    )
+                    if cred_match:
+                        fetch_resp = await client.post(
+                            f"{main.HSM_URL}/credentials/fetch-for-execution",
+                            json={
+                                "tool_id": tool,
+                                "name": cred_match["name"],
+                                "action_id": action_id,
+                                "agent_id": agent_id,
+                            },
+                        )
+                        if fetch_resp.status_code == 200:
+                            credential_value = fetch_resp.json().get("credential", "")
+
+            exec_resp = await execution_engine.execute_tool_call(
+                tool, method, params, credential=credential_value or ""
+            )
             if exec_resp:
                 execution_result = exec_resp
                 print(
