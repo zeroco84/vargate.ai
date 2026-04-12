@@ -2181,6 +2181,7 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
     if allowed:
         # Attempt brokered execution
         cred_name = "api_key"  # Default credential name
+        tool_has_credential = False
         try:
             # Fetch credential from HSM vault
             hsm_start = time.monotonic()
@@ -2191,6 +2192,13 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
                 if fetch_resp.status_code == 200 and fetch_resp.json().get(
                     "registered"
                 ):
+                    tool_has_credential = True
+                    # Use actual credential name from HSM instead of hardcoded default
+                    status_data = fetch_resp.json()
+                    cred_list = status_data.get("credentials", [])
+                    if cred_list:
+                        cred_name = cred_list[0]["name"]
+
                     # Credential exists — do brokered execution
                     # SECURITY: fetch via HSM HTTP endpoint, logs access but never the value
                     cred_fetch_resp = await client.post(
@@ -2228,6 +2236,30 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
                     hsm_fetch_ms = int((time.monotonic() - hsm_start) * 1000)
         except Exception as e:
             print(f"[VARGATE] Brokered execution error: {e}", flush=True)
+
+        # Block actions that were not actually executed.
+        # If a tool passed OPA but the proxy could not broker execution (no handler,
+        # credential fetch failed, execution error), allowing it as agent_direct is
+        # unsafe — the agent may believe the action was performed when nothing happened.
+        known_tools = set(execution_engine.TOOL_ENDPOINTS.keys()) | execution_engine.REAL_API_TOOLS
+        execution_failed = (
+            execution_result is not None
+            and isinstance(execution_result, dict)
+            and "error" in execution_result
+        )
+        no_handler = req.tool not in known_tools
+
+        if (execution_mode == "agent_direct" and no_handler) or (no_handler and execution_failed):
+            allowed = False
+            decision_str = "deny"
+            violations.append("unknown_tool_no_execution_handler")
+            severity = "high"
+            err_detail = execution_result.get("error", "") if execution_failed else "no handler"
+            print(
+                f"[VARGATE] Blocked tool={req.tool} method={req.method} — "
+                f"no execution handler ({err_detail})",
+                flush=True,
+            )
 
     # Log to stdout
     pass_label = f"P{evaluation_pass}"
