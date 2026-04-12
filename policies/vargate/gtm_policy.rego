@@ -33,6 +33,29 @@ requires_human_approval if {
     input.action.method == "delete"
 }
 
+# ── Substack governance (Sprint 15) ────────────────────────────────────────
+
+# Creating Substack content (posts and notes) requires human approval for content review
+requires_human_approval if {
+    _is_gtm_tenant
+    _is_substack_action
+    startswith(input.action.method, "create_")
+}
+
+# Deleting Substack content requires human approval — destructive action
+requires_human_approval if {
+    _is_gtm_tenant
+    _is_substack_action
+    startswith(input.action.method, "delete_")
+}
+
+# Listing/reading Substack content is allowed without approval (read-only)
+# No rule needed — absence of requires_human_approval means auto-allow
+
+_is_substack_action if {
+    input.action.tool == "substack"
+}
+
 # ── GTM-specific violations ─────────────────────────────────────────────────
 
 # Block GTM agent from sending to consumer email domains

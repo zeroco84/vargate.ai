@@ -171,6 +171,65 @@ TOOL_CATALOG = [
         "_vargate_tool": "slack",
         "_vargate_method": "post_message",
     },
+    # ── Substack Posts ─────────────────────────────────────────────────────
+    {
+        "name": "vargate_substack_create_post",
+        "description": "Create a draft post on Substack. Requires human approval for content review before publishing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Post title"},
+                "body": {"type": "string", "description": "Post body text (paragraphs separated by double newlines)"},
+                "is_newsletter": {"type": "boolean", "description": "Whether to create as newsletter (true) or thread post (false)", "default": False},
+            },
+            "required": ["title", "body"],
+        },
+        "_vargate_tool": "substack",
+        "_vargate_method": "create_post",
+    },
+    # ── Substack Notes ─────────────────────────────────────────────────────
+    {
+        "name": "vargate_substack_create_note",
+        "description": "Create a short-form Substack Note (similar to a tweet). Requires human approval for content review.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "body": {"type": "string", "description": "Note text content"},
+                "attachment_url": {"type": "string", "description": "Optional link attachment URL"},
+                "attachment_image": {"type": "string", "description": "Optional image URL to attach"},
+            },
+            "required": ["body"],
+        },
+        "_vargate_tool": "substack",
+        "_vargate_method": "create_note",
+    },
+    {
+        "name": "vargate_substack_list_notes",
+        "description": "List recent Substack Notes with optional pagination. Read-only — no approval required.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max number of notes to return", "default": 20},
+                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
+            },
+            "required": [],
+        },
+        "_vargate_tool": "substack",
+        "_vargate_method": "get_notes",
+    },
+    {
+        "name": "vargate_substack_delete_note",
+        "description": "Delete a Substack Note by ID. Requires human approval — destructive action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "note_id": {"type": "string", "description": "ID of the Note to delete"},
+            },
+            "required": ["note_id"],
+        },
+        "_vargate_tool": "substack",
+        "_vargate_method": "delete_note",
+    },
 ]
 
 # Index by MCP tool name for quick lookup

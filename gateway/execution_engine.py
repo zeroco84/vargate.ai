@@ -85,6 +85,15 @@ async def _execute_real_api(
     if tool == "substack" and method == "create_post":
         return await _substack_create_post(params, credential, start)
 
+    if tool == "substack" and method == "create_note":
+        return await _substack_create_note(params, credential, start)
+
+    if tool == "substack" and method == "get_notes":
+        return await _substack_get_notes(params, credential, start)
+
+    if tool == "substack" and method == "delete_note":
+        return await _substack_delete_note(params, credential, start)
+
     return {
         "result": {"error": f"unknown_real_method: {tool}/{method}"},
         "execution_ms": 0,
@@ -216,6 +225,228 @@ async def _substack_create_post(params: dict, session_cookie: str, start: float)
                         "slug": result.get("slug", ""),
                         "title": title,
                         "edit_url": f"{SUBSTACK_BASE_URL}/publish/post/{result.get('id', '')}",
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "substack_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"substack_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+# ── Substack Notes ─────────────────────────────────────────────────────────
+# NOTE: Substack's API is undocumented. The Notes endpoints below are inferred
+# from the Posts API pattern (/api/v1/drafts → /api/v1/notes). These may need
+# adjustment after live testing against the actual Substack backend.
+
+
+async def _substack_create_note(params: dict, session_cookie: str, start: float) -> dict:
+    """Create a new Substack Note (short-form content).
+
+    Notes are Substack's short-form format (similar to tweets).
+    Auth via substack.sid session cookie.
+    """
+    if not SUBSTACK_BASE_URL:
+        return {
+            "result": {"error": "SUBSTACK_BASE_URL not configured"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    body = params.get("body", "")
+    attachment_url = params.get("attachment_url")
+    attachment_image = params.get("attachment_image")
+
+    # Build ProseMirror body content
+    body_content = []
+    for para in body.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        body_content.append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": para}],
+        })
+
+    payload = {
+        "body": json.dumps({"type": "doc", "content": body_content}),
+    }
+
+    # Optional link attachment
+    if attachment_url:
+        payload["attachments"] = [{"type": "link", "url": attachment_url}]
+
+    # Optional image attachment
+    if attachment_image:
+        attachments = payload.get("attachments", [])
+        attachments.append({"type": "image", "url": attachment_image})
+        payload["attachments"] = attachments
+
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/notes"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                api_url,
+                json=payload,
+                cookies={"substack.sid": session_cookie},
+                headers={"Content-Type": "application/json"},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                return {
+                    "result": {
+                        "status": "note_created",
+                        "note_id": result.get("id"),
+                        "body_preview": body[:140],
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "substack_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"substack_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _substack_get_notes(params: dict, session_cookie: str, start: float) -> dict:
+    """List recent Substack Notes with optional pagination.
+
+    Auth via substack.sid session cookie.
+    """
+    if not SUBSTACK_BASE_URL:
+        return {
+            "result": {"error": "SUBSTACK_BASE_URL not configured"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    limit = params.get("limit", 20)
+    offset = params.get("offset", 0)
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/notes?limit={limit}&offset={offset}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                api_url,
+                cookies={"substack.sid": session_cookie},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code == 200:
+                result = resp.json()
+                # Normalize: result may be a list or wrapped in an object
+                notes = result if isinstance(result, list) else result.get("notes", result)
+                return {
+                    "result": {
+                        "status": "ok",
+                        "notes": notes,
+                        "count": len(notes) if isinstance(notes, list) else 0,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "substack_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"substack_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _substack_delete_note(params: dict, session_cookie: str, start: float) -> dict:
+    """Delete a Substack Note by ID.
+
+    Auth via substack.sid session cookie.
+    """
+    if not SUBSTACK_BASE_URL:
+        return {
+            "result": {"error": "SUBSTACK_BASE_URL not configured"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    note_id = params.get("note_id")
+    if not note_id:
+        return {
+            "result": {"error": "note_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/notes/{note_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(
+                api_url,
+                cookies={"substack.sid": session_cookie},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 204):
+                return {
+                    "result": {
+                        "status": "note_deleted",
+                        "note_id": note_id,
                     },
                     "execution_ms": elapsed_ms,
                     "simulated": False,
