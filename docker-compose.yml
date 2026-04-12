@@ -129,6 +129,8 @@ services:
       - RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL:-Sera (Vargate.ai) <sera@vargate.ai>}
       - JWT_SECRET=${JWT_SECRET:-}
       - VARGATE_BASE_URL=${VARGATE_BASE_URL:-https://vargate.ai}
+      # ── Sprint 9: Substack integration ──
+      - SUBSTACK_BASE_URL=${SUBSTACK_BASE_URL:-}
     volumes:
       - audit-data:/data
       - backup-data:/backup

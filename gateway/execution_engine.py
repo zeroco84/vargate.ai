@@ -6,6 +6,7 @@ Supports both mock tools (via mock server) and real APIs (Resend, etc.).
 Credential values are used for Authorization headers but never logged or stored.
 """
 
+import json
 import os
 import time
 
@@ -15,6 +16,7 @@ MOCK_TOOLS_URL = None  # Set during gateway startup
 RESEND_FROM_EMAIL = os.environ.get(
     "RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>"
 )
+SUBSTACK_BASE_URL = os.environ.get("SUBSTACK_BASE_URL", "")
 
 
 def init(mock_tools_url: str):
@@ -42,7 +44,7 @@ TOOL_ENDPOINTS = {
 }
 
 # Tools with real API execution (not mock)
-REAL_API_TOOLS = {"resend"}
+REAL_API_TOOLS = {"resend", "substack"}
 
 
 async def execute_tool_call(
@@ -79,6 +81,9 @@ async def _execute_real_api(
 
     if tool == "resend" and method == "send":
         return await _resend_send_email(params, credential, start)
+
+    if tool == "substack" and method == "create_post":
+        return await _substack_create_post(params, credential, start)
 
     return {
         "result": {"error": f"unknown_real_method: {tool}/{method}"},
@@ -148,6 +153,93 @@ async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return {
             "result": {"error": f"resend_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _substack_create_post(params: dict, session_cookie: str, start: float) -> dict:
+    """Create a draft post on Substack via its internal API.
+
+    Uses the substack.sid session cookie for authentication.
+    Creates the post as a draft — publishing requires a separate step.
+    """
+    if not SUBSTACK_BASE_URL:
+        return {
+            "result": {"error": "SUBSTACK_BASE_URL not configured"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    title = params.get("title", "(untitled)")
+    body = params.get("body", "")
+    is_newsletter = params.get("is_newsletter", False)
+
+    # Substack internal API: create draft
+    # Body uses ProseMirror document format (Substack's editor format)
+    body_content = []
+    for para in body.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        body_content.append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": para}],
+        })
+
+    api_url = f"{SUBSTACK_BASE_URL}/api/v1/drafts"
+    payload = {
+        "draft_title": title,
+        "draft_subtitle": "",
+        "draft_body": json.dumps({"type": "doc", "content": body_content}),
+        "audience": "everyone",
+        "type": "newsletter" if is_newsletter else "thread",
+        "draft_bylines": [],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                api_url,
+                json=payload,
+                cookies={"substack.sid": session_cookie},
+                headers={"Content-Type": "application/json"},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                return {
+                    "result": {
+                        "status": "draft_created",
+                        "draft_id": result.get("id"),
+                        "slug": result.get("slug", ""),
+                        "title": title,
+                        "edit_url": f"{SUBSTACK_BASE_URL}/publish/post/{result.get('id', '')}",
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "substack_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"substack_execution_failed: {str(e)}"},
             "execution_ms": elapsed_ms,
             "simulated": False,
         }
