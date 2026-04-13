@@ -1758,7 +1758,10 @@ async def startup():
             ).fetchone()
             if row:
                 _last_anchored_count = row["record_count"]
-                print(f"[ANCHOR] Hydrated last anchored count: {_last_anchored_count}", flush=True)
+                print(
+                    f"[ANCHOR] Hydrated last anchored count: {_last_anchored_count}",
+                    flush=True,
+                )
         finally:
             conn.close()
         _anchor_task = asyncio.create_task(_anchor_loop())
@@ -1917,13 +1920,9 @@ async def startup():
     try:
         conn = get_db()
         try:
-            rows = conn.execute(
-                "SELECT DISTINCT tenant_id FROM audit_log"
-            ).fetchall()
+            rows = conn.execute("SELECT DISTINCT tenant_id FROM audit_log").fetchall()
             activated = {
-                r["tenant_id"]
-                for r in rows
-                if r["tenant_id"] not in _INTERNAL_TENANTS
+                r["tenant_id"] for r in rows if r["tenant_id"] not in _INTERNAL_TENANTS
             }
             if redis_pool and activated:
                 await redis_pool.sadd(
@@ -2193,7 +2192,6 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
     if allowed:
         # Attempt brokered execution
         cred_name = "api_key"  # Default credential name
-        tool_has_credential = False
         try:
             # Fetch credential from HSM vault
             hsm_start = time.monotonic()
@@ -2204,7 +2202,6 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
                 if fetch_resp.status_code == 200 and fetch_resp.json().get(
                     "registered"
                 ):
-                    tool_has_credential = True
                     # Use actual credential name from HSM instead of hardcoded default
                     status_data = fetch_resp.json()
                     cred_list = status_data.get("credentials", [])
@@ -2253,7 +2250,10 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         # If a tool passed OPA but the proxy could not broker execution (no handler,
         # credential fetch failed, execution error), allowing it as agent_direct is
         # unsafe — the agent may believe the action was performed when nothing happened.
-        known_tools = set(execution_engine.TOOL_ENDPOINTS.keys()) | execution_engine.REAL_API_TOOLS
+        known_tools = (
+            set(execution_engine.TOOL_ENDPOINTS.keys())
+            | execution_engine.REAL_API_TOOLS
+        )
         execution_failed = (
             execution_result is not None
             and isinstance(execution_result, dict)
@@ -2261,12 +2261,16 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
         )
         no_handler = req.tool not in known_tools
 
-        if (execution_mode == "agent_direct" and no_handler) or (no_handler and execution_failed):
+        if (execution_mode == "agent_direct" and no_handler) or (
+            no_handler and execution_failed
+        ):
             allowed = False
             decision_str = "deny"
             violations.append("unknown_tool_no_execution_handler")
             severity = "high"
-            err_detail = execution_result.get("error", "") if execution_failed else "no handler"
+            err_detail = (
+                execution_result.get("error", "") if execution_failed else "no handler"
+            )
             print(
                 f"[VARGATE] Blocked tool={req.tool} method={req.method} — "
                 f"no execution handler ({err_detail})",

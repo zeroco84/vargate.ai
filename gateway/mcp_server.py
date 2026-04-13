@@ -179,8 +179,15 @@ TOOL_CATALOG = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Post title"},
-                "body": {"type": "string", "description": "Post body text (paragraphs separated by double newlines)"},
-                "is_newsletter": {"type": "boolean", "description": "Whether to create as newsletter (true) or thread post (false)", "default": False},
+                "body": {
+                    "type": "string",
+                    "description": "Post body text (paragraphs separated by double newlines)",
+                },
+                "is_newsletter": {
+                    "type": "boolean",
+                    "description": "Whether to create as newsletter (true) or thread post (false)",
+                    "default": False,
+                },
             },
             "required": ["title", "body"],
         },
@@ -195,8 +202,14 @@ TOOL_CATALOG = [
             "type": "object",
             "properties": {
                 "body": {"type": "string", "description": "Note text content"},
-                "attachment_url": {"type": "string", "description": "Optional link attachment URL"},
-                "attachment_image": {"type": "string", "description": "Optional image URL to attach"},
+                "attachment_url": {
+                    "type": "string",
+                    "description": "Optional link attachment URL",
+                },
+                "attachment_image": {
+                    "type": "string",
+                    "description": "Optional image URL to attach",
+                },
             },
             "required": ["body"],
         },
@@ -209,8 +222,16 @@ TOOL_CATALOG = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max number of notes to return", "default": 20},
-                "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of notes to return",
+                    "default": 20,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Pagination offset",
+                    "default": 0,
+                },
             },
             "required": [],
         },
@@ -223,7 +244,10 @@ TOOL_CATALOG = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "note_id": {"type": "string", "description": "ID of the Note to delete"},
+                "note_id": {
+                    "type": "string",
+                    "description": "ID of the Note to delete",
+                },
             },
             "required": ["note_id"],
         },
@@ -237,7 +261,11 @@ TOOL_CATALOG = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Tweet text (max 280 characters)", "maxLength": 280},
+                "text": {
+                    "type": "string",
+                    "description": "Tweet text (max 280 characters)",
+                    "maxLength": 280,
+                },
             },
             "required": ["text"],
         },
@@ -250,7 +278,10 @@ TOOL_CATALOG = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tweet_id": {"type": "string", "description": "ID of the tweet to delete"},
+                "tweet_id": {
+                    "type": "string",
+                    "description": "ID of the tweet to delete",
+                },
             },
             "required": ["tweet_id"],
         },
@@ -264,7 +295,11 @@ TOOL_CATALOG = [
             "type": "object",
             "properties": {
                 "user_id": {"type": "string", "description": "Twitter user ID"},
-                "max_results": {"type": "integer", "description": "Max tweets to return (default 10)", "default": 10},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max tweets to return (default 10)",
+                    "default": 10,
+                },
             },
             "required": ["user_id"],
         },

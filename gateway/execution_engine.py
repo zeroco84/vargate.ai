@@ -178,7 +178,9 @@ async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
         }
 
 
-async def _substack_create_post(params: dict, session_cookie: str, start: float) -> dict:
+async def _substack_create_post(
+    params: dict, session_cookie: str, start: float
+) -> dict:
     """Create a draft post on Substack via its internal API.
 
     Uses the substack.sid session cookie for authentication.
@@ -202,10 +204,12 @@ async def _substack_create_post(params: dict, session_cookie: str, start: float)
         para = para.strip()
         if not para:
             continue
-        body_content.append({
-            "type": "paragraph",
-            "content": [{"type": "text", "text": para}],
-        })
+        body_content.append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": para}],
+            }
+        )
 
     api_url = f"{SUBSTACK_BASE_URL}/api/v1/drafts"
     payload = {
@@ -278,7 +282,9 @@ async def _substack_create_post(params: dict, session_cookie: str, start: float)
 #   Delete: DELETE /api/v1/comment/{id}  (requires Origin header for CSRF)
 
 
-async def _substack_create_note(params: dict, session_cookie: str, start: float) -> dict:
+async def _substack_create_note(
+    params: dict, session_cookie: str, start: float
+) -> dict:
     """Create a new Substack Note (short-form content).
 
     Notes are Substack's short-form format (similar to tweets).
@@ -302,10 +308,12 @@ async def _substack_create_note(params: dict, session_cookie: str, start: float)
         para = para.strip()
         if not para:
             continue
-        body_content.append({
-            "type": "paragraph",
-            "content": [{"type": "text", "text": para}],
-        })
+        body_content.append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": para}],
+            }
+        )
 
     body_json = {
         "type": "doc",
@@ -413,14 +421,16 @@ async def _substack_get_notes(params: dict, session_cookie: str, start: float) -
                 notes = []
                 for item in items:
                     comment = item.get("comment", {})
-                    notes.append({
-                        "note_id": comment.get("id"),
-                        "body": comment.get("body", ""),
-                        "date": comment.get("date"),
-                        "reaction_count": comment.get("reaction_count", 0),
-                        "restacks": comment.get("restacks", 0),
-                        "children_count": comment.get("children_count", 0),
-                    })
+                    notes.append(
+                        {
+                            "note_id": comment.get("id"),
+                            "body": comment.get("body", ""),
+                            "date": comment.get("date"),
+                            "reaction_count": comment.get("reaction_count", 0),
+                            "restacks": comment.get("restacks", 0),
+                            "children_count": comment.get("children_count", 0),
+                        }
+                    )
                 return {
                     "result": {
                         "status": "ok",
@@ -455,7 +465,9 @@ async def _substack_get_notes(params: dict, session_cookie: str, start: float) -
         }
 
 
-async def _substack_delete_note(params: dict, session_cookie: str, start: float) -> dict:
+async def _substack_delete_note(
+    params: dict, session_cookie: str, start: float
+) -> dict:
     """Delete a Substack Note by ID.
 
     Auth via substack.sid session cookie. Requires Origin header for CSRF.
@@ -553,9 +565,9 @@ def _oauth1_header(method: str, url: str, cred: dict, body: str = "") -> dict:
     Implements the OAuth 1.0a signature base string and HMAC-SHA1 signing
     as specified by RFC 5849, using only stdlib modules.
     """
+    import base64
     import hashlib
     import hmac
-    import base64
     import urllib.parse
 
     api_key = cred["api_key"]
@@ -781,7 +793,9 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
     if "api_key" in cred:
         auth_headers = _oauth1_header("GET", f"{url}?max_results={max_results}", cred)
     else:
-        auth_headers = {"Authorization": f"Bearer {cred.get('bearer_token', credential)}"}
+        auth_headers = {
+            "Authorization": f"Bearer {cred.get('bearer_token', credential)}"
+        }
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

@@ -553,9 +553,7 @@ async def approve_action(
                 cred_resp = await client.get(f"{main.HSM_URL}/credentials")
                 if cred_resp.status_code == 200:
                     creds = cred_resp.json().get("credentials", [])
-                    cred_match = next(
-                        (c for c in creds if c["tool_id"] == tool), None
-                    )
+                    cred_match = next((c for c in creds if c["tool_id"] == tool), None)
                     if cred_match:
                         fetch_resp = await client.post(
                             f"{main.HSM_URL}/credentials/fetch-for-execution",
@@ -575,7 +573,9 @@ async def approve_action(
             if exec_resp:
                 execution_result = exec_resp
                 # Check if the execution itself returned an API error
-                inner = exec_resp.get("result", {}) if isinstance(exec_resp, dict) else {}
+                inner = (
+                    exec_resp.get("result", {}) if isinstance(exec_resp, dict) else {}
+                )
                 if "error" in inner:
                     execution_error = inner.get("error", "unknown_error")
                     print(
@@ -600,8 +600,16 @@ async def approve_action(
     conn = main.get_db()
     try:
         exec_result_json = json.dumps(execution_result) if execution_result else None
-        exec_ms = execution_result.get("execution_ms") if isinstance(execution_result, dict) else None
-        exec_mode = "vargate_brokered" if execution_result and not execution_error else "agent_direct"
+        exec_ms = (
+            execution_result.get("execution_ms")
+            if isinstance(execution_result, dict)
+            else None
+        )
+        exec_mode = (
+            "vargate_brokered"
+            if execution_result and not execution_error
+            else "agent_direct"
+        )
         conn.execute(
             "UPDATE audit_log SET execution_result = ?, execution_latency_ms = ?, execution_mode = ? WHERE action_id = ?",
             (exec_result_json, exec_ms, exec_mode, action_id),
