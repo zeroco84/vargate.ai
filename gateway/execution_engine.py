@@ -46,7 +46,7 @@ TOOL_ENDPOINTS = {
 }
 
 # Tools with real API execution (not mock)
-REAL_API_TOOLS = {"resend", "substack"}
+REAL_API_TOOLS = {"resend", "substack", "twitter"}
 
 
 async def execute_tool_call(
@@ -95,6 +95,15 @@ async def _execute_real_api(
 
     if tool == "substack" and method == "delete_note":
         return await _substack_delete_note(params, credential, start)
+
+    if tool == "twitter" and method == "create_tweet":
+        return await _twitter_create_tweet(params, credential, start)
+
+    if tool == "twitter" and method == "delete_tweet":
+        return await _twitter_delete_tweet(params, credential, start)
+
+    if tool == "twitter" and method == "get_user_tweets":
+        return await _twitter_get_user_tweets(params, credential, start)
 
     return {
         "result": {"error": f"unknown_real_method: {tool}/{method}"},
@@ -510,6 +519,200 @@ async def _substack_delete_note(params: dict, session_cookie: str, start: float)
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return {
             "result": {"error": f"substack_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+# ── Twitter / X ────────────────────────────────────────────────────────────
+# Twitter API v2 (https://developer.x.com/en/docs/twitter-api)
+# Auth: OAuth 2.0 Bearer token (free tier supports create/delete tweets).
+
+TWITTER_API_BASE = "https://api.twitter.com/2"
+
+
+async def _twitter_create_tweet(params: dict, bearer_token: str, start: float) -> dict:
+    """Create a tweet via Twitter API v2."""
+    text = params.get("text", "")
+    if not text:
+        return {
+            "result": {"error": "text is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{TWITTER_API_BASE}/tweets",
+                json={"text": text},
+                headers={
+                    "Authorization": f"Bearer {bearer_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                data = result.get("data", {})
+                return {
+                    "result": {
+                        "status": "tweet_created",
+                        "tweet_id": data.get("id"),
+                        "text": data.get("text", text),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "twitter_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _twitter_delete_tweet(params: dict, bearer_token: str, start: float) -> dict:
+    """Delete a tweet via Twitter API v2."""
+    tweet_id = params.get("tweet_id")
+    if not tweet_id:
+        return {
+            "result": {"error": "tweet_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(
+                f"{TWITTER_API_BASE}/tweets/{tweet_id}",
+                headers={"Authorization": f"Bearer {bearer_token}"},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 204):
+                result = resp.json() if resp.text else {}
+                deleted = result.get("data", {}).get("deleted", True)
+                return {
+                    "result": {
+                        "status": "tweet_deleted",
+                        "tweet_id": tweet_id,
+                        "deleted": deleted,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "twitter_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _twitter_get_user_tweets(params: dict, bearer_token: str, start: float) -> dict:
+    """Get recent tweets for a user via Twitter API v2.
+
+    Note: This endpoint requires the Basic ($100/mo) tier.
+    Free tier returns 403.
+    """
+    user_id = params.get("user_id")
+    if not user_id:
+        return {
+            "result": {"error": "user_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    max_results = params.get("max_results", 10)
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{TWITTER_API_BASE}/users/{user_id}/tweets",
+                params={"max_results": max_results},
+                headers={"Authorization": f"Bearer {bearer_token}"},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code == 200:
+                result = resp.json()
+                tweets = result.get("data", [])
+                return {
+                    "result": {
+                        "status": "ok",
+                        "tweets": tweets,
+                        "count": len(tweets),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            elif resp.status_code == 403:
+                return {
+                    "result": {
+                        "error": "twitter_free_tier_limit",
+                        "status_code": 403,
+                        "detail": "Twitter free tier does not support reading tweets. "
+                        "Upgrade to the Basic plan ($100/mo) at developer.x.com to use this endpoint.",
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+            else:
+                error_body = resp.text
+                try:
+                    error_body = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "twitter_api_error",
+                        "status_code": resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
             "execution_ms": elapsed_ms,
             "simulated": False,
         }

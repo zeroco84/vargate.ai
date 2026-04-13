@@ -56,6 +56,29 @@ _is_substack_action if {
     input.action.tool == "substack"
 }
 
+# ── Twitter / X governance (Sprint 15) ────────────────────────────────────
+
+# Publishing tweets requires human approval for content review
+requires_human_approval if {
+    _is_gtm_tenant
+    _is_twitter_publish
+}
+
+# Deleting tweets requires human approval — destructive action
+requires_human_approval if {
+    _is_gtm_tenant
+    input.action.tool == "twitter"
+    input.action.method == "delete_tweet"
+}
+
+# Reading tweets is allowed without approval (read-only)
+# No rule needed — absence of requires_human_approval means auto-allow
+
+_is_twitter_publish if {
+    input.action.tool == "twitter"
+    input.action.method == "create_tweet"
+}
+
 # ── GTM-specific violations ─────────────────────────────────────────────────
 
 # Block GTM agent from sending to consumer email domains

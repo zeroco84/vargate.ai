@@ -230,6 +230,47 @@ TOOL_CATALOG = [
         "_vargate_tool": "substack",
         "_vargate_method": "delete_note",
     },
+    # ── Twitter / X ─────────────────────────────────────────────────────
+    {
+        "name": "vargate_twitter_create_tweet",
+        "description": "Post a tweet on Twitter/X. Requires human approval for content review. Max 280 characters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Tweet text (max 280 characters)", "maxLength": 280},
+            },
+            "required": ["text"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "create_tweet",
+    },
+    {
+        "name": "vargate_twitter_delete_tweet",
+        "description": "Delete a tweet by ID. Requires human approval — destructive action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tweet_id": {"type": "string", "description": "ID of the tweet to delete"},
+            },
+            "required": ["tweet_id"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "delete_tweet",
+    },
+    {
+        "name": "vargate_twitter_get_tweets",
+        "description": "Get recent tweets for a user. Read-only — no approval required. Note: requires Twitter Basic tier ($100/mo).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "Twitter user ID"},
+                "max_results": {"type": "integer", "description": "Max tweets to return (default 10)", "default": 10},
+            },
+            "required": ["user_id"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "get_user_tweets",
+    },
 ]
 
 # Index by MCP tool name for quick lookup

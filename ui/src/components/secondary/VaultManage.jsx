@@ -95,6 +95,8 @@ export default function VaultManage() {
                 <option value="salesforce">Salesforce</option>
                 <option value="stripe">Stripe</option>
                 <option value="slack">Slack</option>
+                <option value="substack">Substack</option>
+                <option value="twitter">Twitter / X</option>
               </select>
             </div>
             <div>
