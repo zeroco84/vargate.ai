@@ -188,6 +188,17 @@ def _migration_11_managed_agents_tenant_flags(conn: sqlite3.Connection):
     conn.commit()
 
 
+def _migration_12_auto_approve_tools(conn: sqlite3.Connection):
+    """Add auto_approve_tools column to tenants for per-tenant auto-approve toggle."""
+    try:
+        conn.execute(
+            "ALTER TABLE tenants ADD COLUMN auto_approve_tools TEXT DEFAULT '[]'"
+        )
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    conn.commit()
+
+
 MIGRATIONS = [
     (1, "Baseline schema — all existing tables", lambda conn: None),
     (
@@ -227,6 +238,11 @@ MIGRATIONS = [
         11,
         "Sprint 14: managed_agents_enabled and governance_prompt_template on tenants",
         _migration_11_managed_agents_tenant_flags,
+    ),
+    (
+        12,
+        "Sprint 15: auto_approve_tools on tenants",
+        _migration_12_auto_approve_tools,
     ),
 ]
 

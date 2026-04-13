@@ -662,6 +662,30 @@ async def mcp_tools_call(
     if requires_human and allow:
         decision = "pending_approval"
 
+    # ── Auto-approve check ────────────────────────────────────────────
+    _auto_approved = False  # noqa: F841
+    if decision == "pending_approval" and not violations:
+        try:
+            auto_approve_raw = tenant.get("auto_approve_tools", "[]")
+            auto_approve_list = (
+                json.loads(auto_approve_raw)
+                if isinstance(auto_approve_raw, str)
+                else auto_approve_raw
+            )
+            tool_method_key = f"{vargate_tool}/{vargate_method}"
+            if tool_method_key in auto_approve_list:
+                _auto_approved = True  # noqa: F841
+                requires_human = False
+                decision = "allow"
+                violations = ["auto_approved"]
+                print(
+                    f"[AUTO-APPROVE] MCP action_id={action_id} {tool_method_key} "
+                    f"tenant={tenant_id}",
+                    flush=True,
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     # ── Brokered execution if allowed ──────────────────────────────────
     execution_mode = "agent_direct"
     execution_result = None

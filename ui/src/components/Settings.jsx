@@ -1,20 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { fetchDashboardMe, updateSettings, rotateApiKey } from '../api';
 
+const APPROVABLE_TOOLS = [
+  'substack/create_post',
+  'substack/create_note',
+  'substack/delete_note',
+  'twitter/create_tweet',
+  'twitter/delete_tweet',
+  'resend/send',
+  'gmail/send_email',
+  'salesforce/update_record',
+  'stripe/create_charge',
+  'stripe/create_transfer',
+  'slack/post_message',
+];
+
 export default function Settings({ onBack }) {
   const [me, setMe] = useState(null);
   const [publicDashboard, setPublicDashboard] = useState(false);
+  const [autoApprove, setAutoApprove] = useState([]);
   const [saving, setSaving] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [newKey, setNewKey] = useState('');
   const [copied, setCopied] = useState(false);
   const [msg, setMsg] = useState('');
+  const [addingRule, setAddingRule] = useState(false);
 
   useEffect(() => {
     fetchDashboardMe().then(d => {
       if (d) {
         setMe(d);
         setPublicDashboard(d.public_dashboard || false);
+        setAutoApprove(d.auto_approve_tools || []);
       }
     });
   }, []);
@@ -38,13 +55,34 @@ export default function Settings({ onBack }) {
     if (result && result.api_key) {
       setNewKey(result.api_key);
       setMsg('API key rotated successfully');
-      // Refresh me data
       fetchDashboardMe().then(setMe);
     } else {
       setMsg('Failed to rotate API key');
     }
     setRotating(false);
     setTimeout(() => setMsg(''), 5000);
+  };
+
+  const handleAddAutoApprove = async (toolMethod) => {
+    if (autoApprove.includes(toolMethod)) return;
+    const newList = [...autoApprove, toolMethod];
+    const result = await updateSettings({ auto_approve_tools: newList });
+    if (result) {
+      setAutoApprove(newList);
+      setMsg(`Auto-approve enabled for ${toolMethod}`);
+    }
+    setAddingRule(false);
+    setTimeout(() => setMsg(''), 3000);
+  };
+
+  const handleRemoveAutoApprove = async (toolMethod) => {
+    const newList = autoApprove.filter(t => t !== toolMethod);
+    const result = await updateSettings({ auto_approve_tools: newList });
+    if (result) {
+      setAutoApprove(newList);
+      setMsg(`Auto-approve disabled for ${toolMethod}`);
+    }
+    setTimeout(() => setMsg(''), 3000);
   };
 
   if (!me) return <div style={{ color: 'rgba(255,255,255,0.4)', padding: '40px', textAlign: 'center' }}>Loading...</div>;
@@ -55,6 +93,8 @@ export default function Settings({ onBack }) {
   };
   const labelStyle = { fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: '8px' };
   const valueStyle = { fontSize: '14px', color: '#e2e8f0' };
+
+  const availableToAdd = APPROVABLE_TOOLS.filter(t => !autoApprove.includes(t));
 
   return (
     <div style={{ maxWidth: '600px', margin: '0 auto', padding: '20px' }}>
@@ -113,6 +153,78 @@ export default function Settings({ onBack }) {
           style={{ padding: '10px 20px', borderRadius: '8px', border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)', color: '#ef4444', cursor: rotating ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: 500 }}>
           {rotating ? 'Rotating...' : 'Rotate API Key'}
         </button>
+      </div>
+
+      {/* Auto-Approve Rules */}
+      <div style={cardStyle}>
+        <div style={labelStyle}>Auto-Approve Rules</div>
+        <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.4)', marginBottom: '12px' }}>
+          Skip the approval queue for trusted tool/method combinations. OPA policy violations still block regardless.
+        </div>
+
+        {autoApprove.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+            {autoApprove.map(tm => (
+              <span key={tm} style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '5px 10px', borderRadius: '100px', fontSize: '12px', fontWeight: 500,
+                background: 'rgba(129,140,248,0.1)', color: '#818cf8',
+                border: '1px solid rgba(129,140,248,0.2)',
+              }}>
+                <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px' }}>{tm}</code>
+                <button
+                  onClick={() => handleRemoveAutoApprove(tm)}
+                  style={{
+                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
+                    cursor: 'pointer', padding: '0 2px', fontSize: '14px', lineHeight: 1,
+                  }}
+                  title={`Remove auto-approve for ${tm}`}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.25)', marginBottom: '12px', fontStyle: 'italic' }}>
+            No auto-approve rules configured. All governed actions require manual approval.
+          </div>
+        )}
+
+        {addingRule ? (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <select
+              className="select"
+              onChange={e => { if (e.target.value) handleAddAutoApprove(e.target.value); }}
+              defaultValue=""
+              style={{ fontSize: '12px' }}
+            >
+              <option value="">Select tool/method...</option>
+              {availableToAdd.map(tm => (
+                <option key={tm} value={tm}>{tm}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setAddingRule(false)}
+              style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'rgba(255,255,255,0.4)', padding: '6px 12px', cursor: 'pointer', fontSize: '12px' }}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setAddingRule(true)}
+            disabled={availableToAdd.length === 0}
+            style={{
+              padding: '8px 16px', borderRadius: '8px', border: '1px solid rgba(129,140,248,0.3)',
+              background: 'rgba(129,140,248,0.1)', color: '#818cf8',
+              cursor: availableToAdd.length === 0 ? 'not-allowed' : 'pointer',
+              fontSize: '13px', fontWeight: 500,
+            }}
+          >
+            + Add Rule
+          </button>
+        )}
       </div>
 
       {/* Public Dashboard */}

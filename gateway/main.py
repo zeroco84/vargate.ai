@@ -2151,6 +2151,30 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
             )
             requires_human = False  # blocked outright, no approval queue
 
+    # ── Sprint 15: Auto-approve check ─────────────────────────────
+    _auto_approved = False  # noqa: F841
+    if allowed and requires_human and not violations:
+        try:
+            auto_approve_raw = tenant.get("auto_approve_tools", "[]")
+            auto_approve_list = (
+                json.loads(auto_approve_raw)
+                if isinstance(auto_approve_raw, str)
+                else auto_approve_raw
+            )
+            tool_method_key = f"{req.tool}/{req.method}"
+            if tool_method_key in auto_approve_list:
+                _auto_approved = True  # noqa: F841
+                requires_human = False
+                decision_str = "allow"
+                violations = ["auto_approved"]
+                print(
+                    f"[AUTO-APPROVE] action_id={action_id} {tool_method_key} "
+                    f"tenant={tenant_id}",
+                    flush=True,
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     # ── Sprint 4: Human-approval queue ────────────────────────────
     pending_approval = False
     if allowed and requires_human:

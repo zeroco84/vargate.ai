@@ -36,6 +36,7 @@ class TenantSettingsRequest(BaseModel):
     webhook_url: Optional[str] = None  # Sprint 7.6
     webhook_events: Optional[list] = None  # Sprint 7.6
     failure_config: Optional[dict] = None  # Sprint 8.4
+    auto_approve_tools: Optional[list] = None  # Sprint 15
 
 
 class ApprovalRequest(BaseModel):
@@ -204,6 +205,13 @@ async def dashboard_me(
             if tenant_row and "anchor_chain" in tenant_row.keys()
             else "polygon"
         ),
+        "auto_approve_tools": (
+            json.loads(tenant_row["auto_approve_tools"])
+            if tenant_row
+            and "auto_approve_tools" in tenant_row.keys()
+            and tenant_row["auto_approve_tools"]
+            else []
+        ),
         "created_at": tenant["created_at"],
         "activated": activated,
         "stats": {
@@ -297,6 +305,36 @@ async def update_tenant_settings(
             conn.execute(
                 "UPDATE tenants SET failure_config = ? WHERE tenant_id = ?",
                 (json.dumps(req.failure_config), tenant["tenant_id"]),
+            )
+        if req.auto_approve_tools is not None:
+            # Validate: must be list of strings matching "tool/method" pattern
+            valid_tools = {
+                "substack/create_post",
+                "substack/create_note",
+                "substack/delete_note",
+                "twitter/create_tweet",
+                "twitter/delete_tweet",
+                "resend/send",
+                "gmail/send_email",
+                "salesforce/update_record",
+                "stripe/create_charge",
+                "stripe/create_transfer",
+                "slack/post_message",
+            }
+            for item in req.auto_approve_tools:
+                if not isinstance(item, str) or "/" not in item:
+                    raise HTTPException(
+                        400,
+                        f"Invalid auto_approve entry: {item}. Must be 'tool/method'.",
+                    )
+                if item not in valid_tools:
+                    raise HTTPException(
+                        400,
+                        f"Unknown tool/method: {item}. Valid: {sorted(valid_tools)}",
+                    )
+            conn.execute(
+                "UPDATE tenants SET auto_approve_tools = ? WHERE tenant_id = ?",
+                (json.dumps(req.auto_approve_tools), tenant["tenant_id"]),
             )
         conn.commit()
     finally:
