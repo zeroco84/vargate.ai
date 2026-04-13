@@ -4,17 +4,30 @@ Vargate's Twitter integration enables governed posting and management of tweets 
 
 ## Authentication
 
-Twitter API v2 uses an OAuth 2.0 Bearer token for authentication. Register it in Vargate's HSM vault:
+Twitter API v2 write endpoints (create/delete tweet) require **OAuth 1.0a User Context**. App-Only Bearer tokens do not work for writes.
+
+Register the credential in Vargate's HSM vault as a **JSON object**:
 
 - **Tool ID:** `twitter`
-- **Credential name:** `bearer_token`
+- **Credential name:** `api_key`
 
-To obtain a Bearer token:
+**Credential value (JSON):**
+```json
+{
+  "api_key": "your-consumer-api-key",
+  "api_secret": "your-consumer-api-secret",
+  "access_token": "your-user-access-token",
+  "access_secret": "your-user-access-token-secret"
+}
+```
+
+To obtain these keys:
 
 1. Create a project at [developer.x.com](https://developer.x.com)
-2. The free tier supports creating and deleting tweets
-3. Copy the Bearer token from the project dashboard
-4. Register it in Vargate via the UI (Settings > Vault Management) or API
+2. Enable **OAuth 1.0a** with Read and Write permissions in User Authentication Settings
+3. Generate or regenerate the Consumer Keys (API Key & Secret)
+4. Generate or regenerate the Access Token & Secret (with Read and Write scope)
+5. Paste the four values as a JSON object into the Vault Management credential field
 
 ## Tools
 
@@ -132,4 +145,4 @@ Twitter API v2 endpoints used:
 - **Delete tweet:** `DELETE https://api.twitter.com/2/tweets/:id`
 - **User tweets:** `GET https://api.twitter.com/2/users/:id/tweets` (Basic tier only)
 
-All requests use `Authorization: Bearer <token>` header. See [Twitter API v2 documentation](https://developer.x.com/en/docs/twitter-api) for full details.
+Write endpoints use OAuth 1.0a (HMAC-SHA1 signature). Read endpoints can use either OAuth 1.0a or App-Only Bearer token. See [Twitter API v2 documentation](https://developer.x.com/en/docs/twitter-api) for full details.

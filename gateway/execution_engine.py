@@ -526,13 +526,91 @@ async def _substack_delete_note(params: dict, session_cookie: str, start: float)
 
 # ── Twitter / X ────────────────────────────────────────────────────────────
 # Twitter API v2 (https://developer.x.com/en/docs/twitter-api)
-# Auth: OAuth 2.0 Bearer token (free tier supports create/delete tweets).
+# Write endpoints (create/delete tweet) require OAuth 1.0a User Context.
+# Read endpoints (get tweets) can use App-Only Bearer token.
+#
+# Credential format (stored as JSON in HSM vault):
+#   {"api_key": "...", "api_secret": "...", "access_token": "...", "access_secret": "..."}
 
 TWITTER_API_BASE = "https://api.twitter.com/2"
 
 
-async def _twitter_create_tweet(params: dict, bearer_token: str, start: float) -> dict:
-    """Create a tweet via Twitter API v2."""
+def _parse_twitter_credential(credential: str) -> dict:
+    """Parse Twitter credential — JSON with OAuth 1.0a keys."""
+    try:
+        cred = json.loads(credential)
+        if isinstance(cred, dict) and "api_key" in cred:
+            return cred
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # Fallback: treat as plain Bearer token (read-only endpoints)
+    return {"bearer_token": credential}
+
+
+def _oauth1_header(method: str, url: str, cred: dict, body: str = "") -> dict:
+    """Build OAuth 1.0a Authorization header for Twitter API v2.
+
+    Implements the OAuth 1.0a signature base string and HMAC-SHA1 signing
+    as specified by RFC 5849, using only stdlib modules.
+    """
+    import hashlib
+    import hmac
+    import base64
+    import urllib.parse
+
+    api_key = cred["api_key"]
+    api_secret = cred["api_secret"]
+    access_token = cred["access_token"]
+    access_secret = cred["access_secret"]
+
+    oauth_params = {
+        "oauth_consumer_key": api_key,
+        "oauth_nonce": os.urandom(16).hex(),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": access_token,
+        "oauth_version": "1.0",
+    }
+
+    # Parse URL query params
+    parsed = urllib.parse.urlparse(url)
+    query_params = dict(urllib.parse.parse_qsl(parsed.query))
+    base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+    # Combine all params for signature base string (exclude body for JSON requests)
+    all_params = {**query_params, **oauth_params}
+    param_string = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(str(v), safe='')}"
+        for k, v in sorted(all_params.items())
+    )
+
+    base_string = (
+        f"{method.upper()}&"
+        f"{urllib.parse.quote(base_url, safe='')}&"
+        f"{urllib.parse.quote(param_string, safe='')}"
+    )
+
+    signing_key = (
+        f"{urllib.parse.quote(api_secret, safe='')}&"
+        f"{urllib.parse.quote(access_secret, safe='')}"
+    )
+
+    signature = base64.b64encode(
+        hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
+    ).decode()
+
+    oauth_params["oauth_signature"] = signature
+
+    auth_header = "OAuth " + ", ".join(
+        f'{urllib.parse.quote(k, safe="")}="{urllib.parse.quote(v, safe="")}"'
+        for k, v in sorted(oauth_params.items())
+    )
+
+    return {"Authorization": auth_header}
+
+
+async def _twitter_create_tweet(params: dict, credential: str, start: float) -> dict:
+    """Create a tweet via Twitter API v2. Requires OAuth 1.0a User Context."""
     text = params.get("text", "")
     if not text:
         return {
@@ -541,16 +619,39 @@ async def _twitter_create_tweet(params: dict, bearer_token: str, start: float) -
             "simulated": False,
         }
 
+    if len(text) > 280:
+        return {
+            "result": {
+                "error": "tweet_too_long",
+                "length": len(text),
+                "max": 280,
+                "detail": f"Tweet is {len(text)} characters — Twitter limit is 280.",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    cred = _parse_twitter_credential(credential)
+    if "api_key" not in cred:
+        return {
+            "result": {
+                "error": "twitter_auth_error",
+                "detail": "Creating tweets requires OAuth 1.0a credentials. "
+                "Register a JSON credential with api_key, api_secret, access_token, access_secret.",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    url = f"{TWITTER_API_BASE}/tweets"
+    payload = json.dumps({"text": text})
+
     try:
+        auth_headers = _oauth1_header("POST", url, cred, payload)
+        auth_headers["Content-Type"] = "application/json"
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{TWITTER_API_BASE}/tweets",
-                json={"text": text},
-                headers={
-                    "Authorization": f"Bearer {bearer_token}",
-                    "Content-Type": "application/json",
-                },
-            )
+            resp = await client.post(url, content=payload, headers=auth_headers)
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             if resp.status_code in (200, 201):
@@ -590,8 +691,8 @@ async def _twitter_create_tweet(params: dict, bearer_token: str, start: float) -
         }
 
 
-async def _twitter_delete_tweet(params: dict, bearer_token: str, start: float) -> dict:
-    """Delete a tweet via Twitter API v2."""
+async def _twitter_delete_tweet(params: dict, credential: str, start: float) -> dict:
+    """Delete a tweet via Twitter API v2. Requires OAuth 1.0a User Context."""
     tweet_id = params.get("tweet_id")
     if not tweet_id:
         return {
@@ -600,12 +701,24 @@ async def _twitter_delete_tweet(params: dict, bearer_token: str, start: float) -
             "simulated": False,
         }
 
+    cred = _parse_twitter_credential(credential)
+    if "api_key" not in cred:
+        return {
+            "result": {
+                "error": "twitter_auth_error",
+                "detail": "Deleting tweets requires OAuth 1.0a credentials.",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    url = f"{TWITTER_API_BASE}/tweets/{tweet_id}"
+
     try:
+        auth_headers = _oauth1_header("DELETE", url, cred)
+
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.delete(
-                f"{TWITTER_API_BASE}/tweets/{tweet_id}",
-                headers={"Authorization": f"Bearer {bearer_token}"},
-            )
+            resp = await client.delete(url, headers=auth_headers)
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             if resp.status_code in (200, 204):
@@ -645,9 +758,10 @@ async def _twitter_delete_tweet(params: dict, bearer_token: str, start: float) -
         }
 
 
-async def _twitter_get_user_tweets(params: dict, bearer_token: str, start: float) -> dict:
+async def _twitter_get_user_tweets(params: dict, credential: str, start: float) -> dict:
     """Get recent tweets for a user via Twitter API v2.
 
+    Uses App-Only Bearer token (or OAuth 1.0a if available).
     Note: This endpoint requires the Basic ($100/mo) tier.
     Free tier returns 403.
     """
@@ -660,13 +774,21 @@ async def _twitter_get_user_tweets(params: dict, bearer_token: str, start: float
         }
 
     max_results = params.get("max_results", 10)
+    cred = _parse_twitter_credential(credential)
+    url = f"{TWITTER_API_BASE}/users/{user_id}/tweets"
+
+    # Use OAuth 1.0a if available, otherwise Bearer token
+    if "api_key" in cred:
+        auth_headers = _oauth1_header("GET", f"{url}?max_results={max_results}", cred)
+    else:
+        auth_headers = {"Authorization": f"Bearer {cred.get('bearer_token', credential)}"}
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
-                f"{TWITTER_API_BASE}/users/{user_id}/tweets",
+                url,
                 params={"max_results": max_results},
-                headers={"Authorization": f"Bearer {bearer_token}"},
+                headers=auth_headers,
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
 

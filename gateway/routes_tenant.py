@@ -574,10 +574,19 @@ async def approve_action(
             )
             if exec_resp:
                 execution_result = exec_resp
-                print(
-                    f"[APPROVED-EXEC] Executed action_id={action_id} tool={tool}.{method}",
-                    flush=True,
-                )
+                # Check if the execution itself returned an API error
+                inner = exec_resp.get("result", {}) if isinstance(exec_resp, dict) else {}
+                if "error" in inner:
+                    execution_error = inner.get("error", "unknown_error")
+                    print(
+                        f"[APPROVED-EXEC] API error action_id={action_id} tool={tool}.{method}: {execution_error}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[APPROVED-EXEC] Executed action_id={action_id} tool={tool}.{method}",
+                        flush=True,
+                    )
         except Exception as e:
             execution_error = str(e)
             print(f"[APPROVED-EXEC] ERROR action_id={action_id}: {e}", flush=True)
@@ -587,8 +596,25 @@ async def approve_action(
             f"[APPROVED-EXEC] WARN action_id={action_id}: {execution_error}", flush=True
         )
 
-    # Log the approval in the audit trail
+    # Persist execution result back to the original audit record and pending_actions
     conn = main.get_db()
+    try:
+        exec_result_json = json.dumps(execution_result) if execution_result else None
+        exec_ms = execution_result.get("execution_ms") if isinstance(execution_result, dict) else None
+        exec_mode = "vargate_brokered" if execution_result and not execution_error else "agent_direct"
+        conn.execute(
+            "UPDATE audit_log SET execution_result = ?, execution_latency_ms = ?, execution_mode = ? WHERE action_id = ?",
+            (exec_result_json, exec_ms, exec_mode, action_id),
+        )
+        conn.execute(
+            "UPDATE pending_actions SET execution_result = ? WHERE action_id = ?",
+            (exec_result_json, action_id),
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"[APPROVED-EXEC] Failed to persist execution result: {e}", flush=True)
+
+    # Log the approval in the audit trail
     try:
         exec_detail = {
             "target_action": action_id,
@@ -597,6 +623,8 @@ async def approve_action(
         }
         if execution_error:
             exec_detail["execution_error"] = execution_error
+        if execution_result:
+            exec_detail["execution_result"] = execution_result
         main.write_audit_record(
             conn,
             action_id=f"approval-{action_id}",
