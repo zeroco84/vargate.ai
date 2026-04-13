@@ -1,13 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { fetchCredentials, fetchCredentialAccessLog, registerCredential, deleteCredential, formatTime, truncate } from '../../api';
 
+const TWITTER_FIELDS = ['api_key', 'api_secret', 'access_token', 'access_secret'];
+
 export default function VaultManage() {
   const [credentials, setCredentials] = useState([]);
   const [accessLog, setAccessLog] = useState([]);
   const [toolId, setToolId] = useState('');
   const [credName, setCredName] = useState('api_key');
   const [credValue, setCredValue] = useState('');
+  const [twitterCreds, setTwitterCreds] = useState({ api_key: '', api_secret: '', access_token: '', access_secret: '' });
   const [status, setStatus] = useState(null);
+
+  const isTwitter = toolId === 'twitter';
+  const twitterReady = isTwitter && TWITTER_FIELDS.every(f => twitterCreds[f]);
 
   const refresh = async () => {
     const [creds, log] = await Promise.all([
@@ -22,13 +28,26 @@ export default function VaultManage() {
 
   const handleRegister = async (e) => {
     e.preventDefault();
-    if (!toolId || !credValue) return;
+    if (!toolId) return;
+
+    let name = credName;
+    let value = credValue;
+
+    if (isTwitter) {
+      if (!twitterReady) return;
+      name = 'api_key';
+      value = JSON.stringify(twitterCreds);
+    } else if (!credValue) {
+      return;
+    }
+
     setStatus(null);
-    const data = await registerCredential(toolId, credName, credValue);
+    const data = await registerCredential(toolId, name, value);
     if (data?.registered) {
-      setStatus({ type: 'ok', message: `✓ Credential registered for ${toolId}/${credName}` });
+      setStatus({ type: 'ok', message: `Credential registered for ${toolId}/${name}` });
       setToolId('');
       setCredValue('');
+      setTwitterCreds({ api_key: '', api_secret: '', access_token: '', access_secret: '' });
       refresh();
     } else {
       setStatus({ type: 'error', message: 'Registration failed' });
@@ -39,6 +58,8 @@ export default function VaultManage() {
     await deleteCredential(tid, name);
     refresh();
   };
+
+  const inputStyle = { width: '100%', boxSizing: 'border-box' };
 
   return (
     <div className="panel">
@@ -75,7 +96,7 @@ export default function VaultManage() {
                     style={{ padding: '2px 8px', fontSize: '0.68rem' }}
                     onClick={() => handleDelete(c.tool_id, c.name)}
                   >
-                    ✕ Remove
+                    Remove
                   </button>
                 </div>
               ))}
@@ -86,11 +107,13 @@ export default function VaultManage() {
         {/* Registration form */}
         <form onSubmit={handleRegister}>
           <div className="label" style={{ marginBottom: 'var(--space-sm)' }}>Register New Credential</div>
+
+          {/* Tool selector row */}
           <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', alignItems: 'end' }}>
             <div>
               <label className="label">Tool</label>
               <select className="select" value={toolId} onChange={e => setToolId(e.target.value)} style={{ width: '140px' }}>
-                <option value="">Select…</option>
+                <option value="">Select...</option>
                 <option value="gmail">Gmail</option>
                 <option value="salesforce">Salesforce</option>
                 <option value="stripe">Stripe</option>
@@ -99,25 +122,91 @@ export default function VaultManage() {
                 <option value="twitter">Twitter / X</option>
               </select>
             </div>
-            <div>
-              <label className="label">Name</label>
-              <input className="input" value={credName} onChange={e => setCredName(e.target.value)} style={{ width: '120px' }} />
-            </div>
-            <div>
-              <label className="label">Secret</label>
-              <input
-                className="input"
-                type="password"
-                value={credValue}
-                onChange={e => setCredValue(e.target.value)}
-                placeholder="••••••••"
-                style={{ width: '160px' }}
-              />
-            </div>
-            <button className="btn btn-success" type="submit" disabled={!toolId || !credValue}>
-              Register
-            </button>
+
+            {/* Standard single-secret form */}
+            {!isTwitter && (
+              <>
+                <div>
+                  <label className="label">Name</label>
+                  <input className="input" value={credName} onChange={e => setCredName(e.target.value)} style={{ width: '120px' }} />
+                </div>
+                <div>
+                  <label className="label">Secret</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={credValue}
+                    onChange={e => setCredValue(e.target.value)}
+                    placeholder="••••••••"
+                    style={{ width: '160px' }}
+                  />
+                </div>
+                <button className="btn btn-success" type="submit" disabled={!toolId || !credValue}>
+                  Register
+                </button>
+              </>
+            )}
           </div>
+
+          {/* Twitter OAuth 1.0a multi-field form */}
+          {isTwitter && (
+            <div style={{ marginTop: 'var(--space-md)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)' }}>
+                Twitter requires OAuth 1.0a. Enter all four keys from developer.x.com.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-sm)', maxWidth: '480px' }}>
+                <div>
+                  <label className="label">API Key</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={twitterCreds.api_key}
+                    onChange={e => setTwitterCreds(p => ({ ...p, api_key: e.target.value }))}
+                    placeholder="Consumer API Key"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label className="label">API Secret</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={twitterCreds.api_secret}
+                    onChange={e => setTwitterCreds(p => ({ ...p, api_secret: e.target.value }))}
+                    placeholder="Consumer API Secret"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label className="label">Access Token</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={twitterCreds.access_token}
+                    onChange={e => setTwitterCreds(p => ({ ...p, access_token: e.target.value }))}
+                    placeholder="Access Token"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label className="label">Access Secret</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={twitterCreds.access_secret}
+                    onChange={e => setTwitterCreds(p => ({ ...p, access_secret: e.target.value }))}
+                    placeholder="Access Token Secret"
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+              <div style={{ marginTop: 'var(--space-sm)' }}>
+                <button className="btn btn-success" type="submit" disabled={!twitterReady}>
+                  Register
+                </button>
+              </div>
+            </div>
+          )}
         </form>
 
         {status && (
