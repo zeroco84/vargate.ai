@@ -189,6 +189,7 @@ export default function App({ session, onLogout }) {
               anchorStatus={anchorStatus}
               anchorLog={anchorLog}
               anchorVerify={anchorVerify}
+              isPublic={isPublic}
             />
             <VaultPanel credentials={credentials} accessLog={accessLog} />
           </div>

@@ -16,9 +16,18 @@ router = APIRouter(tags=["Blockchain"])
 
 
 @router.post("/anchor/trigger")
-async def trigger_anchor():
-    """Trigger an immediate Merkle anchor to Sepolia (or fallback to legacy)."""
+async def trigger_anchor(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+):
+    """Trigger an immediate Merkle anchor to Sepolia (or fallback to legacy).
+    Requires authentication — admin-only action."""
     import main
+
+    # Require authenticated tenant (no public access)
+    tenant = await main.get_session_tenant(authorization, x_api_key, None)
+    if not tenant:
+        raise HTTPException(401, "Authentication required")
 
     # Prefer Sepolia Merkle anchoring
     if main.merkle_blockchain_client and main.merkle_blockchain_client.connected:

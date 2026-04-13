@@ -15,7 +15,7 @@ function explorerLink(chain, txHash) {
   return null;
 }
 
-export default function AnchorPanel({ anchorStatus, anchorLog, anchorVerify }) {
+export default function AnchorPanel({ anchorStatus, anchorLog, anchorVerify, isPublic }) {
   const [showHistory, setShowHistory] = useState(false);
   const [anchoring, setAnchoring] = useState(false);
 
@@ -118,9 +118,11 @@ export default function AnchorPanel({ anchorStatus, anchorLog, anchorVerify }) {
             )}
 
             <div style={{ display: 'flex', gap: 'var(--space-sm)', marginTop: 'var(--space-md)' }}>
-              <button className="btn btn-ghost" onClick={handleAnchorNow} disabled={anchoring}>
-                {anchoring ? 'Anchoring\u2026' : 'Anchor Now'}
-              </button>
+              {!isPublic && (
+                <button className="btn btn-ghost" onClick={handleAnchorNow} disabled={anchoring}>
+                  {anchoring ? 'Anchoring\u2026' : 'Anchor Now'}
+                </button>
+              )}
               <button className="btn btn-ghost" onClick={() => setShowHistory(!showHistory)}>
                 {showHistory ? 'Hide' : 'View History'}
               </button>
