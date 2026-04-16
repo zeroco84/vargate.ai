@@ -46,7 +46,7 @@ TOOL_ENDPOINTS = {
 }
 
 # Tools with real API execution (not mock)
-REAL_API_TOOLS = {"resend", "substack", "twitter"}
+REAL_API_TOOLS = {"resend", "substack", "twitter", "instagram"}
 
 
 async def execute_tool_call(
@@ -104,6 +104,9 @@ async def _execute_real_api(
 
     if tool == "twitter" and method == "get_user_tweets":
         return await _twitter_get_user_tweets(params, credential, start)
+
+    if tool == "instagram" and method == "create_post":
+        return await _instagram_create_post(params, credential, start)
 
     return {
         "result": {"error": f"unknown_real_method: {tool}/{method}"},
@@ -849,6 +852,186 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return {
             "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+# ── Instagram ──────────────────────────────────────────────────────────────
+# Instagram Graph API (https://developers.facebook.com/docs/instagram-api)
+# Content Publishing is a two-step flow:
+#   1. POST /{ig-user-id}/media   → creation_id
+#   2. POST /{ig-user-id}/media_publish  → media_id
+# Requires a Business or Creator IG account connected to a Facebook Page,
+# and a long-lived OAuth 2.0 access token with instagram_content_publish.
+#
+# Credential format (stored as JSON in HSM vault):
+#   {"access_token": "...", "ig_user_id": "..."}
+
+INSTAGRAM_API_BASE = "https://graph.facebook.com/v21.0"
+INSTAGRAM_CAPTION_MAX = 2200
+
+
+def _parse_instagram_credential(credential: str) -> dict:
+    """Parse Instagram credential — JSON with access_token and ig_user_id."""
+    try:
+        cred = json.loads(credential)
+        if isinstance(cred, dict) and "access_token" in cred and "ig_user_id" in cred:
+            return cred
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return {}
+
+
+async def _instagram_create_post(params: dict, credential: str, start: float) -> dict:
+    """Publish a single-image post via the Instagram Graph API.
+
+    Expected params: { "image_url": "<public https url>", "caption": "..." }
+    Instagram fetches the image from image_url — it must be a public HTTPS URL
+    pointing to a JPEG. No file uploads.
+    """
+    image_url = params.get("image_url", "")
+    caption = params.get("caption", "")
+
+    if not image_url:
+        return {
+            "result": {
+                "error": "image_url_required",
+                "detail": "Instagram requires a public HTTPS image_url. "
+                "Caption-only posts are not supported.",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    if not image_url.lower().startswith("https://"):
+        return {
+            "result": {
+                "error": "image_url_must_be_https",
+                "detail": f"image_url must be a public HTTPS URL; got: {image_url[:80]}",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    if len(caption) > INSTAGRAM_CAPTION_MAX:
+        return {
+            "result": {
+                "error": "caption_too_long",
+                "length": len(caption),
+                "max": INSTAGRAM_CAPTION_MAX,
+                "detail": (
+                    f"Caption is {len(caption)} characters — "
+                    f"Instagram limit is {INSTAGRAM_CAPTION_MAX}."
+                ),
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    cred = _parse_instagram_credential(credential)
+    if not cred:
+        return {
+            "result": {
+                "error": "instagram_auth_error",
+                "detail": "Instagram requires a JSON credential with "
+                "access_token and ig_user_id fields.",
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    access_token = cred["access_token"]
+    ig_user_id = cred["ig_user_id"]
+
+    create_url = f"{INSTAGRAM_API_BASE}/{ig_user_id}/media"
+    publish_url = f"{INSTAGRAM_API_BASE}/{ig_user_id}/media_publish"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Step 1 — create media container
+            create_resp = await client.post(
+                create_url,
+                data={
+                    "image_url": image_url,
+                    "caption": caption,
+                    "access_token": access_token,
+                },
+            )
+            if create_resp.status_code != 200:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                error_body = create_resp.text
+                try:
+                    error_body = create_resp.json()
+                except Exception:
+                    pass
+                return {
+                    "result": {
+                        "error": "instagram_api_error",
+                        "stage": "create_media",
+                        "status_code": create_resp.status_code,
+                        "detail": error_body,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            creation_id = create_resp.json().get("id")
+            if not creation_id:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                return {
+                    "result": {
+                        "error": "instagram_api_error",
+                        "stage": "create_media",
+                        "detail": "No creation_id returned by Instagram.",
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            # Step 2 — publish the container
+            publish_resp = await client.post(
+                publish_url,
+                data={
+                    "creation_id": creation_id,
+                    "access_token": access_token,
+                },
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if publish_resp.status_code == 200:
+                data = publish_resp.json()
+                return {
+                    "result": {
+                        "status": "post_created",
+                        "media_id": data.get("id"),
+                        "creation_id": creation_id,
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            error_body = publish_resp.text
+            try:
+                error_body = publish_resp.json()
+            except Exception:
+                pass
+            return {
+                "result": {
+                    "error": "instagram_api_error",
+                    "stage": "media_publish",
+                    "status_code": publish_resp.status_code,
+                    "creation_id": creation_id,
+                    "detail": error_body,
+                },
+                "execution_ms": elapsed_ms,
+                "simulated": False,
+            }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"instagram_execution_failed: {str(e)}"},
             "execution_ms": elapsed_ms,
             "simulated": False,
         }

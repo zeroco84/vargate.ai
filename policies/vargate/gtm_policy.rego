@@ -79,6 +79,15 @@ _is_twitter_publish if {
     input.action.method == "create_tweet"
 }
 
+# ── Instagram governance (Sprint 15) ───────────────────────────────────────
+
+# Publishing Instagram posts requires human approval for content review
+requires_human_approval if {
+    _is_gtm_tenant
+    input.action.tool == "instagram"
+    input.action.method == "create_post"
+}
+
 # ── GTM-specific violations ─────────────────────────────────────────────────
 
 # Block GTM agent from sending to consumer email domains

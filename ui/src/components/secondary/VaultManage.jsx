@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { fetchCredentials, fetchCredentialAccessLog, registerCredential, deleteCredential, formatTime, truncate } from '../../api';
 
 const TWITTER_FIELDS = ['api_key', 'api_secret', 'access_token', 'access_secret'];
+const INSTAGRAM_FIELDS = ['access_token', 'ig_user_id'];
 
 export default function VaultManage() {
   const [credentials, setCredentials] = useState([]);
@@ -10,10 +11,14 @@ export default function VaultManage() {
   const [credName, setCredName] = useState('api_key');
   const [credValue, setCredValue] = useState('');
   const [twitterCreds, setTwitterCreds] = useState({ api_key: '', api_secret: '', access_token: '', access_secret: '' });
+  const [instagramCreds, setInstagramCreds] = useState({ access_token: '', ig_user_id: '' });
   const [status, setStatus] = useState(null);
 
   const isTwitter = toolId === 'twitter';
+  const isInstagram = toolId === 'instagram';
   const twitterReady = isTwitter && TWITTER_FIELDS.every(f => twitterCreds[f]);
+  const instagramReady = isInstagram && INSTAGRAM_FIELDS.every(f => instagramCreds[f]);
+  const isMultiField = isTwitter || isInstagram;
 
   const refresh = async () => {
     const [creds, log] = await Promise.all([
@@ -37,6 +42,10 @@ export default function VaultManage() {
       if (!twitterReady) return;
       name = 'api_key';
       value = JSON.stringify(twitterCreds);
+    } else if (isInstagram) {
+      if (!instagramReady) return;
+      name = 'access_token';
+      value = JSON.stringify(instagramCreds);
     } else if (!credValue) {
       return;
     }
@@ -48,6 +57,7 @@ export default function VaultManage() {
       setToolId('');
       setCredValue('');
       setTwitterCreds({ api_key: '', api_secret: '', access_token: '', access_secret: '' });
+      setInstagramCreds({ access_token: '', ig_user_id: '' });
       refresh();
     } else {
       setStatus({ type: 'error', message: 'Registration failed' });
@@ -120,11 +130,12 @@ export default function VaultManage() {
                 <option value="slack">Slack</option>
                 <option value="substack">Substack</option>
                 <option value="twitter">Twitter / X</option>
+                <option value="instagram">Instagram</option>
               </select>
             </div>
 
             {/* Standard single-secret form */}
-            {!isTwitter && (
+            {!isMultiField && (
               <>
                 <div>
                   <label className="label">Name</label>
@@ -202,6 +213,45 @@ export default function VaultManage() {
               </div>
               <div style={{ marginTop: 'var(--space-sm)' }}>
                 <button className="btn btn-success" type="submit" disabled={!twitterReady}>
+                  Register
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Instagram Graph API form (access_token + ig_user_id) */}
+          {isInstagram && (
+            <div style={{ marginTop: 'var(--space-md)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 'var(--space-sm)' }}>
+                Instagram requires a long-lived Graph API access token with instagram_content_publish
+                permission, plus the connected IG Business/Creator user ID.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-sm)', maxWidth: '480px' }}>
+                <div>
+                  <label className="label">Access Token</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={instagramCreds.access_token}
+                    onChange={e => setInstagramCreds(p => ({ ...p, access_token: e.target.value }))}
+                    placeholder="Long-lived user token"
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label className="label">IG User ID</label>
+                  <input
+                    className="input"
+                    type="text"
+                    value={instagramCreds.ig_user_id}
+                    onChange={e => setInstagramCreds(p => ({ ...p, ig_user_id: e.target.value }))}
+                    placeholder="17841..."
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+              <div style={{ marginTop: 'var(--space-sm)' }}>
+                <button className="btn btn-success" type="submit" disabled={!instagramReady}>
                   Register
                 </button>
               </div>
