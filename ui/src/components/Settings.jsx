@@ -7,6 +7,7 @@ const APPROVABLE_TOOLS = [
   'substack/delete_note',
   'twitter/create_tweet',
   'twitter/delete_tweet',
+  'instagram/create_post',
   'resend/send',
   'gmail/send_email',
   'salesforce/update_record',
