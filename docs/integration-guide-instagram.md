@@ -81,6 +81,35 @@ Execution is a two-step Graph API flow:
 
 All `instagram.create_post` calls for the GTM tenant are routed through the human-approval queue (see `policies/vargate/gtm_policy.rego`). The agent submits the action; a human reviewer approves or rejects it; the proxy only calls the Instagram API after approval.
 
+## Image hosting
+
+Instagram fetches the image from a public HTTPS URL — it won't accept a file upload. Sera can use the Vargate-hosted media endpoint so she doesn't depend on third-party hosts:
+
+```bash
+curl -sS -X POST https://vargate.ai/api/v1/media/upload \
+  -H "X-API-Key: $VARGATE_API_KEY" \
+  -F "file=@/path/to/image.jpg"
+```
+
+Response:
+```json
+{
+  "url": "https://vargate.ai/media/<tenant>/<yyyy-mm>/<uuid>.jpg",
+  "size_bytes": 123456,
+  "expires_at": "2026-04-18T12:00:00+00:00"
+}
+```
+
+Pass the `url` as the `image_url` param to `instagram.create_post`.
+
+**Rules:**
+- Authentication required (same Bearer/API key used for the rest of the proxy)
+- JPEG only (Meta rejects PNG/WebP for feed posts); verified by magic bytes, not Content-Type
+- 8 MB max per file
+- Auto-deleted after ~48h — that's enough for the approval-to-publish window; once Instagram fetches, it caches on Meta's CDN
+
+Any other public HTTPS JPEG URL also works (S3, Cloudinary, etc.) — Vargate's endpoint is just the convenient default.
+
 ## Platform limits
 
 - **Rate limit:** 25 API-published posts per 24 hours per IG account

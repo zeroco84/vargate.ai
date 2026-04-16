@@ -1945,6 +1945,11 @@ async def startup():
     asyncio.create_task(_funnel_snapshot_loop())
     print("[USAGE] Product usage background tasks started.", flush=True)
 
+    # Start media retention cleanup (48h rolling window by default)
+    import media as _media
+    _media.start_cleanup_task()
+    print("[MEDIA] Retention cleanup task started.", flush=True)
+
     print("[VARGATE] Gateway started. Database initialised.", flush=True)
 
 
@@ -2843,6 +2848,7 @@ async def trigger_backup(request: Request, tenant: dict = Depends(get_session_te
 from compliance_export import router as compliance_router  # noqa: E402
 from control_plane import router as control_plane_router  # noqa: E402
 from mcp_server import router as mcp_server_router  # noqa: E402
+from media import router as media_router  # noqa: E402
 from routes_anchor import router as anchor_router  # noqa: E402
 from routes_audit import router as audit_router  # noqa: E402
 from routes_auth import router as auth_router  # noqa: E402
@@ -2855,3 +2861,4 @@ app.include_router(auth_router)
 app.include_router(compliance_router)
 app.include_router(control_plane_router)
 app.include_router(mcp_server_router)
+app.include_router(media_router)

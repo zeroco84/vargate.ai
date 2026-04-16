@@ -49,6 +49,9 @@ services:
       - audit-data:/data
       - backup-data:/backup
       - shared-data:/shared:ro
+      # Host-mounted media directory for Instagram image hosting.
+      # Host nginx serves the same directory at /media/ on vargate.ai.
+      - /var/www/vargate-media:/app/media_uploads
 
   # ── HSM ──────────────────────────────────────────────────────────────────────
   hsm:
