@@ -116,6 +116,58 @@ async def _execute_real_api(
     }
 
 
+_HTML_STRUCTURAL_TAGS = (
+    "<p>",
+    "<p ",
+    "<br>",
+    "<br/>",
+    "<br />",
+    "<div>",
+    "<div ",
+    "<html",
+    "<body",
+    "<table",
+    "<ul>",
+    "<ol>",
+    "<li>",
+    "<h1",
+    "<h2",
+    "<h3",
+    "<a ",
+)
+
+
+def _looks_like_html(body: str) -> bool:
+    """Detect whether a body string is HTML or plain text.
+
+    Stray angle brackets in plain text (URLs in ``<brackets>``, placeholders
+    like ``<TBD>``, ``<9am>``, etc.) should NOT trigger HTML treatment —
+    only actual structural tags do.
+    """
+    lowered = body.lower()
+    return any(tag in lowered for tag in _HTML_STRUCTURAL_TAGS)
+
+
+def _plain_text_to_html(body: str) -> str:
+    """Convert plain-text email body to valid HTML preserving line breaks.
+
+    Escapes HTML special characters so stray ``<`` / ``>`` in the body
+    render as literal text. Separates paragraphs on blank lines and
+    converts single newlines to ``<br>`` so formatting survives HTML
+    rendering in Gmail, Outlook, Apple Mail, etc.
+    """
+    import html as _html
+
+    escaped = _html.escape(body, quote=False)
+    paragraphs = [p for p in escaped.split("\n\n") if p.strip() != ""]
+    if not paragraphs:
+        return ""
+    rendered = "\n".join(
+        "<p>" + p.replace("\n", "<br>") + "</p>" for p in paragraphs
+    )
+    return rendered
+
+
 async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
     """Send an email via the Resend API (https://resend.com/docs/api-reference/emails/send-email)."""
     to_addr = params.get("to", "")
@@ -130,9 +182,16 @@ async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
         "text": body,
     }
 
-    # If body contains HTML tags, send as HTML too
-    if "<" in body and ">" in body:
-        payload["html"] = body
+    # Always send an HTML view alongside the plain text — most modern mail
+    # clients prefer HTML, and without one they'd render the plain text
+    # with inconsistent line-break handling.
+    #
+    # If the body is actually HTML (contains structural tags), pass it
+    # through unchanged. Otherwise treat it as plain text and convert
+    # newlines to paragraph/line breaks so formatting survives.
+    payload["html"] = (
+        body if _looks_like_html(body) else _plain_text_to_html(body)
+    )
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
