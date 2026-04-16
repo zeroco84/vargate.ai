@@ -6,6 +6,7 @@ Supports both mock tools (via mock server) and real APIs (Resend, etc.).
 Credential values are used for Authorization headers but never logged or stored.
 """
 
+import asyncio
 import json
 import os
 import time
@@ -870,6 +871,11 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
 
 INSTAGRAM_API_BASE = "https://graph.facebook.com/v21.0"
 INSTAGRAM_CAPTION_MAX = 2200
+# Meta processes uploaded media asynchronously. Publish fails with
+# "Media ID is not available" if we call /media_publish before the
+# container reaches status_code=FINISHED, so poll the container first.
+INSTAGRAM_PUBLISH_POLL_INTERVAL_S = 2.0
+INSTAGRAM_PUBLISH_POLL_TIMEOUT_S = 60.0
 
 
 def _parse_instagram_credential(credential: str) -> dict:
@@ -989,7 +995,59 @@ async def _instagram_create_post(params: dict, credential: str, start: float) ->
                     "simulated": False,
                 }
 
-            # Step 2 — publish the container
+            # Step 2 — wait until Meta finishes processing the media.
+            # Container status_code transitions IN_PROGRESS → FINISHED (or ERROR
+            # / EXPIRED). Publishing before FINISHED returns a misleading
+            # "Media ID is not available" error.
+            status_url = f"{INSTAGRAM_API_BASE}/{creation_id}"
+            deadline = time.monotonic() + INSTAGRAM_PUBLISH_POLL_TIMEOUT_S
+            last_status = None
+            while True:
+                status_resp = await client.get(
+                    status_url,
+                    params={
+                        "fields": "status_code,status",
+                        "access_token": access_token,
+                    },
+                )
+                if status_resp.status_code == 200:
+                    last_status = status_resp.json()
+                    code = last_status.get("status_code")
+                    if code == "FINISHED":
+                        break
+                    if code in ("ERROR", "EXPIRED"):
+                        elapsed_ms = int((time.monotonic() - start) * 1000)
+                        return {
+                            "result": {
+                                "error": "instagram_api_error",
+                                "stage": "status_poll",
+                                "creation_id": creation_id,
+                                "detail": last_status,
+                            },
+                            "execution_ms": elapsed_ms,
+                            "simulated": False,
+                        }
+                if time.monotonic() >= deadline:
+                    elapsed_ms = int((time.monotonic() - start) * 1000)
+                    return {
+                        "result": {
+                            "error": "instagram_publish_timeout",
+                            "stage": "status_poll",
+                            "creation_id": creation_id,
+                            "timeout_s": INSTAGRAM_PUBLISH_POLL_TIMEOUT_S,
+                            "last_status": last_status,
+                            "detail": (
+                                "Meta did not finish processing the media "
+                                "within the timeout. The creation_id may still "
+                                "finish; retry may succeed."
+                            ),
+                        },
+                        "execution_ms": elapsed_ms,
+                        "simulated": False,
+                    }
+                await asyncio.sleep(INSTAGRAM_PUBLISH_POLL_INTERVAL_S)
+
+            # Step 3 — publish the container now that it's FINISHED
             publish_resp = await client.post(
                 publish_url,
                 data={
