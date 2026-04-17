@@ -1,6 +1,19 @@
 import React from 'react';
 import { formatTime } from '../api';
 
+// Agents we publicly surface. IDs not in this allowlist are filtered out
+// of the panel regardless of whether they appear in the audit stream —
+// keeps smoke-test artefacts, deprecated IDs, and system-internal agents
+// (human-reviewer, media-upload, admin-cleanup) off the public dashboard.
+const PUBLIC_AGENTS = {
+  'sera-cmo-001': {
+    name: 'Sera',
+    title: 'CMO (AI)',
+    avatar: '/sera-avatar.png',
+    profileUrl: 'https://www.instagram.com/am.i.sera/',
+  },
+};
+
 export default function AgentPanel({ records }) {
   // Derive agent data from audit records
   const agents = {};
@@ -24,21 +37,12 @@ export default function AgentPanel({ records }) {
     }
   }
 
-  const agentList = Object.values(agents).sort((a, b) => b.total - a.total);
+  // Restrict to allowlisted public agents and sort by volume
+  const agentList = Object.values(agents)
+    .filter((a) => PUBLIC_AGENTS[a.id])
+    .sort((a, b) => b.total - a.total);
 
-  // Agent display names
-  const agentNames = {
-    'sera-gtm-001': { name: 'Sera', icon: null, avatar: '/sera-avatar.png' },
-    'agent-sales-eu-007': { name: 'Sales Agent EU', icon: '🦞' },
-    'agent-sales-001': { name: 'Sales Agent', icon: '💼' },
-    'agent-comms-001': { name: 'Comms Agent', icon: '📧' },
-    'agent-billing-001': { name: 'Billing Agent', icon: '💳' },
-    'agent-billing-002': { name: 'Billing Agent 2', icon: '💳' },
-    'agent-notify-001': { name: 'Notify Agent', icon: '🔔' },
-    'agent-bad-001': { name: 'Test Agent', icon: '🤖' },
-  };
-
-  const getAgent = (id) => agentNames[id] || { name: id.slice(0, 20), icon: '🤖' };
+  const getAgent = (id) => PUBLIC_AGENTS[id] || { name: id.slice(0, 20) };
 
   const anomalyBarColor = (score) => {
     if (score >= 0.7) return 'var(--accent-red)';
@@ -62,18 +66,36 @@ export default function AgentPanel({ records }) {
         )}
         {agentList.slice(0, 5).map((agent) => {
           const display = getAgent(agent.id);
+          const avatarInner = display.avatar ? (
+            <img src={display.avatar} alt={display.name} style={{
+              width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover',
+            }} />
+          ) : display.icon;
+          const avatar = display.profileUrl ? (
+            <a
+              href={display.profileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="agent-avatar"
+              title={`Visit ${display.name} on Instagram`}
+              style={{ display: 'inline-block', cursor: 'pointer' }}
+            >
+              {avatarInner}
+            </a>
+          ) : (
+            <div className="agent-avatar">{avatarInner}</div>
+          );
           return (
             <div key={agent.id}>
               <div className="agent-card">
-                <div className="agent-avatar">
-                  {display.avatar ? (
-                    <img src={display.avatar} alt={display.name} style={{
-                      width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover',
-                    }} />
-                  ) : display.icon}
-                </div>
+                {avatar}
                 <div className="agent-info">
                   <div className="agent-name">{display.name}</div>
+                  {display.title && (
+                    <div className="agent-id" style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                      {display.title}
+                    </div>
+                  )}
                   <div className="agent-id">{agent.id}</div>
                 </div>
               </div>
