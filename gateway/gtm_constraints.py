@@ -50,11 +50,14 @@ AI_DISCLOSURE_PATTERNS = [
     r"artificial\s+intelligence",
 ]
 
-# Brand-safety content filter. Applies to outbound tweets, emails, and
-# anywhere else we choose to wire it in. Matched case-insensitively with
-# word boundaries — "class" / "assume" / "pass" will NOT match.
+# Brand-safety content filters. Two categories, enforced across ALL tool
+# calls on any string parameter whose field name appears in
+# CONTENT_FIELD_NAMES. Matched case-insensitively with word boundaries —
+# "class" / "assume" / "pass" / "cucumber" will NOT match.
 # Edit freely. Each entry should be a specific spelling (including any
 # inflections you want caught); we don't try to be clever about variants.
+
+# Profanity / vulgar
 BLOCKED_PHRASES = {
     "fuck", "fucking", "fucked", "fucker", "fuckers", "fuckin",
     "shit", "shitty", "shitting", "bullshit",
@@ -65,10 +68,64 @@ BLOCKED_PHRASES = {
     "dickhead", "dickheads",
 }
 
-_BLOCKED_PHRASE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(p) for p in sorted(BLOCKED_PHRASES)) + r")\b",
-    re.IGNORECASE,
+# Explicit / sexual content
+EXPLICIT_PHRASES = {
+    "pussy", "pussies",
+    "cock", "cocks",
+    "suck", "sucks", "sucked", "sucking", "sucker", "suckers",
+    "cum", "cums", "cumming",
+    "tits", "titty", "titties",
+    "ass", "asses",
+    "orgasm", "orgasms", "orgasmic",
+    "spunk", "spunking",
+    "jizz", "jizzed", "jizzing",
+    "squirt", "squirts", "squirting", "squirted",
+    "blowjob", "blowjobs",
+    "handjob", "handjobs",
+    "anal",
+    "boobs", "boobies",
+    "horny",
+    "masturbate", "masturbating", "masturbation",
+    "porn", "porno", "pornography",
+    "nudes",
+    "boner", "boners",
+    "nipple", "nipples",
+    "erection", "erections",
+    "ejaculate", "ejaculates", "ejaculating", "ejaculation",
+    "cunnilingus", "fellatio",
+    "semen",
+    "vagina", "vaginas",
+    "penis", "penises",
+    "fetish", "fetishes",
+}
+
+# Tool-call parameter keys that should be scanned for content filters.
+# Covers the standard fields used by twitter (text), resend/gmail
+# (body, subject), substack (body, title, content), instagram (caption),
+# and future tools that follow similar conventions.
+CONTENT_FIELD_NAMES = (
+    "text",
+    "body",
+    "subject",
+    "caption",
+    "title",
+    "content",
+    "message",
+    "headline",
+    "description",
+    "name",
 )
+
+
+def _build_phrase_regex(phrases):
+    return re.compile(
+        r"\b(" + "|".join(re.escape(p) for p in sorted(phrases)) + r")\b",
+        re.IGNORECASE,
+    )
+
+
+_BLOCKED_PHRASE_RE = _build_phrase_regex(BLOCKED_PHRASES)
+_EXPLICIT_PHRASE_RE = _build_phrase_regex(EXPLICIT_PHRASES)
 
 
 # ── Database setup ─────────────────────────────────────────────────────────
@@ -118,7 +175,6 @@ def check_gtm_constraints(
     if _is_email_action(tool, method):
         recipient = _extract_recipient(params)
         body = _extract_body(params)
-        subject = params.get("subject", "") if isinstance(params, dict) else ""
 
         # 1. Recipient domain check
         if recipient:
@@ -167,38 +223,49 @@ def check_gtm_constraints(
                 }
             )
 
-        # 5. Profanity check on subject + body
-        match = _first_blocked_phrase(subject) or _first_blocked_phrase(body)
-        if match:
-            violations.append(
-                {
-                    "rule": "gtm_blocked_phrase",
-                    "detail": f"Email contains blocked phrase: '{match}'",
-                    "severity": "critical",
-                }
-            )
+    # ── Content filters (applies to ALL tool calls) ──
+    # Scan every string parameter whose field name is in CONTENT_FIELD_NAMES.
+    # A single match in any field blocks the whole call.
+    if isinstance(params, dict):
+        for field_name in CONTENT_FIELD_NAMES:
+            value = params.get(field_name)
+            if not isinstance(value, str) or not value:
+                continue
 
-    # ── Tweet check (profanity on the tweet text) ──
-    if tool == "twitter" and method == "create_tweet":
-        text = params.get("text", "") if isinstance(params, dict) else ""
-        match = _first_blocked_phrase(text)
-        if match:
-            violations.append(
-                {
-                    "rule": "gtm_blocked_phrase",
-                    "detail": f"Tweet contains blocked phrase: '{match}'",
-                    "severity": "critical",
-                }
-            )
+            profanity = _first_match(_BLOCKED_PHRASE_RE, value)
+            if profanity:
+                violations.append(
+                    {
+                        "rule": "gtm_blocked_phrase",
+                        "detail": (
+                            f"Field '{field_name}' on {tool}.{method} "
+                            f"contains blocked phrase: '{profanity}'"
+                        ),
+                        "severity": "critical",
+                    }
+                )
+
+            explicit = _first_match(_EXPLICIT_PHRASE_RE, value)
+            if explicit:
+                violations.append(
+                    {
+                        "rule": "gtm_explicit_content",
+                        "detail": (
+                            f"Field '{field_name}' on {tool}.{method} "
+                            f"contains explicit/sexual phrase: '{explicit}'"
+                        ),
+                        "severity": "critical",
+                    }
+                )
 
     return violations
 
 
-def _first_blocked_phrase(text: str) -> Optional[str]:
-    """Return the first blocked phrase found in text (lowercased), or None."""
+def _first_match(pattern: "re.Pattern[str]", text: str) -> Optional[str]:
+    """Return the first matching phrase (lowercased) in text, or None."""
     if not text:
         return None
-    m = _BLOCKED_PHRASE_RE.search(text)
+    m = pattern.search(text)
     return m.group(0).lower() if m else None
 
 

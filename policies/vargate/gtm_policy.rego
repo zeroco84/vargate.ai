@@ -115,32 +115,35 @@ violations contains msg if {
     msg := "gtm_daily_rate_exceeded"
 }
 
-# Brand-safety: block profane content in tweets and emails.
-# Keep this regex in sync with BLOCKED_PHRASES in gateway/gtm_constraints.py.
-# Uses case-insensitive word-boundary matching so "country" doesn't match
-# "cunt", "class" doesn't match anything via "ass", etc.
+# Brand-safety content filters: profanity and explicit content.
+# Applied to EVERY tool call on any string parameter whose field name is
+# in _content_fields. Keep the regexes in sync with BLOCKED_PHRASES /
+# EXPLICIT_PHRASES in gateway/gtm_constraints.py.
+# Word-boundary matching avoids false positives: "country" / "class" /
+# "cucumber" / "title" / "cocktail" will NOT match.
+
+_content_fields := {"text", "body", "subject", "caption", "title", "content", "message", "headline", "description", "name"}
+
 _blocked_phrase_regex := `(?i)\b(fuck|fucking|fucked|fucker|fuckers|fuckin|shit|shitty|shitting|bullshit|bitch|bitches|bitching|bastard|bastards|cunt|cunts|asshole|assholes|dickhead|dickheads)\b`
 
+_explicit_phrase_regex := `(?i)\b(pussy|pussies|cock|cocks|suck|sucks|sucked|sucking|sucker|suckers|cum|cums|cumming|tits|titty|titties|ass|asses|orgasm|orgasms|orgasmic|spunk|spunking|jizz|jizzed|jizzing|squirt|squirts|squirting|squirted|blowjob|blowjobs|handjob|handjobs|anal|boobs|boobies|horny|masturbate|masturbating|masturbation|porn|porno|pornography|nudes|boner|boners|nipple|nipples|erection|erections|ejaculate|ejaculates|ejaculating|ejaculation|cunnilingus|fellatio|semen|vagina|vaginas|penis|penises|fetish|fetishes)\b`
+
 violations contains msg if {
     _is_gtm_tenant
-    _is_email_action
-    regex.match(_blocked_phrase_regex, input.action.params.body)
+    some field in _content_fields
+    val := input.action.params[field]
+    is_string(val)
+    regex.match(_blocked_phrase_regex, val)
     msg := "gtm_blocked_phrase"
 }
 
 violations contains msg if {
     _is_gtm_tenant
-    _is_email_action
-    regex.match(_blocked_phrase_regex, input.action.params.subject)
-    msg := "gtm_blocked_phrase"
-}
-
-violations contains msg if {
-    _is_gtm_tenant
-    input.action.tool == "twitter"
-    input.action.method == "create_tweet"
-    regex.match(_blocked_phrase_regex, input.action.params.text)
-    msg := "gtm_blocked_phrase"
+    some field in _content_fields
+    val := input.action.params[field]
+    is_string(val)
+    regex.match(_explicit_phrase_regex, val)
+    msg := "gtm_explicit_content"
 }
 
 # ── Helper rules ────────────────────────────────────────────────────────────
