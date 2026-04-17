@@ -31,6 +31,7 @@ import ManagedSessionDetail from './components/ManagedSessionDetail';
 // API helpers
 import {
   fetchAuditLog,
+  fetchAuditAgents,
   fetchChainVerify,
   fetchBundleStatus,
   fetchAnchorStatus,
@@ -54,6 +55,7 @@ export default function App({ session, onLogout }) {
   const [records, setRecords] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [agents, setAgents] = useState([]);
   const [chain, setChain] = useState(null);
   const [policy, setPolicy] = useState(null);
   const [anchorStatus, setAnchorStatus] = useState(null);
@@ -75,9 +77,10 @@ export default function App({ session, onLogout }) {
   const PAGE_SIZE = 20;
 
   const refreshAll = useCallback(async () => {
-    const [auditData, chainData, policyData, anchorStat, anchorLogData, anchorVerifyData, credData, credLogData] =
+    const [auditData, agentsData, chainData, policyData, anchorStat, anchorLogData, anchorVerifyData, credData, credLogData] =
       await Promise.all([
         fetchAuditLog(INITIAL_RECORDS),
+        fetchAuditAgents(20),
         fetchChainVerify(),
         fetchBundleStatus(),
         fetchAnchorStatus(),
@@ -86,6 +89,8 @@ export default function App({ session, onLogout }) {
         fetchCredentials(),
         fetchCredentialAccessLog(),
       ]);
+
+    if (agentsData?.agents) setAgents(agentsData.agents);
 
     if (auditData?.records) {
       const newSet = new Set();
@@ -204,7 +209,7 @@ export default function App({ session, onLogout }) {
 
           {/* Left Column — Agent & Policy */}
           <div className="col-left">
-            <AgentPanel records={records} />
+            <AgentPanel agents={agents} />
             <PolicyPanel policy={policy} />
           </div>
 

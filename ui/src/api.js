@@ -56,6 +56,10 @@ export async function fetchAuditLog(limit = 200, offset = 0) {
   return fetchJSON(`/audit/log?limit=${limit}&offset=${offset}`);
 }
 
+export async function fetchAuditAgents(limit = 20) {
+  return fetchJSON(`/audit/agents?limit=${limit}`);
+}
+
 export async function fetchChainVerify() {
   return fetchJSON('/audit/verify');
 }

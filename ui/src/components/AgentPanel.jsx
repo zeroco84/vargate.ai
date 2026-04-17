@@ -14,32 +14,23 @@ const PUBLIC_AGENTS = {
   },
 };
 
-export default function AgentPanel({ records }) {
-  // Derive agent data from audit records
-  const agents = {};
-  for (const rec of records) {
-    if (!agents[rec.agent_id]) {
-      agents[rec.agent_id] = {
-        id: rec.agent_id,
-        tools: new Set(),
-        total: 0,
-        blocked: 0,
-        lastAction: rec.created_at,
-        anomalyScore: rec.anomaly_score_at_eval || 0,
-      };
-    }
-    const a = agents[rec.agent_id];
-    a.tools.add(rec.tool);
-    a.total++;
-    if (rec.decision === 'deny') a.blocked++;
-    if (rec.anomaly_score_at_eval > a.anomalyScore) {
-      a.anomalyScore = rec.anomaly_score_at_eval;
-    }
-  }
-
-  // Restrict to allowlisted public agents and sort by volume
-  const agentList = Object.values(agents)
-    .filter((a) => PUBLIC_AGENTS[a.id])
+export default function AgentPanel({ agents = [] }) {
+  // `agents` comes from the dedicated /audit/agents endpoint, which
+  // aggregates across the full tenant history — independent of the
+  // paginated activity-feed window.
+  //
+  // Normalise to the shape this panel expects, then restrict to the
+  // public allowlist.
+  const agentList = agents
+    .filter((a) => PUBLIC_AGENTS[a.agent_id])
+    .map((a) => ({
+      id: a.agent_id,
+      tools: a.tools || [],
+      total: a.total || 0,
+      blocked: a.blocked || 0,
+      lastAction: a.last_action,
+      anomalyScore: a.anomaly_score || 0,
+    }))
     .sort((a, b) => b.total - a.total);
 
   const getAgent = (id) => PUBLIC_AGENTS[id] || { name: id.slice(0, 20) };
@@ -103,7 +94,7 @@ export default function AgentPanel({ records }) {
               <div style={{ marginTop: 'var(--space-md)' }}>
                 <div className="agent-stat">
                   <span className="agent-stat-label">Tools</span>
-                  <span className="agent-stat-value">{[...agent.tools].join(', ')}</span>
+                  <span className="agent-stat-value">{(agent.tools || []).join(', ')}</span>
                 </div>
                 <div className="agent-stat">
                   <span className="agent-stat-label">Actions</span>

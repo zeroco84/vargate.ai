@@ -142,6 +142,61 @@ async def audit_log(
     }
 
 
+@router.get("/audit/agents", tags=["Audit"])
+async def audit_agents(
+    limit: int = Query(default=20, le=100),
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    """Return per-agent aggregates for the authenticated tenant.
+
+    Independent of the audit-log pagination window so the dashboard's
+    Supervised Agents panel always sees every agent that has activity,
+    not just agents represented in the current record slice.
+    """
+    import main
+
+    tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
+    conn = main.get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT agent_id,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) AS blocked,
+                   MAX(created_at) AS last_action,
+                   COALESCE(MAX(anomaly_score_at_eval), 0) AS anomaly_score,
+                   GROUP_CONCAT(DISTINCT tool) AS tools
+            FROM audit_log
+            WHERE tenant_id = ?
+            GROUP BY agent_id
+            ORDER BY total DESC
+            LIMIT ?
+            """,
+            (tenant["tenant_id"], limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    agents = []
+    for r in rows:
+        tools_raw = r["tools"] or ""
+        tools = sorted(t for t in tools_raw.split(",") if t)
+        agents.append(
+            {
+                "agent_id": r["agent_id"],
+                "total": r["total"] or 0,
+                "blocked": r["blocked"] or 0,
+                "last_action": r["last_action"],
+                "anomaly_score": r["anomaly_score"] or 0,
+                "tools": tools,
+            }
+        )
+
+    return {"agents": agents, "count": len(agents), "tenant_id": tenant["tenant_id"]}
+
+
 # ── Tamper simulation endpoints (DEMO ONLY) ─────────────────────────────────
 
 
