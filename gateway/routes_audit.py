@@ -71,20 +71,31 @@ async def audit_verify(
 @router.get("/audit/log", tags=["Audit"])
 async def audit_log(
     limit: int = Query(default=200, le=1000),
+    offset: int = Query(default=0, ge=0),
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
     x_vargate_public_tenant: Optional[str] = Header(default=None),
 ):
-    """Retrieve recent audit log records for the authenticated tenant."""
+    """Retrieve audit log records for the authenticated tenant.
+
+    Supports pagination via ``limit`` (max 1000) and ``offset``. The
+    response includes ``total`` so the caller knows when no more
+    records remain.
+    """
     import main
 
     tenant = await main.get_tenant(x_api_key, authorization, x_vargate_public_tenant)
     conn = main.get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM audit_log WHERE tenant_id = ? ORDER BY id DESC LIMIT ?",
-            (tenant["tenant_id"], limit),
+            "SELECT * FROM audit_log WHERE tenant_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (tenant["tenant_id"], limit, offset),
         ).fetchall()
+        total_row = conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ?",
+            (tenant["tenant_id"],),
+        ).fetchone()
+        total = total_row[0] if total_row else 0
     finally:
         conn.close()
 
@@ -122,7 +133,13 @@ async def audit_log(
         }
         records.append(rec)
 
-    return {"records": records, "count": len(records), "tenant_id": tenant["tenant_id"]}
+    return {
+        "records": records,
+        "count": len(records),
+        "offset": offset,
+        "total": total,
+        "tenant_id": tenant["tenant_id"],
+    }
 
 
 # ── Tamper simulation endpoints (DEMO ONLY) ─────────────────────────────────

@@ -1,15 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import ActivityCard from './ActivityCard';
 
-const INITIAL_VISIBLE = 10;
-const PAGE_SIZE = 20;
-
-export default function ActivityFeed({ records, newIds }) {
-  const [visible, setVisible] = useState(INITIAL_VISIBLE);
+export default function ActivityFeed({ records, newIds, total = 0, onLoadMore, loadingMore = false }) {
   const allowed = records.filter(r => r.decision === 'allow').length;
   const blocked = records.filter(r => r.decision === 'deny').length;
-  const shown = records.slice(0, visible);
-  const remaining = records.length - shown.length;
+  const remaining = Math.max(0, (total || records.length) - records.length);
 
   return (
     <div>
@@ -42,7 +37,7 @@ export default function ActivityFeed({ records, newIds }) {
             {blocked} blocked
           </span>
           <span style={{ color: 'var(--text-muted)' }}>
-            {records.length} total
+            {total || records.length} total
           </span>
         </div>
       </div>
@@ -60,7 +55,7 @@ export default function ActivityFeed({ records, newIds }) {
             </div>
           </div>
         )}
-        {shown.map((rec) => (
+        {records.map((rec) => (
           <ActivityCard
             key={rec.action_id}
             rec={rec}
@@ -72,19 +67,21 @@ export default function ActivityFeed({ records, newIds }) {
       {remaining > 0 && (
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 'var(--space-md)' }}>
           <button
-            onClick={() => setVisible(v => v + PAGE_SIZE)}
+            onClick={() => onLoadMore && onLoadMore()}
+            disabled={loadingMore || !onLoadMore}
             style={{
               padding: '8px 18px',
               borderRadius: '8px',
               border: '1px solid var(--border-subtle)',
               background: 'transparent',
               color: 'var(--text-secondary)',
-              cursor: 'pointer',
+              cursor: loadingMore ? 'not-allowed' : 'pointer',
               fontSize: '0.78rem',
               fontFamily: 'var(--font-mono)',
+              opacity: loadingMore ? 0.5 : 1,
             }}
           >
-            Show more ({remaining} more)
+            {loadingMore ? 'Loading…' : `Show more (${remaining} more)`}
           </button>
         </div>
       )}

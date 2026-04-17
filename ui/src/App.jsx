@@ -52,6 +52,8 @@ export default function App({ session, onLogout }) {
 
   // Data
   const [records, setRecords] = useState([]);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [chain, setChain] = useState(null);
   const [policy, setPolicy] = useState(null);
   const [anchorStatus, setAnchorStatus] = useState(null);
@@ -66,10 +68,16 @@ export default function App({ session, onLogout }) {
 
   // ── Fetch Data ─────────────────────────────────────────────────────────────
 
+  // Server-side pagination: fetch first 10 on init / each poll, merge new
+  // records at the top so the user's expanded view stays intact. More records
+  // are pulled on demand via loadMoreRecords().
+  const INITIAL_RECORDS = 10;
+  const PAGE_SIZE = 20;
+
   const refreshAll = useCallback(async () => {
     const [auditData, chainData, policyData, anchorStat, anchorLogData, anchorVerifyData, credData, credLogData] =
       await Promise.all([
-        fetchAuditLog(200),
+        fetchAuditLog(INITIAL_RECORDS),
         fetchChainVerify(),
         fetchBundleStatus(),
         fetchAnchorStatus(),
@@ -88,11 +96,18 @@ export default function App({ session, onLogout }) {
         }
       }
       setNewIds(newSet);
-      // Clear animation flags after delay
       if (newSet.size > 0) {
         setTimeout(() => setNewIds(new Set()), 1000);
       }
-      setRecords(auditData.records);
+      // Merge: add only not-yet-seen records to the top, preserving any
+      // older ones the user has revealed via loadMoreRecords().
+      setRecords(prev => {
+        if (prev.length === 0) return auditData.records;
+        const existing = new Set(prev.map(r => r.action_id));
+        const incoming = auditData.records.filter(r => !existing.has(r.action_id));
+        return incoming.length > 0 ? [...incoming, ...prev] : prev;
+      });
+      if (typeof auditData.total === 'number') setTotalRecords(auditData.total);
     }
 
     if (chainData) setChain(chainData);
@@ -103,6 +118,23 @@ export default function App({ session, onLogout }) {
     if (credData?.credentials) setCredentials(credData.credentials);
     if (credLogData?.entries) setAccessLog(credLogData.entries);
   }, []);
+
+  const loadMoreRecords = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const data = await fetchAuditLog(PAGE_SIZE, records.length);
+      if (data?.records?.length) {
+        setRecords(prev => {
+          const existing = new Set(prev.map(r => r.action_id));
+          const older = data.records.filter(r => !existing.has(r.action_id));
+          return [...prev, ...older];
+        });
+      }
+      if (typeof data?.total === 'number') setTotalRecords(data.total);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [records.length]);
 
   // ── Polling ────────────────────────────────────────────────────────────────
 
@@ -178,7 +210,13 @@ export default function App({ session, onLogout }) {
 
           {/* Centre Column — Live Activity Feed */}
           <div className="col-center">
-            <ActivityFeed records={records} newIds={newIds} />
+            <ActivityFeed
+              records={records}
+              newIds={newIds}
+              total={totalRecords}
+              onLoadMore={loadMoreRecords}
+              loadingMore={loadingMore}
+            />
           </div>
 
           {/* Right Column — Trust Indicators */}

@@ -52,8 +52,8 @@ export async function checkPublicDashboard(slug) {
 
 // ── Audit ────────────────────────────────────────────────────────────────────
 
-export async function fetchAuditLog(limit = 200) {
-  return fetchJSON(`/audit/log?limit=${limit}`);
+export async function fetchAuditLog(limit = 200, offset = 0) {
+  return fetchJSON(`/audit/log?limit=${limit}&offset=${offset}`);
 }
 
 export async function fetchChainVerify() {
