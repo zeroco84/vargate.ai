@@ -1,9 +1,26 @@
 import React from 'react';
 import ActivityCard from './ActivityCard';
 
+// Agent IDs whose audit records are hidden from the public activity feed.
+// These are smoke-test artefacts from dev work — the audit records still
+// exist (the hash chain is immutable) but they don't surface publicly.
+// Add new test IDs here rather than deleting records.
+const EXCLUDED_AGENTS = new Set([
+  's',
+  'smoke',
+  'test-agent',
+  'test-debug',
+  'managed-agent',
+  'admin-cleanup',
+]);
+
 export default function ActivityFeed({ records, newIds, total = 0, onLoadMore, loadingMore = false }) {
-  const allowed = records.filter(r => r.decision === 'allow').length;
-  const blocked = records.filter(r => r.decision === 'deny').length;
+  const visible = records.filter(r => !EXCLUDED_AGENTS.has(r.agent_id));
+  const allowed = visible.filter(r => r.decision === 'allow').length;
+  const blocked = visible.filter(r => r.decision === 'deny').length;
+  // Server still owns pagination state; client filtering is cosmetic.
+  // "remaining" reflects how many records are behind us on the server,
+  // whether or not they're visible after filtering.
   const remaining = Math.max(0, (total || records.length) - records.length);
 
   return (
@@ -37,14 +54,14 @@ export default function ActivityFeed({ records, newIds, total = 0, onLoadMore, l
             {blocked} blocked
           </span>
           <span style={{ color: 'var(--text-muted)' }}>
-            {total || records.length} total
+            {visible.length} shown · {total || records.length} total
           </span>
         </div>
       </div>
 
       {/* Cards */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
-        {records.length === 0 && (
+        {visible.length === 0 && (
           <div className="panel" style={{ textAlign: 'center', padding: 'var(--space-2xl)' }}>
             <div style={{ fontSize: '2rem', marginBottom: 'var(--space-md)' }}>📋</div>
             <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
@@ -55,7 +72,7 @@ export default function ActivityFeed({ records, newIds, total = 0, onLoadMore, l
             </div>
           </div>
         )}
-        {records.map((rec) => (
+        {visible.map((rec) => (
           <ActivityCard
             key={rec.action_id}
             rec={rec}
