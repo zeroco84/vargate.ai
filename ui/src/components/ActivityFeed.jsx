@@ -1,9 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ActivityCard from './ActivityCard';
 
+const INITIAL_VISIBLE = 10;
+const PAGE_SIZE = 20;
+
 export default function ActivityFeed({ records, newIds }) {
+  const [visible, setVisible] = useState(INITIAL_VISIBLE);
   const allowed = records.filter(r => r.decision === 'allow').length;
   const blocked = records.filter(r => r.decision === 'deny').length;
+  const shown = records.slice(0, visible);
+  const remaining = records.length - shown.length;
 
   return (
     <div>
@@ -54,7 +60,7 @@ export default function ActivityFeed({ records, newIds }) {
             </div>
           </div>
         )}
-        {records.map((rec) => (
+        {shown.map((rec) => (
           <ActivityCard
             key={rec.action_id}
             rec={rec}
@@ -62,6 +68,26 @@ export default function ActivityFeed({ records, newIds }) {
           />
         ))}
       </div>
+
+      {remaining > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 'var(--space-md)' }}>
+          <button
+            onClick={() => setVisible(v => v + PAGE_SIZE)}
+            style={{
+              padding: '8px 18px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-subtle)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontSize: '0.78rem',
+              fontFamily: 'var(--font-mono)',
+            }}
+          >
+            Show more ({remaining} more)
+          </button>
+        </div>
+      )}
     </div>
   );
 }
