@@ -10,6 +10,7 @@ import future.keywords.if
 import future.keywords.contains
 
 # All email_send actions on the GTM tenant require human approval
+# @tools gmail/send_email,resend/send,email/send
 requires_human_approval if {
     _is_gtm_tenant
     _is_email_action
@@ -36,6 +37,7 @@ requires_human_approval if {
 # ── Substack governance (Sprint 15) ────────────────────────────────────────
 
 # Creating Substack content (posts and notes) requires human approval for content review
+# @tools substack/create_post,substack/create_note
 requires_human_approval if {
     _is_gtm_tenant
     _is_substack_action
@@ -43,6 +45,7 @@ requires_human_approval if {
 }
 
 # Deleting Substack content requires human approval — destructive action
+# @tools substack/delete_note
 requires_human_approval if {
     _is_gtm_tenant
     _is_substack_action
@@ -59,12 +62,14 @@ _is_substack_action if {
 # ── Twitter / X governance (Sprint 15) ────────────────────────────────────
 
 # Publishing tweets requires human approval for content review
+# @tools twitter/create_tweet
 requires_human_approval if {
     _is_gtm_tenant
     _is_twitter_publish
 }
 
 # Deleting tweets requires human approval — destructive action
+# @tools twitter/delete_tweet
 requires_human_approval if {
     _is_gtm_tenant
     input.action.tool == "twitter"
@@ -82,6 +87,7 @@ _is_twitter_publish if {
 # ── Instagram governance (Sprint 15) ───────────────────────────────────────
 
 # Publishing Instagram posts requires human approval for content review
+# @tools instagram/create_post
 requires_human_approval if {
     _is_gtm_tenant
     input.action.tool == "instagram"

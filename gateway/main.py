@@ -1466,8 +1466,33 @@ async def list_policy_templates():
 
 
 @app.get("/policy/rules", tags=["Policy"])
-async def policy_rules():
-    """Parse active OPA policy files and return structured rule descriptions."""
+async def policy_rules(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_vargate_public_tenant: Optional[str] = Header(default=None),
+):
+    """Parse active OPA policy files and return structured rule descriptions.
+
+    If the caller is authenticated, rules tagged with ``# @tools t.m,...``
+    are cross-referenced against the tenant's ``auto_approve_tools`` list
+    and re-classified as ``auto_approved`` when every tagged tool is
+    currently auto-approved. This keeps the displayed policy surface
+    consistent with runtime behaviour.
+    """
+    # Try to resolve tenant (optional — endpoint works unauthenticated too)
+    tenant_auto_approve = set()
+    try:
+        tenant = await get_session_tenant(
+            authorization, x_api_key, x_vargate_public_tenant
+        )
+        raw = tenant.get("auto_approve_tools", "[]")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(parsed, list):
+            tenant_auto_approve = {str(t) for t in parsed}
+    except Exception:
+        # Unauthenticated or no tenant → no filtering, return raw rule list
+        tenant_auto_approve = set()
+
     rules = []
     policy_dir = (
         "/app/policies"
@@ -1499,6 +1524,7 @@ async def policy_rules():
             # Extract violation rules: "violations contains msg if {"
             in_violation = False
             current_comment = ""
+            current_tools: list[str] = []
             block_lines = []
             brace_depth = 0
 
@@ -1508,6 +1534,14 @@ async def policy_rules():
                 # Capture comments above rules
                 if stripped.startswith("#") and not in_violation:
                     comment_text = stripped.lstrip("#").strip()
+                    # @tools metadata: "# @tools twitter.create_tweet,resend.send"
+                    if comment_text.startswith("@tools "):
+                        current_tools = [
+                            t.strip()
+                            for t in comment_text[len("@tools "):].split(",")
+                            if t.strip()
+                        ]
+                        continue
                     if (
                         comment_text
                         and not comment_text.startswith("──")
@@ -1538,29 +1572,55 @@ async def policy_rules():
                                 or _rule_id_to_description(rule_id),
                                 "type": "deny",
                                 "source": fname,
+                                "tools": current_tools,
                             }
                         )
                         in_violation = False
                         current_comment = ""
+                        current_tools = []
                     continue
 
                 # requires_human_approval rules
                 if "requires_human_approval if" in stripped:
                     desc = current_comment or "Requires human approval"
-                    rules.append(
-                        {
-                            "id": f"requires_human_approval:{desc}",
-                            "description": desc,
-                            "type": "approval",
-                            "source": fname,
-                        }
-                    )
+                    # Split per-tool so each can be classified individually.
+                    # A rule that covers {gmail, resend, email} shows as three
+                    # display entries, each auto_approved or approval based on
+                    # that specific tool's presence in auto_approve_tools.
+                    if current_tools:
+                        for t in current_tools:
+                            rule_type = (
+                                "auto_approved"
+                                if t in tenant_auto_approve
+                                else "approval"
+                            )
+                            rules.append(
+                                {
+                                    "id": f"requires_human_approval:{desc}:{t}",
+                                    "description": desc,
+                                    "type": rule_type,
+                                    "source": fname,
+                                    "tools": [t],
+                                }
+                            )
+                    else:
+                        rules.append(
+                            {
+                                "id": f"requires_human_approval:{desc}",
+                                "description": desc,
+                                "type": "approval",
+                                "source": fname,
+                                "tools": [],
+                            }
+                        )
                     current_comment = ""
+                    current_tools = []
                     continue
 
                 # Reset comment if we hit a non-comment, non-rule line
                 if stripped and not stripped.startswith("#"):
                     current_comment = ""
+                    current_tools = []
 
         except Exception as e:
             print(f"[POLICY] Error parsing {fpath}: {e}", flush=True)
