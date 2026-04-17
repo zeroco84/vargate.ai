@@ -50,6 +50,26 @@ AI_DISCLOSURE_PATTERNS = [
     r"artificial\s+intelligence",
 ]
 
+# Brand-safety content filter. Applies to outbound tweets, emails, and
+# anywhere else we choose to wire it in. Matched case-insensitively with
+# word boundaries — "class" / "assume" / "pass" will NOT match.
+# Edit freely. Each entry should be a specific spelling (including any
+# inflections you want caught); we don't try to be clever about variants.
+BLOCKED_PHRASES = {
+    "fuck", "fucking", "fucked", "fucker", "fuckers", "fuckin",
+    "shit", "shitty", "shitting", "bullshit",
+    "bitch", "bitches", "bitching",
+    "bastard", "bastards",
+    "cunt", "cunts",
+    "asshole", "assholes",
+    "dickhead", "dickheads",
+}
+
+_BLOCKED_PHRASE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in sorted(BLOCKED_PHRASES)) + r")\b",
+    re.IGNORECASE,
+)
+
 
 # ── Database setup ─────────────────────────────────────────────────────────
 
@@ -94,61 +114,92 @@ def check_gtm_constraints(
     """
     violations = []
 
-    # Only check email-sending actions
-    if not _is_email_action(tool, method):
-        return violations
+    # ── Email-only checks (domain, daily cap, cooldown, AI disclosure) ──
+    if _is_email_action(tool, method):
+        recipient = _extract_recipient(params)
+        body = _extract_body(params)
+        subject = params.get("subject", "") if isinstance(params, dict) else ""
 
-    recipient = _extract_recipient(params)
-    body = _extract_body(params)
+        # 1. Recipient domain check
+        if recipient:
+            domain = recipient.split("@")[-1].lower() if "@" in recipient else ""
+            if domain in BLOCKED_DOMAINS:
+                violations.append(
+                    {
+                        "rule": "gtm_blocked_domain",
+                        "detail": f"Recipient domain '{domain}' is on the blocked list",
+                        "severity": "critical",
+                    }
+                )
 
-    # 1. Recipient domain check
-    if recipient:
-        domain = recipient.split("@")[-1].lower() if "@" in recipient else ""
-        if domain in BLOCKED_DOMAINS:
+        # 2. Daily send cap
+        daily_count = _get_daily_send_count(conn, tenant_id)
+        if daily_count >= DAILY_SEND_CAP:
             violations.append(
                 {
-                    "rule": "gtm_blocked_domain",
-                    "detail": f"Recipient domain '{domain}' is on the blocked list",
+                    "rule": "gtm_daily_cap_exceeded",
+                    "detail": f"Daily send limit ({DAILY_SEND_CAP}) reached ({daily_count} sent today)",
+                    "severity": "high",
+                }
+            )
+
+        # 3. Cooldown check
+        if recipient:
+            last_contact = _get_last_contact(conn, tenant_id, recipient)
+            if last_contact:
+                days_since = (datetime.now(timezone.utc) - last_contact).days
+                if days_since < COOLDOWN_DAYS:
+                    violations.append(
+                        {
+                            "rule": "gtm_cooldown_active",
+                            "detail": f"Recipient contacted {days_since} days ago (cooldown: {COOLDOWN_DAYS} days)",
+                            "severity": "high",
+                        }
+                    )
+
+        # 4. AI disclosure check
+        if body and not _has_ai_disclosure(body):
+            violations.append(
+                {
+                    "rule": "gtm_missing_ai_disclosure",
+                    "detail": "Email body does not contain required AI disclosure statement",
+                    "severity": "medium",
+                }
+            )
+
+        # 5. Profanity check on subject + body
+        match = _first_blocked_phrase(subject) or _first_blocked_phrase(body)
+        if match:
+            violations.append(
+                {
+                    "rule": "gtm_blocked_phrase",
+                    "detail": f"Email contains blocked phrase: '{match}'",
                     "severity": "critical",
                 }
             )
 
-    # 2. Daily send cap
-    daily_count = _get_daily_send_count(conn, tenant_id)
-    if daily_count >= DAILY_SEND_CAP:
-        violations.append(
-            {
-                "rule": "gtm_daily_cap_exceeded",
-                "detail": f"Daily send limit ({DAILY_SEND_CAP}) reached ({daily_count} sent today)",
-                "severity": "high",
-            }
-        )
-
-    # 3. Cooldown check
-    if recipient:
-        last_contact = _get_last_contact(conn, tenant_id, recipient)
-        if last_contact:
-            days_since = (datetime.now(timezone.utc) - last_contact).days
-            if days_since < COOLDOWN_DAYS:
-                violations.append(
-                    {
-                        "rule": "gtm_cooldown_active",
-                        "detail": f"Recipient contacted {days_since} days ago (cooldown: {COOLDOWN_DAYS} days)",
-                        "severity": "high",
-                    }
-                )
-
-    # 4. AI disclosure check
-    if body and not _has_ai_disclosure(body):
-        violations.append(
-            {
-                "rule": "gtm_missing_ai_disclosure",
-                "detail": "Email body does not contain required AI disclosure statement",
-                "severity": "medium",
-            }
-        )
+    # ── Tweet check (profanity on the tweet text) ──
+    if tool == "twitter" and method == "create_tweet":
+        text = params.get("text", "") if isinstance(params, dict) else ""
+        match = _first_blocked_phrase(text)
+        if match:
+            violations.append(
+                {
+                    "rule": "gtm_blocked_phrase",
+                    "detail": f"Tweet contains blocked phrase: '{match}'",
+                    "severity": "critical",
+                }
+            )
 
     return violations
+
+
+def _first_blocked_phrase(text: str) -> Optional[str]:
+    """Return the first blocked phrase found in text (lowercased), or None."""
+    if not text:
+        return None
+    m = _BLOCKED_PHRASE_RE.search(text)
+    return m.group(0).lower() if m else None
 
 
 def record_send(
