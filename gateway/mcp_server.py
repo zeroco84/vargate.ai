@@ -306,6 +306,68 @@ TOOL_CATALOG = [
         "_vargate_tool": "twitter",
         "_vargate_method": "get_user_tweets",
     },
+    {
+        "name": "vargate_instagram_create_post",
+        "description": (
+            "Publish a single-image post to Instagram via the Graph API. "
+            "image_url must be a public HTTPS JPEG URL (use "
+            "POST /api/v1/media/upload to host one). Caption max 2200 "
+            "characters. Publishing requires human approval unless the "
+            "tenant has auto-approved instagram/create_post."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image_url": {
+                    "type": "string",
+                    "description": (
+                        "Public HTTPS URL of a JPEG image for Instagram to "
+                        "fetch. PNG/WebP are rejected."
+                    ),
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "Post caption, up to 2200 characters.",
+                },
+            },
+            "required": ["image_url"],
+        },
+        "_vargate_tool": "instagram",
+        "_vargate_method": "create_post",
+    },
+    {
+        "name": "vargate_resend_send",
+        "description": (
+            "Send an email via Resend. Subject to governance: blocked "
+            "consumer/competitor domains, daily cap, 30-day per-recipient "
+            "cooldown, and required AI disclosure in the body. Requires "
+            "human approval unless the tenant has auto-approved resend/send."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address.",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": (
+                        "Email body. Plain text with \\n line breaks is fine; "
+                        "structural HTML (<p>, <br>, etc.) is also accepted. "
+                        "Must include an AI disclosure phrase."
+                    ),
+                },
+            },
+            "required": ["to", "subject", "body"],
+        },
+        "_vargate_tool": "resend",
+        "_vargate_method": "send",
+    },
 ]
 
 # Index by MCP tool name for quick lookup
