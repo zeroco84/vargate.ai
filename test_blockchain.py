@@ -23,6 +23,14 @@ ANCHOR_STATUS_URL = f"{GATEWAY_URL}/anchor/status"
 TAMPER_URL = f"{GATEWAY_URL}/audit/tamper-simulate"
 RESTORE_URL = f"{GATEWAY_URL}/audit/tamper-restore"
 
+# /anchor/trigger is admin-only. In CI we pick up the default-tenant API
+# key via env var seeded by scripts/ci-seed.sh; locally a user can set
+# VARGATE_API_KEY directly. If unset, requests go unauthenticated (the
+# test will note the 401 and the rest of the chain verification still
+# exercises the read-only endpoints).
+ADMIN_API_KEY = os.environ.get("VARGATE_API_KEY", "")
+_AUTH_HEADERS = {"X-API-Key": ADMIN_API_KEY} if ADMIN_API_KEY else {}
+
 # ── ANSI colours ─────────────────────────────────────────────────────────────
 
 GREEN = "\033[92m"
@@ -184,7 +192,7 @@ def main():
     print_step(3, "Trigger an anchor")
 
     try:
-        anchor_resp = requests.post(ANCHOR_TRIGGER_URL, timeout=30).json()
+        anchor_resp = requests.post(ANCHOR_TRIGGER_URL, headers=_AUTH_HEADERS, timeout=30).json()
         print(f"  {GREEN}✓ Anchor submitted{RESET}")
         print(f"  {DIM}Chain tip:    {anchor_resp['chain_tip_hash'][:16]}...{RESET}")
         print(f"  {DIM}Record count: {anchor_resp['record_count']}{RESET}")
@@ -227,7 +235,7 @@ def main():
 
     print_step(6, "Trigger second anchor")
 
-    anchor_resp = requests.post(ANCHOR_TRIGGER_URL, timeout=30).json()
+    anchor_resp = requests.post(ANCHOR_TRIGGER_URL, headers=_AUTH_HEADERS, timeout=30).json()
     verify_resp = requests.get(ANCHOR_VERIFY_URL, timeout=5).json()
 
     if verify_resp.get("match"):
@@ -313,7 +321,7 @@ def main():
     # After tamper-restore, chain should be valid but anchor may not match
     # because new records were written during the test. Trigger final anchor.
     if not anchor_match:
-        requests.post(ANCHOR_TRIGGER_URL, timeout=30)
+        requests.post(ANCHOR_TRIGGER_URL, headers=_AUTH_HEADERS, timeout=30)
         anchor_result = requests.get(ANCHOR_VERIFY_URL, timeout=5).json()
         anchor_match = anchor_result.get("match", False)
 
