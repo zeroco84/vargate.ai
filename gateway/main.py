@@ -1538,7 +1538,7 @@ async def policy_rules(
                     if comment_text.startswith("@tools "):
                         current_tools = [
                             t.strip()
-                            for t in comment_text[len("@tools "):].split(",")
+                            for t in comment_text[len("@tools ") :].split(",")
                             if t.strip()
                         ]
                         continue
@@ -2007,6 +2007,7 @@ async def startup():
 
     # Start media retention cleanup (48h rolling window by default)
     import media as _media
+
     _media.start_cleanup_task()
     print("[MEDIA] Retention cleanup task started.", flush=True)
 

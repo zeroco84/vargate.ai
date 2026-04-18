@@ -162,9 +162,7 @@ def _plain_text_to_html(body: str) -> str:
     paragraphs = [p for p in escaped.split("\n\n") if p.strip() != ""]
     if not paragraphs:
         return ""
-    rendered = "\n".join(
-        "<p>" + p.replace("\n", "<br>") + "</p>" for p in paragraphs
-    )
+    rendered = "\n".join("<p>" + p.replace("\n", "<br>") + "</p>" for p in paragraphs)
     return rendered
 
 
@@ -189,9 +187,7 @@ async def _resend_send_email(params: dict, api_key: str, start: float) -> dict:
     # If the body is actually HTML (contains structural tags), pass it
     # through unchanged. Otherwise treat it as plain text and convert
     # newlines to paragraph/line breaks so formatting survives.
-    payload["html"] = (
-        body if _looks_like_html(body) else _plain_text_to_html(body)
-    )
+    payload["html"] = body if _looks_like_html(body) else _plain_text_to_html(body)
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", "/app/media_uploads"))
 MEDIA_RETENTION_HOURS = int(os.environ.get("MEDIA_RETENTION_HOURS", "48"))
@@ -138,8 +138,7 @@ async def upload_media(
         "url": public_url,
         "size_bytes": len(data),
         "expires_at": (
-            datetime.now(timezone.utc)
-            + timedelta(hours=MEDIA_RETENTION_HOURS)
+            datetime.now(timezone.utc) + timedelta(hours=MEDIA_RETENTION_HOURS)
         ).isoformat(),
     }
 
@@ -161,9 +160,7 @@ async def _cleanup_loop():
 def _run_cleanup_once():
     if not MEDIA_ROOT.exists():
         return
-    cutoff = datetime.now(timezone.utc).timestamp() - (
-        MEDIA_RETENTION_HOURS * 3600
-    )
+    cutoff = datetime.now(timezone.utc).timestamp() - (MEDIA_RETENTION_HOURS * 3600)
     deleted = 0
     for path in MEDIA_ROOT.rglob("*.jpg"):
         try:
@@ -177,8 +174,11 @@ def _run_cleanup_once():
         if month_dir.is_dir() and not any(month_dir.iterdir()):
             month_dir.rmdir()
     if deleted:
-        print(f"[MEDIA-CLEANUP] deleted {deleted} files older than "
-              f"{MEDIA_RETENTION_HOURS}h", flush=True)
+        print(
+            f"[MEDIA-CLEANUP] deleted {deleted} files older than "
+            f"{MEDIA_RETENTION_HOURS}h",
+            flush=True,
+        )
 
 
 def start_cleanup_task(loop=None):
