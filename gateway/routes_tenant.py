@@ -307,13 +307,20 @@ async def update_tenant_settings(
                 (json.dumps(req.failure_config), tenant["tenant_id"]),
             )
         if req.auto_approve_tools is not None:
-            # Validate: must be list of strings matching "tool/method" pattern
+            # Validate: must be list of strings matching "tool/method" pattern.
+            # Keep this set in sync with APPROVABLE_TOOLS in
+            # ui/src/components/Settings.jsx and with the MCP tool catalog
+            # in gateway/mcp_server.py.
             valid_tools = {
                 "substack/create_post",
                 "substack/create_note",
                 "substack/delete_note",
                 "twitter/create_tweet",
                 "twitter/delete_tweet",
+                "twitter/follow_user",
+                "twitter/unfollow_user",
+                "twitter/send_dm",
+                "instagram/create_post",
                 "resend/send",
                 "gmail/send_email",
                 "salesforce/update_record",

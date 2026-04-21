@@ -6,12 +6,18 @@ import ActivityCard from './ActivityCard';
 // exist (the hash chain is immutable) but they don't surface publicly.
 // Add new test IDs here rather than deleting records.
 const EXCLUDED_AGENTS = new Set([
+  // Smoke-test artefacts
   's',
   'smoke',
   'test-agent',
   'test-debug',
   'managed-agent',
   'admin-cleanup',
+  // test_demo.py scenario agents (pollute the feed if the demo script
+  // is ever run against a live stack; agent IDs are fixed in the script)
+  'agent-sales-eu-007',
+  'agent-finance-eu-001',
+  'agent-ops-us-002',
 ]);
 
 export default function ActivityFeed({ records, newIds, total = 0, onLoadMore, loadingMore = false }) {

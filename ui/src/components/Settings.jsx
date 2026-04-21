@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { fetchDashboardMe, updateSettings, rotateApiKey } from '../api';
 
+// Keep in sync with valid_tools in gateway/routes_tenant.py and with
+// @tools annotations in policies/vargate/gtm_policy.rego.
 const APPROVABLE_TOOLS = [
   'substack/create_post',
   'substack/create_note',
   'substack/delete_note',
   'twitter/create_tweet',
   'twitter/delete_tweet',
+  'twitter/follow_user',
+  'twitter/unfollow_user',
+  'twitter/send_dm',
   'instagram/create_post',
   'resend/send',
   'gmail/send_email',
