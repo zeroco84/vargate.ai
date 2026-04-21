@@ -112,12 +112,13 @@ Get recent tweets for a user. Read-only.
 
 **Governance:** Allowed without human approval (read-only).
 
-**Free tier limitation:** This endpoint requires the Twitter Basic plan ($100/mo). On the free tier it returns a clear error:
+**Credit-based pricing:** Twitter API v2 uses credits, not tiers. Each call consumes credits; top up at developer.x.com. If your account runs out, the endpoint returns a clean structured error:
 ```json
 {
-  "error": "twitter_free_tier_limit",
-  "status_code": 403,
-  "detail": "Twitter free tier does not support reading tweets. Upgrade to the Basic plan ($100/mo) at developer.x.com to use this endpoint."
+  "error": "twitter_credits_depleted",
+  "status_code": 402,
+  "detail": "Twitter API credits are depleted. Top up at developer.x.com to continue. Twitter uses a credit-based pricing model — each endpoint consumes a configurable number of credits per call.",
+  "raw": { /* original Twitter problem document */ }
 }
 ```
 
@@ -130,7 +131,7 @@ Get recent tweets for a user. Read-only.
 }
 ```
 
-**Response (Basic tier):**
+**Response:**
 ```json
 {
   "status": "ok",
@@ -138,6 +139,33 @@ Get recent tweets for a user. Read-only.
     { "id": "1234567890123456789", "text": "Hello world" }
   ],
   "count": 1
+}
+```
+
+### vargate_twitter_search_recent
+
+Search tweets from the last 7 days. Read-only, consumes credits.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | yes | Twitter search operator syntax |
+| `max_results` | integer | no | 10–100, default 10 |
+| `start_time` | string | no | ISO 8601 earliest-tweet timestamp |
+| `end_time` | string | no | ISO 8601 latest-tweet timestamp |
+
+**Governance:** Allowed without approval (read-only).
+
+Response enriches each tweet with `author_username` and `author_name` resolved from the `expansions=author_id` expansion, so callers don't need to join manually.
+
+**Example:**
+```json
+{
+  "tool": "twitter",
+  "method": "search_recent",
+  "params": {
+    "query": "\"ai governance\" -is:retweet lang:en",
+    "max_results": 20
+  }
 }
 ```
 
@@ -181,6 +209,7 @@ Read recent DM events. Read-only; requires OAuth 2.0 with `dm.read` scope.
 | `twitter` | `create_tweet` | OAuth 1.0a or 2.0 | Yes (content review) |
 | `twitter` | `delete_tweet` | OAuth 1.0a or 2.0 | Yes (destructive) |
 | `twitter` | `get_user_tweets` | Any | No (read-only) |
+| `twitter` | `search_recent` | Any | No (read-only) |
 | `twitter` | `follow_user` | OAuth 2.0 only | Yes |
 | `twitter` | `unfollow_user` | OAuth 2.0 only | Yes |
 | `twitter` | `send_dm` | OAuth 2.0 only | Yes |
@@ -192,7 +221,8 @@ Twitter API v2 endpoints used:
 
 - **Create tweet:** `POST https://api.twitter.com/2/tweets`
 - **Delete tweet:** `DELETE https://api.twitter.com/2/tweets/:id`
-- **User tweets:** `GET https://api.twitter.com/2/users/:id/tweets` (Basic tier only)
+- **User tweets:** `GET https://api.twitter.com/2/users/:id/tweets`
+- **Search recent:** `GET https://api.twitter.com/2/tweets/search/recent`
 - **Follow:** `POST https://api.twitter.com/2/users/:source_id/following`
 - **Unfollow:** `DELETE https://api.twitter.com/2/users/:source/following/:target`
 - **Send DM:** `POST https://api.twitter.com/2/dm_conversations/with/:id/messages`

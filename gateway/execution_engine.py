@@ -108,6 +108,9 @@ async def _execute_real_api(
     if tool == "twitter" and method == "get_user_tweets":
         return await _twitter_get_user_tweets(params, credential, start)
 
+    if tool == "twitter" and method == "search_recent":
+        return await _twitter_search_recent(params, credential, start)
+
     if tool == "twitter" and method == "follow_user":
         return await _twitter_follow_user(params, credential, start)
 
@@ -998,32 +1001,179 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
                     "execution_ms": elapsed_ms,
                     "simulated": False,
                 }
-            elif resp.status_code == 403:
+            return _twitter_error_response(resp, elapsed_ms)
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+def _twitter_error_response(resp: httpx.Response, elapsed_ms: int) -> dict:
+    """Translate a non-success Twitter response into the proxy's result shape.
+
+    Credit-exhaustion errors (402 + ``problems/credits`` type) get a
+    dedicated error code so agents and reviewers can spot them without
+    having to parse the nested Twitter payload. Everything else falls
+    through to a generic ``twitter_api_error`` with the raw detail.
+    """
+    error_body = resp.text
+    try:
+        error_body = resp.json()
+    except Exception:
+        pass
+
+    # Credit-depleted pattern (Twitter's replacement for old tier limits):
+    # 402 with type URI ending in problems/credits, or "CreditsDepleted"
+    # title. Surface a distinct error code so callers can route to
+    # "top up credits" rather than treating it as generic auth.
+    type_uri = ""
+    title = ""
+    if isinstance(error_body, dict):
+        # Wrapper shape varies: sometimes top-level, sometimes under "error"
+        payload = (
+            error_body.get("error", error_body) if isinstance(error_body, dict) else {}
+        )
+        if isinstance(payload, dict):
+            type_uri = str(payload.get("type", ""))
+            title = str(payload.get("title", ""))
+
+    if (
+        resp.status_code == 402
+        or "problems/credits" in type_uri
+        or title == "CreditsDepleted"
+    ):
+        return {
+            "result": {
+                "error": "twitter_credits_depleted",
+                "status_code": resp.status_code,
+                "detail": (
+                    "Twitter API credits are depleted. Top up at "
+                    "developer.x.com to continue. Twitter uses a credit-based "
+                    "pricing model — each endpoint consumes a configurable "
+                    "number of credits per call."
+                ),
+                "raw": error_body,
+            },
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+    return {
+        "result": {
+            "error": "twitter_api_error",
+            "status_code": resp.status_code,
+            "detail": error_body,
+        },
+        "execution_ms": elapsed_ms,
+        "simulated": False,
+    }
+
+
+# ── Twitter: search ────────────────────────────────────────────────────────
+# Recent-search (last 7 days) via /2/tweets/search/recent. Works with
+# OAuth 2.0 User Context or App-Only Bearer. Credit cost applies per call.
+
+
+async def _twitter_search_recent(params: dict, credential: str, start: float) -> dict:
+    """Search recent tweets (last 7 days) matching a query.
+
+    Params:
+      - ``query`` (required): Twitter search operator string, e.g.
+        ``"vargate.ai -is:retweet lang:en"``.
+        Reference: developer.x.com/en/docs/twitter-api/tweets/search/integrate/build-a-query
+      - ``max_results`` (optional, default 10, max 100): how many to return.
+      - ``start_time`` / ``end_time`` (optional, ISO 8601): narrow the window.
+
+    Read-only — no approval required. Consumes Twitter API credits per call.
+    """
+    query = params.get("query", "")
+    if not query:
+        return {
+            "result": {"error": "query is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    max_results = int(params.get("max_results", 10))
+    if max_results < 10:
+        max_results = 10  # Twitter rejects <10 on recent search
+    if max_results > 100:
+        max_results = 100
+
+    cred = _parse_twitter_credential(credential)
+    url = f"{TWITTER_API_BASE}/tweets/search/recent"
+
+    query_params = {
+        "query": query,
+        "max_results": max_results,
+        "tweet.fields": "id,text,created_at,author_id,public_metrics,lang",
+        "expansions": "author_id",
+        "user.fields": "id,username,name,verified",
+    }
+    if params.get("start_time"):
+        query_params["start_time"] = params["start_time"]
+    if params.get("end_time"):
+        query_params["end_time"] = params["end_time"]
+
+    try:
+        auth = cred.get("_vargate_auth")
+        if auth == "oauth2":
+            token = await _twitter_get_bearer_access_token(cred)
+            auth_headers = {"Authorization": f"Bearer {token}"}
+        elif auth == "oauth1a":
+            # OAuth 1.0a signature needs the full query string baked into the URL
+            from urllib.parse import urlencode
+
+            signed_url = f"{url}?{urlencode(query_params)}"
+            auth_headers = _oauth1_header("GET", signed_url, cred)
+        else:
+            # App-only bearer token
+            auth_headers = {
+                "Authorization": f"Bearer {cred.get('bearer_token', credential)}"
+            }
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params=query_params, headers=auth_headers)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code == 200:
+                result = resp.json()
+                tweets = result.get("data", [])
+                users_by_id = {
+                    u["id"]: u for u in result.get("includes", {}).get("users", [])
+                }
+                # Decorate each tweet with its author's username/name for easier
+                # downstream use — otherwise the caller has to join manually.
+                enriched = []
+                for t in tweets:
+                    author = users_by_id.get(t.get("author_id"), {})
+                    enriched.append(
+                        {
+                            **t,
+                            "author_username": author.get("username"),
+                            "author_name": author.get("name"),
+                        }
+                    )
+                meta = result.get("meta", {})
                 return {
                     "result": {
-                        "error": "twitter_free_tier_limit",
-                        "status_code": 403,
-                        "detail": "Twitter free tier does not support reading tweets. "
-                        "Upgrade to the Basic plan ($100/mo) at developer.x.com to use this endpoint.",
+                        "status": "ok",
+                        "tweets": enriched,
+                        "count": len(enriched),
+                        "result_count": meta.get("result_count", len(enriched)),
+                        "newest_id": meta.get("newest_id"),
+                        "oldest_id": meta.get("oldest_id"),
+                        "next_token": meta.get("next_token"),
                     },
                     "execution_ms": elapsed_ms,
                     "simulated": False,
                 }
-            else:
-                error_body = resp.text
-                try:
-                    error_body = resp.json()
-                except Exception:
-                    pass
-                return {
-                    "result": {
-                        "error": "twitter_api_error",
-                        "status_code": resp.status_code,
-                        "detail": error_body,
-                    },
-                    "execution_ms": elapsed_ms,
-                    "simulated": False,
-                }
+
+            return _twitter_error_response(resp, elapsed_ms)
 
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)

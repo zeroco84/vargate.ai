@@ -88,15 +88,16 @@ Once connected, these MCP tools become callable (names as surfaced via
 | `vargate_twitter_create_tweet` | Post a tweet (≤280 chars) |
 | `vargate_twitter_delete_tweet` | Delete one of your tweets |
 | `vargate_twitter_get_tweets` | Read recent tweets for a user |
+| `vargate_twitter_search_recent` | Search tweets from the last 7 days |
 | `vargate_twitter_follow_user` | Follow another account |
 | `vargate_twitter_unfollow_user` | Unfollow another account |
 | `vargate_twitter_send_dm` | Send a direct message |
 | `vargate_twitter_list_dm_conversations` | Read recent DM events |
 
 By default every write operation (tweet, follow, DM) requires human
-approval via your approval queue. You can relax any of those in
-**Settings → Auto-Approve Rules** if you trust your policy to catch bad
-content without a human in the loop.
+approval via your approval queue. Read operations (get, search, list
+DMs) are auto-allowed. You can relax or tighten any of those in
+**Settings → Auto-Approve Rules** if you want different defaults.
 
 ## Token refresh
 
@@ -111,6 +112,25 @@ If you revoke the app's access on Twitter's side (e.g. from
 the refresh will fail on the next tool call and the audit log will record
 a `twitter_oauth2_refresh_failed` error. Reconnect by clicking
 **Connect with Twitter** again in Vault Management.
+
+## Credits and pricing
+
+Twitter's v2 API uses credit-based pricing — each endpoint consumes a
+configurable number of credits per call. There are no monthly tiers to
+pick; you top up credits at developer.x.com and the platform debits them
+as your agent makes calls.
+
+When your account runs out, Vargate surfaces a clean structured error
+rather than a cryptic 402:
+
+```
+error: twitter_credits_depleted
+detail: Twitter API credits are depleted. Top up at developer.x.com...
+```
+
+If you see that error in your audit log, visit developer.x.com to add
+credits. Read endpoints (search, get_tweets, list DM conversations) all
+cost credits just like writes do.
 
 ## Common issues
 
@@ -134,6 +154,10 @@ status 403.
 **Tweet blocked with `gtm_blocked_phrase` or `gtm_explicit_content`** —
 Vargate's content filter rejected the text. Tune the blocked phrase list
 via your policy, or have the agent rephrase.
+
+**`twitter_credits_depleted`** — your Twitter API account is out of
+credits. Top up at developer.x.com. Until then all API calls will
+return this error regardless of policy.
 
 ## Legacy OAuth 1.0a
 

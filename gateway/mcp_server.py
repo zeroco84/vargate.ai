@@ -307,6 +307,44 @@ TOOL_CATALOG = [
         "_vargate_method": "get_user_tweets",
     },
     {
+        "name": "vargate_twitter_search_recent",
+        "description": (
+            "Search recent tweets (last 7 days) matching a query. Read-only. "
+            "Uses Twitter's search operator syntax: space for AND, OR for OR, "
+            "- to exclude, @handle, from:user, is:retweet, lang:en, etc. "
+            "Each call consumes Twitter API credits."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Twitter search query. Examples: "
+                        "'\"ai governance\" -is:retweet lang:en', "
+                        "'from:AnthropicAI claude'."
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Results to return (10–100, default 10).",
+                    "default": 10,
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": "ISO 8601 earliest-tweet timestamp (optional).",
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "ISO 8601 latest-tweet timestamp (optional).",
+                },
+            },
+            "required": ["query"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "search_recent",
+    },
+    {
         "name": "vargate_twitter_follow_user",
         "description": (
             "Follow a Twitter/X user. Requires OAuth 2.0 with "
