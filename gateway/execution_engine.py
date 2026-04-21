@@ -836,7 +836,21 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
         }
 
     url = f"{TWITTER_API_BASE}/tweets"
-    payload = json.dumps({"text": text})
+    payload_obj: dict = {"text": text}
+
+    # Reply: posting as a threaded reply to another tweet. Twitter API v2
+    # auto-prepends the original author's @mention and keeps the tweet
+    # inside the thread.
+    reply_to = params.get("reply_to_tweet_id") or params.get("in_reply_to_tweet_id")
+    if reply_to:
+        payload_obj["reply"] = {"in_reply_to_tweet_id": str(reply_to)}
+
+    # Quote tweet: link to another tweet as a quote, appears above the text.
+    quote_id = params.get("quote_tweet_id")
+    if quote_id:
+        payload_obj["quote_tweet_id"] = str(quote_id)
+
+    payload = json.dumps(payload_obj)
 
     try:
         auth_headers = await _twitter_auth_headers("POST", url, cred, payload)
@@ -849,12 +863,17 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
             if resp.status_code in (200, 201):
                 result = resp.json()
                 data = result.get("data", {})
+                response_result = {
+                    "status": "tweet_created",
+                    "tweet_id": data.get("id"),
+                    "text": data.get("text", text),
+                }
+                if reply_to:
+                    response_result["in_reply_to_tweet_id"] = str(reply_to)
+                if quote_id:
+                    response_result["quote_tweet_id"] = str(quote_id)
                 return {
-                    "result": {
-                        "status": "tweet_created",
-                        "tweet_id": data.get("id"),
-                        "text": data.get("text", text),
-                    },
+                    "result": response_result,
                     "execution_ms": elapsed_ms,
                     "simulated": False,
                 }

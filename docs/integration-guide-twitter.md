@@ -45,11 +45,13 @@ To obtain these keys:
 
 ### vargate_twitter_create_tweet
 
-Post a tweet on Twitter/X.
+Post a tweet on Twitter/X. Supports threaded replies and quote tweets.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | yes | Tweet text (max 280 characters) |
+| `reply_to_tweet_id` | string | no | When set, posts as a threaded reply to this tweet. Twitter auto-prepends the original author's @mention and keeps the tweet inside the thread. |
+| `quote_tweet_id` | string | no | When set, posts as a quote tweet of this tweet. |
 
 **Governance:** Requires human approval on GTM tenant (content review).
 

@@ -85,7 +85,7 @@ Once connected, these MCP tools become callable (names as surfaced via
 
 | Tool | Action |
 |---|---|
-| `vargate_twitter_create_tweet` | Post a tweet (≤280 chars) |
+| `vargate_twitter_create_tweet` | Post a tweet (≤280 chars). Pass `reply_to_tweet_id` to reply in-thread or `quote_tweet_id` to quote. |
 | `vargate_twitter_delete_tweet` | Delete one of your tweets |
 | `vargate_twitter_get_tweets` | Read recent tweets for a user |
 | `vargate_twitter_search_recent` | Search tweets from the last 7 days |

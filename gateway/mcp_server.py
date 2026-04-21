@@ -257,7 +257,12 @@ TOOL_CATALOG = [
     # ── Twitter / X ─────────────────────────────────────────────────────
     {
         "name": "vargate_twitter_create_tweet",
-        "description": "Post a tweet on Twitter/X. Requires human approval for content review. Max 280 characters.",
+        "description": (
+            "Post a tweet on Twitter/X. Max 280 characters. Pass "
+            "reply_to_tweet_id to post as a threaded reply (Twitter "
+            "auto-prepends the @mention and keeps it inside the thread). "
+            "Pass quote_tweet_id to quote-tweet another tweet."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -265,6 +270,21 @@ TOOL_CATALOG = [
                     "type": "string",
                     "description": "Tweet text (max 280 characters)",
                     "maxLength": 280,
+                },
+                "reply_to_tweet_id": {
+                    "type": "string",
+                    "description": (
+                        "ID of the tweet being replied to. When set, this "
+                        "tweet becomes a threaded reply rather than a new "
+                        "top-level tweet."
+                    ),
+                },
+                "quote_tweet_id": {
+                    "type": "string",
+                    "description": (
+                        "ID of a tweet to quote. Appears as a quote card "
+                        "above the new tweet's text."
+                    ),
                 },
             },
             "required": ["text"],
