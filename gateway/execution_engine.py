@@ -621,11 +621,15 @@ async def _substack_delete_note(
 #   {"api_key": "...", "api_secret": "...", "access_token": "...", "access_secret": "..."}
 
 TWITTER_API_BASE = "https://api.twitter.com/2"
-# Media upload lives under a distinct host in Twitter's docs but accepts
-# the same OAuth 2.0 Bearer auth. Using the v1.1 simple-upload endpoint
-# because it's broadly supported and handles ≤5MB images in one shot.
-# Larger media / video would need the chunked v2 flow.
-TWITTER_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
+# Media upload has two endpoint variants and they differ in auth:
+#  - v1.1 (upload.twitter.com/1.1/media/upload.json): OAuth 1.0a only.
+#    Returns 403 with empty body on OAuth 2.0 Bearer even with
+#    media.write scope.
+#  - v2 (api.x.com/2/media/upload): OAuth 2.0 User Context with
+#    media.write scope OR OAuth 1.0a.
+# We pick per-auth so both vault shapes work.
+TWITTER_MEDIA_UPLOAD_V2 = "https://api.x.com/2/media/upload"
+TWITTER_MEDIA_UPLOAD_V1 = "https://upload.twitter.com/1.1/media/upload.json"
 TWITTER_MAX_IMAGES_PER_TWEET = 4
 TWITTER_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Twitter's image cap
 
@@ -839,15 +843,19 @@ async def _twitter_upload_media(image_url: str, cred: dict) -> str:
             f"{TWITTER_MAX_IMAGE_BYTES})"
         )
 
-    # Upload to Twitter — simple single-shot (media ≤5MB)
+    # Pick endpoint + auth per credential shape.
+    # OAuth 2.0 User Context → v2 endpoint with Bearer header.
+    # OAuth 1.0a → v1.1 endpoint with RFC-5849 signed header.
     auth = cred.get("_vargate_auth")
     if auth == "oauth2":
+        upload_url = TWITTER_MEDIA_UPLOAD_V2
         access_token = await _twitter_get_bearer_access_token(cred)
         headers = {"Authorization": f"Bearer {access_token}"}
     elif auth == "oauth1a":
+        upload_url = TWITTER_MEDIA_UPLOAD_V1
         # OAuth 1.0a signature on a POST to the upload URL; body is
         # multipart so don't include body in the signature base string.
-        headers = _oauth1_header("POST", TWITTER_MEDIA_UPLOAD_URL, cred)
+        headers = _oauth1_header("POST", upload_url, cred)
     else:
         raise RuntimeError(
             "media_auth_error: media upload requires OAuth 2.0 (media.write) "
@@ -855,8 +863,9 @@ async def _twitter_upload_media(image_url: str, cred: dict) -> str:
         )
 
     files = {"media": ("upload", content, content_type)}
+    data = {"media_category": "tweet_image"}
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(TWITTER_MEDIA_UPLOAD_URL, files=files, headers=headers)
+        resp = await client.post(upload_url, files=files, data=data, headers=headers)
         if resp.status_code not in (200, 201):
             body = resp.text[:500]
             try:
@@ -864,7 +873,8 @@ async def _twitter_upload_media(image_url: str, cred: dict) -> str:
             except Exception:
                 pass
             raise RuntimeError(
-                f"media_upload_failed: HTTP {resp.status_code} from Twitter: {body}"
+                f"media_upload_failed: HTTP {resp.status_code} from Twitter "
+                f"({upload_url}): {body or '(empty body)'}"
             )
         result = resp.json()
 
