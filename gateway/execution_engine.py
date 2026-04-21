@@ -621,6 +621,13 @@ async def _substack_delete_note(
 #   {"api_key": "...", "api_secret": "...", "access_token": "...", "access_secret": "..."}
 
 TWITTER_API_BASE = "https://api.twitter.com/2"
+# Media upload lives under a distinct host in Twitter's docs but accepts
+# the same OAuth 2.0 Bearer auth. Using the v1.1 simple-upload endpoint
+# because it's broadly supported and handles ≤5MB images in one shot.
+# Larger media / video would need the chunked v2 flow.
+TWITTER_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
+TWITTER_MAX_IMAGES_PER_TWEET = 4
+TWITTER_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Twitter's image cap
 
 
 def _parse_twitter_credential(credential: str) -> dict:
@@ -800,9 +807,77 @@ async def _twitter_auth_headers(
     )
 
 
+async def _twitter_upload_media(image_url: str, cred: dict) -> str:
+    """Fetch an image from a public URL and upload it to Twitter's media
+    endpoint. Returns the media_id_string that can be attached to a tweet.
+
+    Raises RuntimeError on any failure (download, size, Twitter API) with
+    a structured message the caller can surface verbatim.
+    """
+    if not image_url:
+        raise RuntimeError("media_empty_url")
+    if not image_url.lower().startswith(("http://", "https://")):
+        raise RuntimeError(f"media_url_not_http: {image_url[:80]}")
+
+    # Fetch the image bytes
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        dl = await client.get(image_url)
+        if dl.status_code != 200:
+            raise RuntimeError(
+                f"media_download_failed: HTTP {dl.status_code} fetching {image_url[:80]}"
+            )
+        content = dl.content
+        content_type = (
+            dl.headers.get("content-type", "").split(";")[0].strip() or "image/jpeg"
+        )
+
+    if len(content) == 0:
+        raise RuntimeError("media_empty_response")
+    if len(content) > TWITTER_MAX_IMAGE_BYTES:
+        raise RuntimeError(
+            f"media_too_large: {len(content)} bytes (Twitter limit "
+            f"{TWITTER_MAX_IMAGE_BYTES})"
+        )
+
+    # Upload to Twitter — simple single-shot (media ≤5MB)
+    auth = cred.get("_vargate_auth")
+    if auth == "oauth2":
+        access_token = await _twitter_get_bearer_access_token(cred)
+        headers = {"Authorization": f"Bearer {access_token}"}
+    elif auth == "oauth1a":
+        # OAuth 1.0a signature on a POST to the upload URL; body is
+        # multipart so don't include body in the signature base string.
+        headers = _oauth1_header("POST", TWITTER_MEDIA_UPLOAD_URL, cred)
+    else:
+        raise RuntimeError(
+            "media_auth_error: media upload requires OAuth 2.0 (media.write) "
+            "or OAuth 1.0a credentials"
+        )
+
+    files = {"media": ("upload", content, content_type)}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(TWITTER_MEDIA_UPLOAD_URL, files=files, headers=headers)
+        if resp.status_code not in (200, 201):
+            body = resp.text[:500]
+            try:
+                body = json.dumps(resp.json())[:500]
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"media_upload_failed: HTTP {resp.status_code} from Twitter: {body}"
+            )
+        result = resp.json()
+
+    # v1.1 returns media_id_string; v2 returns data.id. Accept either.
+    media_id = result.get("media_id_string") or result.get("data", {}).get("id")
+    if not media_id:
+        raise RuntimeError(f"media_upload_no_id: {json.dumps(result)[:200]}")
+    return str(media_id)
+
+
 async def _twitter_create_tweet(params: dict, credential: str, start: float) -> dict:
     """Create a tweet via Twitter API v2. Works with OAuth 2.0 User Context
-    (preferred) or OAuth 1.0a."""
+    (preferred) or OAuth 1.0a. Supports reply, quote, and image attachments."""
     text = params.get("text", "")
     if not text:
         return {
@@ -850,6 +925,51 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
     if quote_id:
         payload_obj["quote_tweet_id"] = str(quote_id)
 
+    # Images: accept image_urls (list) or image_url (scalar convenience).
+    # Each URL is downloaded, uploaded to Twitter, and the resulting
+    # media_ids are attached via payload.media.media_ids.
+    image_urls: list[str] = []
+    if params.get("image_urls"):
+        urls = params["image_urls"]
+        if isinstance(urls, str):
+            image_urls = [urls]
+        elif isinstance(urls, list):
+            image_urls = [str(u) for u in urls if u]
+    elif params.get("image_url"):
+        image_urls = [str(params["image_url"])]
+
+    if image_urls:
+        if len(image_urls) > TWITTER_MAX_IMAGES_PER_TWEET:
+            return {
+                "result": {
+                    "error": "too_many_images",
+                    "count": len(image_urls),
+                    "max": TWITTER_MAX_IMAGES_PER_TWEET,
+                    "detail": (
+                        f"Twitter allows up to {TWITTER_MAX_IMAGES_PER_TWEET} "
+                        "images per tweet."
+                    ),
+                },
+                "execution_ms": int((time.monotonic() - start) * 1000),
+                "simulated": False,
+            }
+
+        media_ids: list[str] = []
+        for u in image_urls:
+            try:
+                media_ids.append(await _twitter_upload_media(u, cred))
+            except Exception as e:
+                return {
+                    "result": {
+                        "error": "media_upload_failed",
+                        "detail": str(e),
+                        "uploaded_so_far": media_ids,
+                    },
+                    "execution_ms": int((time.monotonic() - start) * 1000),
+                    "simulated": False,
+                }
+        payload_obj["media"] = {"media_ids": media_ids}
+
     payload = json.dumps(payload_obj)
 
     try:
@@ -872,6 +992,11 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
                     response_result["in_reply_to_tweet_id"] = str(reply_to)
                 if quote_id:
                     response_result["quote_tweet_id"] = str(quote_id)
+                if image_urls:
+                    response_result["media_ids"] = payload_obj.get("media", {}).get(
+                        "media_ids", []
+                    )
+                    response_result["image_count"] = len(image_urls)
                 return {
                     "result": response_result,
                     "execution_ms": elapsed_ms,

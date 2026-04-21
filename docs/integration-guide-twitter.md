@@ -45,15 +45,20 @@ To obtain these keys:
 
 ### vargate_twitter_create_tweet
 
-Post a tweet on Twitter/X. Supports threaded replies and quote tweets.
+Post a tweet on Twitter/X. Supports threaded replies, quote tweets, and image attachments (up to 4 per tweet).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `text` | string | yes | Tweet text (max 280 characters) |
-| `reply_to_tweet_id` | string | no | When set, posts as a threaded reply to this tweet. Twitter auto-prepends the original author's @mention and keeps the tweet inside the thread. |
+| `reply_to_tweet_id` | string | no | When set, posts as a threaded reply to this tweet. Twitter auto-prepends the original author's @mention. |
 | `quote_tweet_id` | string | no | When set, posts as a quote tweet of this tweet. |
+| `image_urls` | string[] | no | Up to 4 publicly-fetchable HTTPS image URLs. Each ≤5MB (JPEG, PNG, GIF, WEBP). The proxy downloads each URL and uploads to Twitter's media endpoint before posting. |
 
 **Governance:** Requires human approval on GTM tenant (content review).
+
+**Media upload flow:** the `image_urls` field triggers a two-step process inside the proxy: each URL is downloaded, then POSTed to `https://upload.twitter.com/1.1/media/upload.json` to obtain a `media_id_string`, then the `media.media_ids` array is attached to the tweet payload. OAuth 2.0 credentials need the `media.write` scope — existing vault entries issued before that scope was added to `DEFAULT_SCOPES` need to reconnect via the "Connect with Twitter" button in Vault Management.
+
+**Sourcing images:** Twitter requires the URL to be publicly reachable and return an image (not HTML). Use Vargate's built-in media host (`POST /api/v1/media/upload` → returns an HTTPS URL, auto-deleted after 48h) if you don't already have public hosting.
 
 **Example:**
 ```json
@@ -222,6 +227,7 @@ Read recent DM events. Read-only; requires OAuth 2.0 with `dm.read` scope.
 Twitter API v2 endpoints used:
 
 - **Create tweet:** `POST https://api.twitter.com/2/tweets`
+- **Media upload (simple, ≤5MB):** `POST https://upload.twitter.com/1.1/media/upload.json`
 - **Delete tweet:** `DELETE https://api.twitter.com/2/tweets/:id`
 - **User tweets:** `GET https://api.twitter.com/2/users/:id/tweets`
 - **Search recent:** `GET https://api.twitter.com/2/tweets/search/recent`

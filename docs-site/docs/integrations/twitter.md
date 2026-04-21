@@ -73,6 +73,7 @@ The default OAuth 2.0 scope set covers every Twitter tool we expose:
 | `dm.read`, `dm.write` | Reading and sending direct messages |
 | `like.read`, `like.write` | Likes |
 | `mute.read`, `mute.write` | Mute management |
+| `media.write` | Attaching images to tweets |
 | `offline.access` | Getting a refresh token so the proxy can stay authorised |
 
 If any tool is missing from the list above, it's because we haven't
@@ -85,7 +86,7 @@ Once connected, these MCP tools become callable (names as surfaced via
 
 | Tool | Action |
 |---|---|
-| `vargate_twitter_create_tweet` | Post a tweet (≤280 chars). Pass `reply_to_tweet_id` to reply in-thread or `quote_tweet_id` to quote. |
+| `vargate_twitter_create_tweet` | Post a tweet (≤280 chars). Pass `reply_to_tweet_id` to reply in-thread, `quote_tweet_id` to quote, or `image_urls` (≤4, each a public HTTPS URL, each ≤5MB) to attach images. |
 | `vargate_twitter_delete_tweet` | Delete one of your tweets |
 | `vargate_twitter_get_tweets` | Read recent tweets for a user |
 | `vargate_twitter_search_recent` | Search tweets from the last 7 days |
@@ -158,6 +159,21 @@ via your policy, or have the agent rephrase.
 **`twitter_credits_depleted`** — your Twitter API account is out of
 credits. Top up at developer.x.com. Until then all API calls will
 return this error regardless of policy.
+
+**`media_upload_failed` when posting tweets with images** — usually
+one of three things:
+
+1. The OAuth 2.0 credential in your vault was issued before
+   `media.write` was added to the default scope set. Click
+   **Connect with Twitter** in Vault Management to re-authorise —
+   the new token will include `media.write`.
+2. The image URL isn't reachable by Twitter's upload endpoint
+   (auth-gated, expired, non-HTTPS). Host the image via Vargate's
+   media upload endpoint (`POST /api/v1/media/upload`) or another
+   public host and pass the resulting URL.
+3. The file is >5MB, the wrong format, or not actually an image.
+   Twitter's simple-upload path caps at 5MB and accepts JPEG, PNG,
+   GIF, and WEBP.
 
 ## Legacy OAuth 1.0a
 

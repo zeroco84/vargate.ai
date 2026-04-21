@@ -261,7 +261,13 @@ TOOL_CATALOG = [
             "Post a tweet on Twitter/X. Max 280 characters. Pass "
             "reply_to_tweet_id to post as a threaded reply (Twitter "
             "auto-prepends the @mention and keeps it inside the thread). "
-            "Pass quote_tweet_id to quote-tweet another tweet."
+            "Pass quote_tweet_id to quote-tweet another tweet. Pass "
+            "image_urls (array, max 4) to attach images — each URL must "
+            "be a publicly-fetchable HTTPS image ≤5MB; the proxy "
+            "downloads each one and uploads to Twitter before posting. "
+            "Host images via Vargate's media upload endpoint "
+            "(POST /api/v1/media/upload) if you don't already have a "
+            "public URL for them."
         ),
         "inputSchema": {
             "type": "object",
@@ -285,6 +291,16 @@ TOOL_CATALOG = [
                         "ID of a tweet to quote. Appears as a quote card "
                         "above the new tweet's text."
                     ),
+                },
+                "image_urls": {
+                    "type": "array",
+                    "description": (
+                        "Up to 4 publicly-fetchable HTTPS image URLs to "
+                        "attach to the tweet. Each ≤5MB. JPEG, PNG, GIF, "
+                        "and WEBP are accepted by Twitter."
+                    ),
+                    "items": {"type": "string"},
+                    "maxItems": 4,
                 },
             },
             "required": ["text"],

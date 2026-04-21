@@ -49,6 +49,7 @@ DEFAULT_SCOPES = [
     "like.write",
     "mute.read",
     "mute.write",
+    "media.write",
     "offline.access",
 ]
 
