@@ -591,7 +591,14 @@ async def approve_action(
                 cred_resp = await client.get(f"{main.HSM_URL}/credentials")
                 if cred_resp.status_code == 200:
                     creds = cred_resp.json().get("credentials", [])
-                    cred_match = next((c for c in creds if c["tool_id"] == tool), None)
+                    tool_creds = [c for c in creds if c["tool_id"] == tool]
+                    # Prefer OAuth 2.0 over legacy single-secret entries when
+                    # both exist for a tool (e.g. twitter/oauth2 vs
+                    # twitter/api_key). Newer auth model wins.
+                    cred_match = next(
+                        (c for c in tool_creds if c["name"] == "oauth2"),
+                        tool_creds[0] if tool_creds else None,
+                    )
                     if cred_match:
                         fetch_resp = await client.post(
                             f"{main.HSM_URL}/credentials/fetch-for-execution",

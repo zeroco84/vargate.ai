@@ -76,6 +76,33 @@ requires_human_approval if {
     input.action.method == "delete_tweet"
 }
 
+# Following users requires human approval — reputational + anti-bot signal
+# @tools twitter/follow_user
+requires_human_approval if {
+    _is_gtm_tenant
+    input.action.tool == "twitter"
+    input.action.method == "follow_user"
+}
+
+# Unfollowing requires human approval — also reputational
+# @tools twitter/unfollow_user
+requires_human_approval if {
+    _is_gtm_tenant
+    input.action.tool == "twitter"
+    input.action.method == "unfollow_user"
+}
+
+# DMs require human approval — high spam/reputation risk
+# @tools twitter/send_dm
+requires_human_approval if {
+    _is_gtm_tenant
+    input.action.tool == "twitter"
+    input.action.method == "send_dm"
+}
+
+# Listing DM conversations is read-only — no approval needed
+# (absence of requires_human_approval means auto-allow)
+
 # Reading tweets is allowed without approval (read-only)
 # No rule needed — absence of requires_human_approval means auto-allow
 

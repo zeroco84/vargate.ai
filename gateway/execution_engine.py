@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import time
+from typing import Optional
 
 import httpx
 
@@ -18,6 +19,7 @@ RESEND_FROM_EMAIL = os.environ.get(
     "RESEND_FROM_EMAIL", "Sera (Vargate.ai) <sera@vargate.ai>"
 )
 SUBSTACK_BASE_URL = os.environ.get("SUBSTACK_BASE_URL", "")
+HSM_URL = os.environ.get("HSM_URL", "http://hsm:8300")
 # User-Agent required for Substack API — Cloudflare blocks requests without one
 _BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -105,6 +107,18 @@ async def _execute_real_api(
 
     if tool == "twitter" and method == "get_user_tweets":
         return await _twitter_get_user_tweets(params, credential, start)
+
+    if tool == "twitter" and method == "follow_user":
+        return await _twitter_follow_user(params, credential, start)
+
+    if tool == "twitter" and method == "unfollow_user":
+        return await _twitter_unfollow_user(params, credential, start)
+
+    if tool == "twitter" and method == "send_dm":
+        return await _twitter_send_dm(params, credential, start)
+
+    if tool == "twitter" and method == "list_dm_conversations":
+        return await _twitter_list_dm_conversations(params, credential, start)
 
     if tool == "instagram" and method == "create_post":
         return await _instagram_create_post(params, credential, start)
@@ -607,15 +621,98 @@ TWITTER_API_BASE = "https://api.twitter.com/2"
 
 
 def _parse_twitter_credential(credential: str) -> dict:
-    """Parse Twitter credential — JSON with OAuth 1.0a keys."""
+    """Parse a Twitter credential.
+
+    Recognises three shapes and tags them with ``_vargate_auth``:
+
+      - OAuth 2.0 (User Context):
+          {"client_id", "client_secret", "refresh_token", ...}
+          → ``_vargate_auth`` = ``"oauth2"``.
+      - OAuth 1.0a (User Context):
+          {"api_key", "api_secret", "access_token", "access_secret"}
+          → ``_vargate_auth`` = ``"oauth1a"``.
+      - Bearer (App-Only, read-only):
+          raw string → {"bearer_token": ...}
+          → ``_vargate_auth`` = ``"bearer"``.
+
+    The tag lets downstream handlers pick the right request builder
+    without re-sniffing fields.
+    """
     try:
         cred = json.loads(credential)
-        if isinstance(cred, dict) and "api_key" in cred:
-            return cred
+        if isinstance(cred, dict):
+            if "client_id" in cred and "refresh_token" in cred:
+                return {**cred, "_vargate_auth": "oauth2"}
+            if "api_key" in cred:
+                return {**cred, "_vargate_auth": "oauth1a"}
     except (json.JSONDecodeError, TypeError):
         pass
-    # Fallback: treat as plain Bearer token (read-only endpoints)
-    return {"bearer_token": credential}
+    return {"bearer_token": credential, "_vargate_auth": "bearer"}
+
+
+# ── OAuth 2.0 access-token management ──────────────────────────────────────
+# Access tokens are short-lived (~2h). We cache them alongside the
+# refresh_token in the vault and proactively refresh when <60s remains.
+# Refreshed tokens MUST be persisted back to the vault BEFORE being used,
+# because Twitter rotates the refresh_token on every refresh and the old
+# one is immediately invalidated.
+
+_TWITTER_REFRESH_BUFFER_S = 60
+
+
+async def _twitter_get_bearer_access_token(cred: dict) -> str:
+    """Return a valid access_token for the OAuth 2.0 credential, refreshing
+    and persisting if necessary.
+
+    Raises RuntimeError with a structured message on refresh failure;
+    callers should translate that into a clean API response.
+    """
+    from oauth_twitter import refresh_access_token
+
+    access_token = cred.get("access_token", "")
+    expires_at = int(cred.get("access_token_expires_at") or 0)
+    now = int(time.time())
+
+    if access_token and expires_at > now + _TWITTER_REFRESH_BUFFER_S:
+        return access_token
+
+    # Stale or missing — refresh
+    try:
+        tokens = await refresh_access_token(
+            client_id=cred["client_id"],
+            client_secret=cred["client_secret"],
+            refresh_token=cred["refresh_token"],
+        )
+    except Exception as e:
+        raise RuntimeError(f"twitter_oauth2_refresh_failed: {e}")
+
+    new_value = {
+        "client_id": cred["client_id"],
+        "client_secret": cred["client_secret"],
+        "refresh_token": tokens["refresh_token"],
+        "access_token": tokens["access_token"],
+        "access_token_expires_at": now + int(tokens.get("expires_in", 7200)),
+        "scope": tokens.get("scope", cred.get("scope", "")),
+    }
+
+    # Persist BEFORE using the new access_token — if we crash between
+    # refresh and persist, the old refresh_token is already invalid,
+    # so we must never return an access_token that hasn't been saved.
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{HSM_URL}/credentials",
+            json={
+                "tool_id": "twitter",
+                "name": "oauth2",
+                "value": json.dumps(new_value),
+            },
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"twitter_oauth2_persist_failed: HSM returned {resp.status_code}"
+            )
+
+    return tokens["access_token"]
 
 
 def _oauth1_header(method: str, url: str, cred: dict, body: str = "") -> dict:
@@ -680,8 +777,29 @@ def _oauth1_header(method: str, url: str, cred: dict, body: str = "") -> dict:
     return {"Authorization": auth_header}
 
 
+async def _twitter_auth_headers(
+    method: str, url: str, cred: dict, body: str = ""
+) -> dict:
+    """Build auth headers for a Twitter write call.
+
+    OAuth 2.0 User Context → ``Authorization: Bearer <access>``.
+    OAuth 1.0a User Context → RFC 5849-signed Authorization header.
+    Raises RuntimeError on unsupported auth.
+    """
+    auth = cred.get("_vargate_auth")
+    if auth == "oauth2":
+        token = await _twitter_get_bearer_access_token(cred)
+        return {"Authorization": f"Bearer {token}"}
+    if auth == "oauth1a":
+        return _oauth1_header(method, url, cred, body)
+    raise RuntimeError(
+        "twitter_auth_error: write endpoints require OAuth 1.0a or OAuth 2.0 User Context"
+    )
+
+
 async def _twitter_create_tweet(params: dict, credential: str, start: float) -> dict:
-    """Create a tweet via Twitter API v2. Requires OAuth 1.0a User Context."""
+    """Create a tweet via Twitter API v2. Works with OAuth 2.0 User Context
+    (preferred) or OAuth 1.0a."""
     text = params.get("text", "")
     if not text:
         return {
@@ -703,12 +821,12 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
         }
 
     cred = _parse_twitter_credential(credential)
-    if "api_key" not in cred:
+    if cred.get("_vargate_auth") == "bearer":
         return {
             "result": {
                 "error": "twitter_auth_error",
-                "detail": "Creating tweets requires OAuth 1.0a credentials. "
-                "Register a JSON credential with api_key, api_secret, access_token, access_secret.",
+                "detail": "Creating tweets requires OAuth 1.0a or OAuth 2.0 "
+                "User Context. Connect via the Vault Management UI.",
             },
             "execution_ms": 0,
             "simulated": False,
@@ -718,7 +836,7 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
     payload = json.dumps({"text": text})
 
     try:
-        auth_headers = _oauth1_header("POST", url, cred, payload)
+        auth_headers = await _twitter_auth_headers("POST", url, cred, payload)
         auth_headers["Content-Type"] = "application/json"
 
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -763,7 +881,7 @@ async def _twitter_create_tweet(params: dict, credential: str, start: float) -> 
 
 
 async def _twitter_delete_tweet(params: dict, credential: str, start: float) -> dict:
-    """Delete a tweet via Twitter API v2. Requires OAuth 1.0a User Context."""
+    """Delete a tweet via Twitter API v2. OAuth 1.0a or OAuth 2.0."""
     tweet_id = params.get("tweet_id")
     if not tweet_id:
         return {
@@ -773,11 +891,11 @@ async def _twitter_delete_tweet(params: dict, credential: str, start: float) -> 
         }
 
     cred = _parse_twitter_credential(credential)
-    if "api_key" not in cred:
+    if cred.get("_vargate_auth") == "bearer":
         return {
             "result": {
                 "error": "twitter_auth_error",
-                "detail": "Deleting tweets requires OAuth 1.0a credentials.",
+                "detail": "Deleting tweets requires OAuth 1.0a or OAuth 2.0 User Context.",
             },
             "execution_ms": 0,
             "simulated": False,
@@ -786,7 +904,7 @@ async def _twitter_delete_tweet(params: dict, credential: str, start: float) -> 
     url = f"{TWITTER_API_BASE}/tweets/{tweet_id}"
 
     try:
-        auth_headers = _oauth1_header("DELETE", url, cred)
+        auth_headers = await _twitter_auth_headers("DELETE", url, cred)
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.delete(url, headers=auth_headers)
@@ -847,9 +965,12 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
     max_results = params.get("max_results", 10)
     cred = _parse_twitter_credential(credential)
     url = f"{TWITTER_API_BASE}/users/{user_id}/tweets"
+    auth = cred.get("_vargate_auth")
 
-    # Use OAuth 1.0a if available, otherwise Bearer token
-    if "api_key" in cred:
+    if auth == "oauth2":
+        token = await _twitter_get_bearer_access_token(cred)
+        auth_headers = {"Authorization": f"Bearer {token}"}
+    elif auth == "oauth1a":
         auth_headers = _oauth1_header("GET", f"{url}?max_results={max_results}", cred)
     else:
         auth_headers = {
@@ -903,6 +1024,341 @@ async def _twitter_get_user_tweets(params: dict, credential: str, start: float) 
                     "execution_ms": elapsed_ms,
                     "simulated": False,
                 }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+# ── Twitter: follows and DMs (OAuth 2.0 required) ─────────────────────────
+# These endpoints aren't supported by OAuth 1.0a on the v2 API. If the
+# tenant's credential is OAuth 1.0a, we return an auth_error directing
+# them to connect via OAuth 2.0 in the Vault UI.
+
+
+def _require_oauth2_for(cred: dict, feature: str) -> Optional[dict]:
+    """Return an error response dict if cred is not OAuth 2.0; else None."""
+    if cred.get("_vargate_auth") != "oauth2":
+        return {
+            "result": {
+                "error": "twitter_auth_error",
+                "detail": (
+                    f"{feature} requires OAuth 2.0 User Context on the v2 API. "
+                    "Use the 'Connect with Twitter' button in Vault Management "
+                    "to authorise — OAuth 1.0a cannot call this endpoint."
+                ),
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+    return None
+
+
+async def _twitter_current_user_id(access_token: str) -> str:
+    """Fetch the authenticated user's numeric id via /2/users/me."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{TWITTER_API_BASE}/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]["id"]
+
+
+async def _twitter_follow_user(params: dict, credential: str, start: float) -> dict:
+    """Follow another user. Requires OAuth 2.0 with ``follows.write``.
+
+    Params: ``target_user_id`` (required). If ``source_user_id`` is
+    omitted we fetch /users/me to discover the authenticated user's id.
+    """
+    target_id = params.get("target_user_id")
+    if not target_id:
+        return {
+            "result": {"error": "target_user_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    cred = _parse_twitter_credential(credential)
+    bad = _require_oauth2_for(cred, "Following a user")
+    if bad:
+        return bad
+
+    try:
+        access_token = await _twitter_get_bearer_access_token(cred)
+        source_id = params.get("source_user_id") or await _twitter_current_user_id(
+            access_token
+        )
+        url = f"{TWITTER_API_BASE}/users/{source_id}/following"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                json={"target_user_id": str(target_id)},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 201):
+                data = resp.json().get("data", {})
+                return {
+                    "result": {
+                        "status": "following",
+                        "target_user_id": str(target_id),
+                        "source_user_id": str(source_id),
+                        "pending_follow": data.get("pending_follow", False),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            error_body = resp.text
+            try:
+                error_body = resp.json()
+            except Exception:
+                pass
+            return {
+                "result": {
+                    "error": "twitter_api_error",
+                    "status_code": resp.status_code,
+                    "detail": error_body,
+                },
+                "execution_ms": elapsed_ms,
+                "simulated": False,
+            }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _twitter_unfollow_user(params: dict, credential: str, start: float) -> dict:
+    """Unfollow another user. Requires OAuth 2.0 with ``follows.write``."""
+    target_id = params.get("target_user_id")
+    if not target_id:
+        return {
+            "result": {"error": "target_user_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    cred = _parse_twitter_credential(credential)
+    bad = _require_oauth2_for(cred, "Unfollowing a user")
+    if bad:
+        return bad
+
+    try:
+        access_token = await _twitter_get_bearer_access_token(cred)
+        source_id = params.get("source_user_id") or await _twitter_current_user_id(
+            access_token
+        )
+        url = f"{TWITTER_API_BASE}/users/{source_id}/following/{target_id}"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(
+                url, headers={"Authorization": f"Bearer {access_token}"}
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 204):
+                data = resp.json().get("data", {}) if resp.text else {}
+                return {
+                    "result": {
+                        "status": "unfollowed",
+                        "target_user_id": str(target_id),
+                        "source_user_id": str(source_id),
+                        "following": data.get("following", False),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            error_body = resp.text
+            try:
+                error_body = resp.json()
+            except Exception:
+                pass
+            return {
+                "result": {
+                    "error": "twitter_api_error",
+                    "status_code": resp.status_code,
+                    "detail": error_body,
+                },
+                "execution_ms": elapsed_ms,
+                "simulated": False,
+            }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+TWITTER_DM_MAX = 10000
+
+
+async def _twitter_send_dm(params: dict, credential: str, start: float) -> dict:
+    """Send a direct message to a user. Requires OAuth 2.0 with ``dm.write``.
+
+    Params: ``participant_id`` (recipient's numeric Twitter user id),
+    ``text`` (message body, up to 10,000 chars per Twitter's docs).
+
+    Note: the recipient must have DMs open for strangers OR already follow
+    Sera, or Twitter will return a 403. That constraint is on Twitter's
+    side, not something the proxy can pre-check.
+    """
+    participant_id = params.get("participant_id")
+    text = params.get("text", "")
+
+    if not participant_id:
+        return {
+            "result": {"error": "participant_id is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+    if not text:
+        return {
+            "result": {"error": "text is required"},
+            "execution_ms": 0,
+            "simulated": False,
+        }
+    if len(text) > TWITTER_DM_MAX:
+        return {
+            "result": {
+                "error": "dm_too_long",
+                "length": len(text),
+                "max": TWITTER_DM_MAX,
+            },
+            "execution_ms": 0,
+            "simulated": False,
+        }
+
+    cred = _parse_twitter_credential(credential)
+    bad = _require_oauth2_for(cred, "Sending a DM")
+    if bad:
+        return bad
+
+    try:
+        access_token = await _twitter_get_bearer_access_token(cred)
+        url = f"{TWITTER_API_BASE}/dm_conversations/with/{participant_id}/messages"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                json={"text": text},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code in (200, 201):
+                data = resp.json().get("data", {})
+                return {
+                    "result": {
+                        "status": "dm_sent",
+                        "dm_conversation_id": data.get("dm_conversation_id"),
+                        "dm_event_id": data.get("dm_event_id"),
+                        "participant_id": str(participant_id),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            error_body = resp.text
+            try:
+                error_body = resp.json()
+            except Exception:
+                pass
+            return {
+                "result": {
+                    "error": "twitter_api_error",
+                    "status_code": resp.status_code,
+                    "detail": error_body,
+                },
+                "execution_ms": elapsed_ms,
+                "simulated": False,
+            }
+
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "result": {"error": f"twitter_execution_failed: {str(e)}"},
+            "execution_ms": elapsed_ms,
+            "simulated": False,
+        }
+
+
+async def _twitter_list_dm_conversations(
+    params: dict, credential: str, start: float
+) -> dict:
+    """List recent DM conversations. Requires OAuth 2.0 with ``dm.read``.
+
+    Read-only — no content sent. Does not require approval by default.
+    """
+    cred = _parse_twitter_credential(credential)
+    bad = _require_oauth2_for(cred, "Listing DM conversations")
+    if bad:
+        return bad
+
+    max_results = int(params.get("max_results", 20))
+
+    try:
+        access_token = await _twitter_get_bearer_access_token(cred)
+        url = f"{TWITTER_API_BASE}/dm_events"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                url,
+                params={
+                    "max_results": max_results,
+                    "dm_event.fields": "id,event_type,text,created_at,sender_id,dm_conversation_id",
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+
+            if resp.status_code == 200:
+                result = resp.json()
+                events = result.get("data", [])
+                return {
+                    "result": {
+                        "status": "ok",
+                        "events": events,
+                        "count": len(events),
+                    },
+                    "execution_ms": elapsed_ms,
+                    "simulated": False,
+                }
+
+            error_body = resp.text
+            try:
+                error_body = resp.json()
+            except Exception:
+                pass
+            return {
+                "result": {
+                    "error": "twitter_api_error",
+                    "status_code": resp.status_code,
+                    "detail": error_body,
+                },
+                "execution_ms": elapsed_ms,
+                "simulated": False,
+            }
 
     except Exception as e:
         elapsed_ms = int((time.monotonic() - start) * 1000)

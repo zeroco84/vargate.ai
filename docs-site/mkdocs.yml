@@ -70,6 +70,8 @@ nav:
     - Overview: managed-agents/overview.md
     - Setup Guide: managed-agents/setup.md
     - Policy Templates: managed-agents/policies.md
+  - Integrations:
+    - Twitter / X: integrations/twitter.md
   - API Reference:
     - Overview: api/overview.md
     - Tool Calls: api/tool-calls.md

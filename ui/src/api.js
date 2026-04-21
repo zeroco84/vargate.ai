@@ -60,6 +60,18 @@ export async function fetchAuditAgents(limit = 20) {
   return fetchJSON(`/audit/agents?limit=${limit}`);
 }
 
+// ── OAuth integrations ──────────────────────────────────────────────────
+// Kick off a Twitter OAuth 2.0 (PKCE) flow. Returns
+// { authorize_url, state, redirect_uri } — the caller is expected to
+// open authorize_url in a new tab/window so the user can grant consent.
+export async function startTwitterOAuth(client_id, client_secret) {
+  return fetchJSON('/oauth/twitter/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id, client_secret }),
+  });
+}
+
 export async function fetchChainVerify() {
   return fetchJSON('/audit/verify');
 }

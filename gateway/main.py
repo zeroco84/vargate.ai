@@ -2292,11 +2292,15 @@ async def tool_call(req: ToolCallRequest, tenant: dict = Depends(get_tenant)):
                 if fetch_resp.status_code == 200 and fetch_resp.json().get(
                     "registered"
                 ):
-                    # Use actual credential name from HSM instead of hardcoded default
+                    # Use actual credential name from HSM instead of hardcoded default.
+                    # Prefer oauth2 when present (Twitter dual-auth: OAuth 2.0 supersedes OAuth 1.0a).
                     status_data = fetch_resp.json()
                     cred_list = status_data.get("credentials", [])
                     if cred_list:
-                        cred_name = cred_list[0]["name"]
+                        oauth2_match = next(
+                            (c for c in cred_list if c["name"] == "oauth2"), None
+                        )
+                        cred_name = (oauth2_match or cred_list[0])["name"]
 
                     # Credential exists — do brokered execution
                     # SECURITY: fetch via HSM HTTP endpoint, logs access but never the value
@@ -2913,6 +2917,7 @@ from media import router as media_router  # noqa: E402
 from routes_anchor import router as anchor_router  # noqa: E402
 from routes_audit import router as audit_router  # noqa: E402
 from routes_auth import router as auth_router  # noqa: E402
+from routes_oauth import router as oauth_router  # noqa: E402
 from routes_tenant import router as tenant_router  # noqa: E402
 
 app.include_router(audit_router)
@@ -2923,3 +2928,4 @@ app.include_router(compliance_router)
 app.include_router(control_plane_router)
 app.include_router(mcp_server_router)
 app.include_router(media_router)
+app.include_router(oauth_router)

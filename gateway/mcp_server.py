@@ -307,6 +307,89 @@ TOOL_CATALOG = [
         "_vargate_method": "get_user_tweets",
     },
     {
+        "name": "vargate_twitter_follow_user",
+        "description": (
+            "Follow a Twitter/X user. Requires OAuth 2.0 with "
+            "follows.write scope — connect via the Vault Management "
+            "'Connect with Twitter' button. target_user_id is the "
+            "recipient's numeric Twitter user id (not their handle)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_user_id": {
+                    "type": "string",
+                    "description": "Numeric user id of the account to follow.",
+                },
+            },
+            "required": ["target_user_id"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "follow_user",
+    },
+    {
+        "name": "vargate_twitter_unfollow_user",
+        "description": (
+            "Unfollow a Twitter/X user. Requires OAuth 2.0 with " "follows.write scope."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_user_id": {
+                    "type": "string",
+                    "description": "Numeric user id of the account to unfollow.",
+                },
+            },
+            "required": ["target_user_id"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "unfollow_user",
+    },
+    {
+        "name": "vargate_twitter_send_dm",
+        "description": (
+            "Send a direct message on Twitter/X. Requires OAuth 2.0 with "
+            "dm.write scope. Recipient must either follow you or have DMs "
+            "open to non-followers, or Twitter returns 403. Text up to "
+            "10,000 characters."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "participant_id": {
+                    "type": "string",
+                    "description": "Numeric user id of the DM recipient.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Message body, max 10,000 characters.",
+                },
+            },
+            "required": ["participant_id", "text"],
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "send_dm",
+    },
+    {
+        "name": "vargate_twitter_list_dm_conversations",
+        "description": (
+            "List recent DM events (incoming and outgoing). Read-only; "
+            "requires OAuth 2.0 with dm.read scope."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max events to return (default 20).",
+                    "default": 20,
+                },
+            },
+        },
+        "_vargate_tool": "twitter",
+        "_vargate_method": "list_dm_conversations",
+    },
+    {
         "name": "vargate_instagram_create_post",
         "description": (
             "Publish a single-image post to Instagram via the Graph API. "
