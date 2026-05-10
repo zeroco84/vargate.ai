@@ -33,6 +33,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from vargate_audit_chain import GENESIS_HASH
+from vargate_audit_chain import compute_record_hash as _audit_chain_compute_record_hash
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -633,9 +635,26 @@ def compute_record_hash(
     severity: str,
     bundle_revision: str,
     prev_hash: str,
+    *,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> str:
-    """Compute SHA-256 hash of record fields in canonical order."""
-    payload = json.dumps(
+    """Compute the chain-bound SHA-256 hash for an audit_log record.
+
+    Sprint 16: this is now a thin wrapper over
+    ``vargate_audit_chain.compute_record_hash``. The 11 Pro-shaped fields
+    are serialized to canonical JSON; that JSON is the
+    ``canonical_bytes`` argument the generic primitive expects. The
+    generic primitive then binds ``tenant_id`` into the digest so a
+    record's hash from tenant A can never be replayed into tenant B's
+    chain.
+
+    Note: this changes the on-disk hash value vs. pre-Sprint-16 records,
+    because tenant_id is now part of the digest. Test environments
+    write-and-verify with the same algorithm so consistency holds; any
+    in-place production database with pre-Sprint-16 hashes would need a
+    rehash migration. Flagged in the Sprint 16 commit message.
+    """
+    canonical_bytes = json.dumps(
         {
             "action_id": action_id,
             "agent_id": agent_id,
@@ -650,8 +669,12 @@ def compute_record_hash(
             "prev_hash": prev_hash,
         },
         separators=(",", ":"),
+    ).encode("utf-8")
+    return _audit_chain_compute_record_hash(
+        tenant_id=tenant_id,
+        canonical_bytes=canonical_bytes,
+        prev_hash=prev_hash,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def get_prev_hash(conn: sqlite3.Connection, tenant_id: str = DEFAULT_TENANT_ID) -> str:
@@ -661,7 +684,7 @@ def get_prev_hash(conn: sqlite3.Connection, tenant_id: str = DEFAULT_TENANT_ID) 
         "SELECT record_hash FROM audit_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 1",
         (tenant_id,),
     ).fetchone()
-    return row["record_hash"] if row else "GENESIS"
+    return row["record_hash"] if row else GENESIS_HASH
 
 
 def write_audit_record(
@@ -721,6 +744,7 @@ def write_audit_record(
         severity=severity,
         bundle_revision=bundle_revision,
         prev_hash=prev_hash,
+        tenant_id=tenant_id,
     )
 
     now = datetime.now(timezone.utc).isoformat()
@@ -881,7 +905,7 @@ def _verify_tenant_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
     if not rows:
         return {"valid": True, "record_count": 0, "tenant_id": tenant_id}
 
-    expected_prev = "GENESIS"
+    expected_prev = GENESIS_HASH
 
     for row in rows:
         if row["prev_hash"] != expected_prev:
@@ -904,6 +928,7 @@ def _verify_tenant_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
             severity=row["severity"],
             bundle_revision=row["bundle_revision"],
             prev_hash=row["prev_hash"],
+            tenant_id=tenant_id,
         )
 
         if expected_hash != row["record_hash"]:
@@ -2662,7 +2687,7 @@ def _get_chain_tip() -> dict:
     conn.close()
     if row:
         return {"record_hash": row["record_hash"], "record_count": count}
-    return {"record_hash": "GENESIS", "record_count": 0}
+    return {"record_hash": GENESIS_HASH, "record_count": 0}
 
 
 _last_anchored_count = 0  # Hydrated from anchor_log on startup if available

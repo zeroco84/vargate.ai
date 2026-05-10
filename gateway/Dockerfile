@@ -11,10 +11,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Sprint 16: install the shared vargate-audit-chain package (Apache 2.0)
+# from the sibling packages/ directory. The build context is the repo
+# root (see docker-compose.yml's `context: .` for the gateway service)
+# so this path is relative to the repo root.
+COPY packages/audit-chain /opt/audit-chain
+RUN pip install --no-cache-dir /opt/audit-chain
+
+COPY gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY *.py .
+COPY gateway/*.py .
 
 RUN addgroup --system vargate && adduser --system --ingroup vargate vargate
 RUN mkdir -p /data /backup && chown -R vargate:vargate /data /backup /app

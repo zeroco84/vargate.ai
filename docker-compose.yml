@@ -92,7 +92,11 @@ services:
 
   gateway:
     build:
-      context: ./gateway
+      # Sprint 16: build context is the repo root so the gateway image
+      # can install the local vargate-audit-chain package from
+      # packages/audit-chain/ (sibling to gateway/).
+      context: .
+      dockerfile: gateway/Dockerfile
     ports:
       - "8000:8000"
     environment:

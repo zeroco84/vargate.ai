@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vargate-audit-chain"
+version = "0.1.0"
+description = "Shared per-tenant hash-chain and Merkle aggregator primitives used by Vargate Pro and Vargate Telemetry."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Twinlite Services Limited", email = "engineering@vargate.ai" },
+]
+maintainers = [
+  { name = "Twinlite Services Limited", email = "engineering@vargate.ai" },
+]
+keywords = [
+  "audit",
+  "hash-chain",
+  "merkle-tree",
+  "vargate",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security :: Cryptography",
+  "Typing :: Typed",
+]
+# No runtime dependencies — pure stdlib (hashlib, dataclasses, typing).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
+[project.urls]
+Homepage = "https://vargate.ai"
+Repository = "https://github.com/zeroco84/vargate-proxy"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vargate_audit_chain*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"

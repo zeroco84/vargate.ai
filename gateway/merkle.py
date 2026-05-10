@@ -1,150 +1,30 @@
 """
-Vargate Merkle Tree Implementation (Sprint 5 — AG-2.2 / AG-2.3)
+SQLite-bound Merkle helpers for Pro's audit_log (Sprint 5 — AG-2.2 / AG-2.3).
 
-Binary Merkle tree following RFC 6962 (Certificate Transparency) for interoperability.
-Supports:
-- Hourly tenant-scoped trees built from hash-chained audit records
-- O(log n) inclusion proofs: prove a record exists in a specific tree
-- Consistency proofs: prove tree N is a valid extension of tree N-1
-- JSON-serializable proofs for API delivery
+The pure Merkle math (`MerkleTree`, `GENESIS_ROOT`, leaf-pair hashing)
+moved into the `vargate-audit-chain` Python package in Sprint 16 so
+both Pro and Telemetry can build trees without depending on each
+other's storage. The DB-coupled helpers — hourly-tree builders against
+`audit_log`, inclusion proofs, consistency proofs, full-chain
+verification — stay here because they're intrinsically shaped around
+Pro's `audit_log` and `merkle_trees` SQLite tables.
 
-The linear hash chain is retained alongside Merkle trees:
-  - Chain provides forward integrity (detect single-record modification)
-  - Trees provide efficient proof generation and blockchain anchoring
+`from merkle import MerkleTree` and `from merkle import GENESIS_ROOT`
+continue to work via the re-exports below; existing main.py imports
+need no changes.
 
 Leaf ordering: RFC 6962 §2.1 — leaves are appended left-to-right in
 the order they appear in the audit log (by id ASC).
-
-Odd-leaf padding: Bitcoin-style — duplicate the last leaf to make even.
 """
 
-import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
-# Canonical root for an empty tree — deterministic sentinel value
-GENESIS_ROOT = hashlib.sha256(b"VARGATE_GENESIS").hexdigest()
-
-
-def _hash_pair(left_hex: str, right_hex: str) -> str:
-    """Hash two hex-encoded values together: SHA-256(left_bytes + right_bytes)."""
-    left_bytes = bytes.fromhex(left_hex)
-    right_bytes = bytes.fromhex(right_hex)
-    return hashlib.sha256(left_bytes + right_bytes).hexdigest()
-
-
-class MerkleTree:
-    """
-    Binary Merkle tree over SHA-256 leaf hashes.
-    Bitcoin-style: odd leaf count is padded by duplicating the last leaf.
-    """
-
-    def __init__(self, leaves: list[str]):
-        """
-        Args:
-            leaves: list of lowercase hex SHA-256 hashes (no 0x prefix).
-        """
-        self._leaves = list(leaves)
-        self._levels: list[list[str]] = []
-        self._build()
-
-    def _build(self):
-        """Construct all levels of the Merkle tree bottom-up."""
-        if not self._leaves:
-            self._levels = []
-            return
-
-        current = list(self._leaves)
-        if len(current) % 2 == 1:
-            current.append(current[-1])
-
-        self._levels = [current]
-
-        while len(current) > 1:
-            next_level = []
-            for i in range(0, len(current), 2):
-                next_level.append(_hash_pair(current[i], current[i + 1]))
-            if len(next_level) > 1 and len(next_level) % 2 == 1:
-                next_level.append(next_level[-1])
-            current = next_level
-            self._levels.append(current)
-
-    @property
-    def root(self) -> str:
-        if not self._levels:
-            return GENESIS_ROOT
-        return self._levels[-1][0]
-
-    @property
-    def leaf_count(self) -> int:
-        return len(self._leaves)
-
-    @property
-    def height(self) -> int:
-        return len(self._levels)
-
-    def get_proof(self, index: int) -> list[dict]:
-        """
-        Get an inclusion proof for the leaf at the given index.
-
-        Returns:
-            list of {"sibling": hex_hash, "position": "left"|"right"}
-            where position indicates the sibling's position relative to the
-            node being proved.
-        """
-        if index < 0 or index >= len(self._leaves):
-            raise IndexError(
-                f"Leaf index {index} out of range (0..{len(self._leaves) - 1})"
-            )
-
-        proof = []
-        idx = index
-
-        for level in self._levels[:-1]:
-            if idx % 2 == 0:
-                sibling_idx = idx + 1
-                sibling_pos = "right"
-            else:
-                sibling_idx = idx - 1
-                sibling_pos = "left"
-
-            if sibling_idx < len(level):
-                proof.append(
-                    {
-                        "sibling": level[sibling_idx],
-                        "position": sibling_pos,
-                    }
-                )
-
-            idx = idx // 2
-
-        return proof
-
-    @staticmethod
-    def verify_proof(leaf: str, proof: list[dict], root: str) -> bool:
-        """Verify a Merkle inclusion proof."""
-        current = leaf
-        for step in proof:
-            sibling = step["sibling"]
-            if step["position"] == "left":
-                current = _hash_pair(sibling, current)
-            else:
-                current = _hash_pair(current, sibling)
-        return current == root
-
-    @staticmethod
-    def from_db(conn: sqlite3.Connection) -> "MerkleTree":
-        """Build a MerkleTree from all active record hashes, ordered by id ASC."""
-        rows = conn.execute(
-            "SELECT record_hash FROM audit_log "
-            "WHERE erasure_status = 'active' OR erasure_status IS NULL "
-            "ORDER BY id ASC"
-        ).fetchall()
-        leaves = [
-            row[0] if isinstance(row, tuple) else row["record_hash"] for row in rows
-        ]
-        return MerkleTree(leaves)
+# Pure primitives — moved to vargate-audit-chain in Sprint 16.
+# Re-exported here so existing `from merkle import ...` call sites
+# (notably gateway/main.py) keep working without edits.
+from vargate_audit_chain.merkle import GENESIS_ROOT, MerkleTree  # noqa: F401
 
 
 # ── Hourly Tenant-Scoped Trees (Sprint 5, AG-2.2) ──────────────────────────
