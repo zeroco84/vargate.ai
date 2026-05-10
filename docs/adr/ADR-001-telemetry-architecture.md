@@ -152,7 +152,9 @@ The migration to a self-hosted classifier (Llama 3 8B fine-tuned, or similar) be
 
 ### h. Audit chain integration — Telemetry records hash-chain into the existing per-tenant chain
 
-**Decision:** Reuse Pro's existing per-tenant hash chain (genesis-per-tenant) and the AG-2.2 Merkle aggregator + Sepolia anchor. Telemetry records become a new record type appended to the same chain.
+**Decision:** Two chains per tenant — Pro's chain over `audit_log` (autonomous-agent actions), Telemetry's chain over `telemetry_records` (human Claude usage) — both built on the same shared crypto primitives (the `vargate-audit-chain` package extracted from Pro for this purpose). Each chain anchors independently to Sepolia. Genesis-per-tenant per chain.
+
+**Rationale (revised after the T2.2 extraction work):** Pro's existing chain primitives are intrinsically shaped around the `audit_log` table — `compute_record_hash()` takes 11 specific Pro fields, the writes and reads are `audit_log`-shaped. Forcing Telemetry's records into the same chain would require either bloating `audit_log` with optional Telemetry-only columns or pushing every record through a discriminator + JSON blob. Both are architectural sins. Two chains per tenant with shared primitives is what the code naturally supports, and it gives auditors a cleaner separation: Tyr's actions are chained here, Ogma's records are chained here, both verifiable independently. If a customer ever asks for a single Merkle root spanning both, a cross-chain aggregator pass is a separate, additive concern.
 
 **Rationale:** A single audit chain per tenant is much easier to reason about and to defend in audit than two parallel chains. The chain doesn't care what kind of record is being appended; it just needs the canonical content hash. We do need to define the Telemetry record schema carefully (record type, content hash, MinIO blob reference, metadata) so chain verification stays cheap. Note: only the Merkle root is anchored to Sepolia — never content, never tenant identifiers.
 
