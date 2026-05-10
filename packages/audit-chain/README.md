@@ -96,17 +96,18 @@ This package lives at `packages/audit-chain/` inside the
 `pip install /opt/audit-chain` after copying the package source into
 the build context. See `gateway/Dockerfile`.
 
-**Outside Pro (Telemetry):** install via Git+SSH from the Pro repo:
+**Outside this repo (e.g., Ogma's `vargate-telemetry`):** install via
+Git+SSH from `vargate.ai`:
 
 ```toml
 # in vargate-telemetry/pyproject.toml
 dependencies = [
-    "vargate-audit-chain @ git+ssh://git@github.com/zeroco84/vargate-proxy.git@main#subdirectory=packages/audit-chain",
+    "vargate-audit-chain @ git+ssh://git@github.com/zeroco84/vargate.ai.git@<sha>#subdirectory=packages/audit-chain",
 ]
 ```
 
-Telemetry pins to a specific Pro commit in production; the example
-above tracks `main` for development convenience.
+Consumers pin to a specific SHA for reproducible builds; bump the
+pinned commit deliberately when picking up upstream changes.
 
 ## License
 
