@@ -35,6 +35,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from vargate_audit_chain import GENESIS_HASH
 from vargate_audit_chain import compute_record_hash as _audit_chain_compute_record_hash
+from vargate_audit_chain import (
+    compute_record_hash_legacy as _audit_chain_compute_record_hash_legacy,
+)
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -654,7 +657,48 @@ def compute_record_hash(
     in-place production database with pre-Sprint-16 hashes would need a
     rehash migration. Flagged in the Sprint 16 commit message.
     """
-    canonical_bytes = json.dumps(
+    canonical_bytes = _canonical_audit_bytes(
+        action_id=action_id,
+        agent_id=agent_id,
+        tool=tool,
+        method=method,
+        params=params,
+        requested_at=requested_at,
+        decision=decision,
+        violations=violations,
+        severity=severity,
+        bundle_revision=bundle_revision,
+        prev_hash=prev_hash,
+    )
+    return _audit_chain_compute_record_hash(
+        tenant_id=tenant_id,
+        canonical_bytes=canonical_bytes,
+        prev_hash=prev_hash,
+    )
+
+
+def _canonical_audit_bytes(
+    action_id: str,
+    agent_id: str,
+    tool: str,
+    method: str,
+    params: str,
+    requested_at: str,
+    decision: str,
+    violations: str,
+    severity: str,
+    bundle_revision: str,
+    prev_hash: str,
+) -> bytes:
+    """Build the canonical JSON bytes for an audit_log record.
+
+    Shared between `compute_record_hash` (new tenant-bound write path)
+    and `compute_record_hash_legacy` (verifier fallback for pre-Sprint-16
+    records). Field ordering and serialization match the pre-Sprint-16
+    payload exactly, so legacy records' stored record_hash recomputes
+    to the same SHA-256 when fed back through `sha256(canonical_bytes)`.
+    """
+    return json.dumps(
         {
             "action_id": action_id,
             "agent_id": agent_id,
@@ -670,11 +714,45 @@ def compute_record_hash(
         },
         separators=(",", ":"),
     ).encode("utf-8")
-    return _audit_chain_compute_record_hash(
-        tenant_id=tenant_id,
-        canonical_bytes=canonical_bytes,
+
+
+def compute_record_hash_legacy(
+    action_id: str,
+    agent_id: str,
+    tool: str,
+    method: str,
+    params: str,
+    requested_at: str,
+    decision: str,
+    violations: str,
+    severity: str,
+    bundle_revision: str,
+    prev_hash: str,
+) -> str:
+    """Pre-Sprint-16 record hash — verifier fallback only.
+
+    Records written before commit 712ec02 (2026-05-10) had their hashes
+    computed as `sha256(canonical_audit_bytes)` with no tenant_id
+    binding. This wrapper rebuilds the same canonical bytes and runs
+    them through the package's `compute_record_hash_legacy`, so
+    `_verify_tenant_chain` can fall back to this form when the new
+    tenant-bound hash doesn't match a stored record_hash. New records
+    MUST use `compute_record_hash` (the tenant-bound form).
+    """
+    canonical_bytes = _canonical_audit_bytes(
+        action_id=action_id,
+        agent_id=agent_id,
+        tool=tool,
+        method=method,
+        params=params,
+        requested_at=requested_at,
+        decision=decision,
+        violations=violations,
+        severity=severity,
+        bundle_revision=bundle_revision,
         prev_hash=prev_hash,
     )
+    return _audit_chain_compute_record_hash_legacy(canonical_bytes)
 
 
 def get_prev_hash(conn: sqlite3.Connection, tenant_id: str = DEFAULT_TENANT_ID) -> str:
@@ -932,12 +1010,32 @@ def _verify_tenant_chain(conn: sqlite3.Connection, tenant_id: str) -> dict:
         )
 
         if expected_hash != row["record_hash"]:
-            return {
-                "valid": False,
-                "failed_at_action_id": row["action_id"],
-                "reason": "record_hash mismatch",
-                "tenant_id": tenant_id,
-            }
+            # Pre-Sprint-16 records were hashed without tenant_id
+            # binding. Try the legacy form before declaring mismatch so
+            # chains that span the migration verify end-to-end. Tamper
+            # detection holds: a modified field changes canonical_bytes
+            # and therefore produces a different SHA-256 under either
+            # form. See `compute_record_hash_legacy` for the trade-off.
+            legacy_hash = compute_record_hash_legacy(
+                action_id=row["action_id"],
+                agent_id=row["agent_id"],
+                tool=row["tool"],
+                method=row["method"],
+                params=row["params"],
+                requested_at=row["requested_at"],
+                decision=row["decision"],
+                violations=row["violations"],
+                severity=row["severity"],
+                bundle_revision=row["bundle_revision"],
+                prev_hash=row["prev_hash"],
+            )
+            if legacy_hash != row["record_hash"]:
+                return {
+                    "valid": False,
+                    "failed_at_action_id": row["action_id"],
+                    "reason": "record_hash mismatch",
+                    "tenant_id": tenant_id,
+                }
 
         expected_prev = row["record_hash"]
 
