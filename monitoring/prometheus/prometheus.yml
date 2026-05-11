@@ -15,3 +15,14 @@ scrape_configs:
     static_configs:
       - targets: ["gateway:8000"]
     metrics_path: /metrics
+
+  # T4.7.1: Ogma's gateway joins this network via the Telemetry compose's
+  # `tyr_observability` bridge. Resolved by the `ogma-gateway` alias
+  # (not `gateway` — that's Tyr's own gateway). 30s interval matches
+  # the cadence of the onboarding metrics being scraped (no need for
+  # 15s; onboarding events are per-user, not per-request).
+  - job_name: ogma-gateway
+    static_configs:
+      - targets: ["ogma-gateway:8000"]
+    metrics_path: /metrics
+    scrape_interval: 30s
