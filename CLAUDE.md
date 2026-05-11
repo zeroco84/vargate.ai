@@ -101,3 +101,8 @@ Vargate implements the Agent Governance Certification Standard (AGCS v0.9). Key 
 - AG-2.8: Policy replay / decision replayability
 
 When implementing features, reference AGCS controls where applicable.
+
+## Managed Agents Integration
+- Feature spec: `docs/managed-agents-integration-spec.md`
+- Sprint plan: `docs/managed-agents-sprint-plan.md`
+- Current sprint: Sprint 9 (MCP Server Protocol & Schema Migration)
