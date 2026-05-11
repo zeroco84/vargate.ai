@@ -22,3 +22,11 @@ secrets.yaml
 
 # Sprint plans and internal docs — never commit
 *.docx
+
+# Claude Code working directory
+.claude/
+
+# Hardhat build outputs
+blockchain/artifacts/
+blockchain/cache/
+site.migrated-to-vargate-frontend/
