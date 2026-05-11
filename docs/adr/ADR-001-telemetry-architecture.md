@@ -16,6 +16,7 @@ This ADR proposes the system architecture, anchored in the current Vargate Pro s
 
 - **Reuse vs. redesign.** Pro's stack (FastAPI, SQLite, Redis, SoftHSM2, OPA, Sepolia anchoring, React) is small and operates well at Pro's volumes. Telemetry's record volumes and analytics needs push past where SQLite + ad-hoc Python is comfortable.
 - **Architecture commitments are non-negotiable.** Region isolation, per-tenant region pinning, no cross-region content movement, per-tenant key separation, read-only against Anthropic — all decided in the product brief and treated as constraints here, not options.
+- **UI lives in a separate proprietary repo (`vargate-frontend`), never in the licensed product repos.** The licensed repos (`vargate-proxy`, `vargate-telemetry`, `vargate-audit-chain`) ship backend code only. The dashboard is Vargate's commercial differentiator, not part of the licensed offering — self-hosting customers get the API and CLI, and either build their own UI or pay for the hosted SaaS.
 - **Per-record pricing requires metering accuracy.** Without trustworthy counts, pricing is fiction.
 - **The product brief flags anomaly detection as the heaviest data-science lift.** Architecture should make that pillar additive (a separate worker pool, swappable models) rather than load-bearing in v1.
 

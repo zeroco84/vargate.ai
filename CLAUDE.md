@@ -6,6 +6,22 @@ Vargate is an AI agent supervision proxy. It intercepts autonomous agent tool ca
 
 Stack: FastAPI gateway, OPA, SQLite (WAL mode), Redis, SoftHSM2, Hardhat/Sepolia, React dashboard, nginx, Docker Compose.
 
+## Product Naming
+
+- **Vargate** is the parent brand (the company / platform).
+- **Tyr** is the proxy product (the autonomous-agent supervision layer; this repo). **Do not call it "Pro" — that's deprecated shorthand.** Always use Tyr.
+- **Ogma** is the telemetry product (independent audit layer for human Claude usage; lives in the separate `vargate-telemetry` repo). Do not call it "Telemetry" in user-facing language; "telemetry" remains acceptable as a generic technical noun.
+- Parent attribution is "by Vargate" (e.g., "Tyr by Vargate", "Ogma by Vargate") in marketing contexts.
+
+## Repo Boundaries
+
+This repo (`vargate-proxy`) ships **Tyr backend code only**. UI source code does not belong in any licensed product repo.
+
+- Marketing site lives in `vargate-frontend` (already migrated out of `vargate-proxy/site/`).
+- Tyr's operator dashboard currently still lives in `vargate-proxy/ui/`. **Known follow-up: migrate `ui/` to `vargate-frontend/apps/tyr-dashboard/` when there's a natural moment** (e.g., next substantial dashboard change). When that migration happens, this repo's `ui/` directory comes out, the deploy pipeline stops building it, and the licensed surface is backend-only.
+- Ogma's dashboard is built directly in `vargate-frontend/apps/ogma-dashboard/` from the start (never enters the licensed repo).
+- Shared design system at `vargate-frontend/packages/design-system/` is consumed by all UI apps.
+
 ## Environments
 
 - **Production:** `vargate@204.168.135.95` — customer-facing, serves vargate.ai
