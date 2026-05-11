@@ -8,6 +8,7 @@ from vargate_audit_chain import (
     GENESIS_HASH,
     ChainRecord,
     compute_record_hash,
+    compute_record_hash_legacy,
     verify_record_chain,
 )
 
@@ -187,3 +188,141 @@ def test_verify_accepts_iterator_streaming() -> None:
     result = verify_record_chain("t", streaming_source())
     assert result.valid is True
     assert result.record_count == 3
+
+
+# --- legacy (pre-Sprint-16) hash compatibility ------------------------------
+
+
+import hashlib  # noqa: E402 — kept adjacent to the legacy tests below
+
+
+def _build_legacy_chain(payloads: list[bytes]) -> list[ChainRecord]:
+    """Build a chain whose records carry pre-Sprint-16 hashes."""
+    records = []
+    prev = GENESIS_HASH
+    for payload in payloads:
+        rh = compute_record_hash_legacy(payload)
+        records.append(
+            ChainRecord(
+                canonical_bytes=payload,
+                prev_hash=prev,
+                record_hash=rh,
+            )
+        )
+        prev = rh
+    return records
+
+
+def test_compute_record_hash_legacy_is_sha256_of_canonical() -> None:
+    """The legacy form is plain SHA-256 of canonical_bytes — no framing."""
+    canonical = b"some canonical record bytes"
+    expected = hashlib.sha256(canonical).hexdigest()
+    assert compute_record_hash_legacy(canonical) == expected
+
+
+def test_compute_record_hash_legacy_rejects_non_bytes() -> None:
+    with pytest.raises(TypeError):
+        compute_record_hash_legacy("not bytes")  # type: ignore[arg-type]
+
+
+def test_compute_record_hash_legacy_no_tenant_binding() -> None:
+    """Legacy form has no tenant binding — same canonical, same hash."""
+    canonical = b"payload"
+    # The legacy function signature doesn't accept tenant_id at all,
+    # which is what makes it useful as a verifier fallback: the same
+    # canonical_bytes hashes to one value regardless of tenant.
+    assert compute_record_hash_legacy(canonical) == compute_record_hash_legacy(
+        canonical
+    )
+
+
+def test_verify_accepts_legacy_hashed_chain() -> None:
+    """A chain of pre-Sprint-16 records verifies without any per-record flag.
+
+    The verifier tries the new tenant-bound hash first, falls back to
+    the legacy form on mismatch. The caller passes a tenant_id (because
+    all post-Sprint-16 verifies need one), but for legacy records the
+    tenant_id is effectively unused.
+    """
+    chain = _build_legacy_chain([b"first", b"second", b"third"])
+    result = verify_record_chain("tenant-A", iter(chain))
+    assert result.valid is True
+    assert result.record_count == 3
+
+
+def test_verify_accepts_legacy_chain_under_any_tenant_id() -> None:
+    """Legacy records verify under any tenant_id — that's the trade-off.
+
+    Pre-Sprint-16 hashes don't bind tenant_id, so the legacy fallback
+    cannot detect a chain being re-attributed to a different tenant.
+    Documenting the trade-off here so future readers see it pinned.
+    """
+    chain = _build_legacy_chain([b"x", b"y"])
+    a = verify_record_chain("tenant-A", iter(chain))
+    b = verify_record_chain("tenant-B", iter(chain))
+    assert a.valid is True
+    assert b.valid is True
+
+
+def test_verify_accepts_mixed_legacy_and_new_records() -> None:
+    """A chain that spans the Sprint 16 migration verifies end-to-end.
+
+    Records before the cutover were hashed with the legacy form;
+    records after the cutover were hashed with the new tenant-bound
+    form. The prev_hash chain still links cleanly because each
+    record's record_hash is what its successor's prev_hash points at,
+    regardless of which hash function produced it.
+    """
+    tenant = "tenant-mixed"
+    payloads_legacy = [b"old-1", b"old-2"]
+    payloads_new = [b"new-1", b"new-2"]
+
+    records: list[ChainRecord] = []
+    prev = GENESIS_HASH
+
+    # First two records under the legacy form.
+    for p in payloads_legacy:
+        rh = compute_record_hash_legacy(p)
+        records.append(
+            ChainRecord(canonical_bytes=p, prev_hash=prev, record_hash=rh)
+        )
+        prev = rh
+
+    # Next two under the new tenant-bound form.
+    for p in payloads_new:
+        rh = compute_record_hash(tenant, p, prev)
+        records.append(
+            ChainRecord(canonical_bytes=p, prev_hash=prev, record_hash=rh)
+        )
+        prev = rh
+
+    result = verify_record_chain(tenant, iter(records))
+    assert result.valid is True
+    assert result.record_count == 4
+
+
+def test_legacy_fallback_still_detects_canonical_tamper() -> None:
+    """Tampering canonical_bytes fails both new and legacy forms.
+
+    The legacy fallback is not a free pass — both hash functions are
+    SHA-256-based, so any change to canonical_bytes produces a
+    different digest under either. The chain still catches the tamper.
+    """
+    chain = _build_legacy_chain([b"original", b"second"])
+    # Tamper: keep the stored record_hash, mutate the canonical bytes.
+    tampered = [
+        ChainRecord(
+            canonical_bytes=b"tampered",
+            prev_hash=chain[0].prev_hash,
+            record_hash=chain[0].record_hash,
+        ),
+        chain[1],
+    ]
+    result = verify_record_chain("tenant-A", iter(tampered))
+    assert result.valid is False
+    assert result.failed_at_index == 0
+    # The failure_reason should name BOTH forms so future debuggers
+    # know the fallback was attempted.
+    msg = result.failure_reason or ""
+    assert "record_hash mismatch" in msg
+    assert "legacy form" in msg

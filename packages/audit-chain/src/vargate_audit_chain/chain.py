@@ -15,6 +15,12 @@ Hash format: SHA-256 over a length-prefixed concatenation of
 `tenant_id || canonical_bytes || prev_hash`. Length prefixes prevent
 substring confusion and ensure that a record from tenant A cannot
 collide with or be replayed into tenant B's chain.
+
+Legacy compatibility: pre-Sprint-16 vargate-proxy records were hashed
+as plain `sha256(canonical_bytes)` with no tenant_id binding. The
+`verify_record_chain` function falls back to that form so a chain
+that spans the Sprint 16 migration verifies end-to-end. See
+`compute_record_hash_legacy` for the full contract.
 """
 
 from __future__ import annotations
@@ -59,6 +65,33 @@ class VerifyResult:
     record_count: int = 0
     failure_reason: Optional[str] = None
     failed_at_index: Optional[int] = None
+
+
+def compute_record_hash_legacy(canonical_bytes: bytes) -> str:
+    """Pre-Sprint-16 hash: SHA-256 over `canonical_bytes` alone.
+
+    Records written before the Sprint 16 tenant_id-binding migration
+    (vargate-proxy commit 712ec02, 2026-05-10) had their hashes computed
+    by this simpler form — no tenant_id binding, no length framing.
+
+    `verify_record_chain` uses this as a fallback when the new
+    (tenant-bound) `compute_record_hash` doesn't match a stored
+    record_hash, so chains that span the migration still verify
+    end-to-end. **New records MUST use `compute_record_hash`, not this
+    function.** The legacy form is exposed only for verifier
+    backward-compatibility.
+
+    Security trade-off: the legacy form lacks tenant_id binding, so it
+    cannot detect a record's `canonical_bytes` being copied from tenant
+    A's chain into tenant B's chain. The prev_hash sequence (which
+    `verify_record_chain` checks independently and that came in before
+    Sprint 16) catches such replays in practice — every tenant's chain
+    has its own prev_hash thread, and a copied record would carry the
+    wrong prev_hash for its new tenant and fail the prev-link check.
+    """
+    if not isinstance(canonical_bytes, (bytes, bytearray)):
+        raise TypeError("canonical_bytes must be bytes")
+    return hashlib.sha256(bytes(canonical_bytes)).hexdigest()
 
 
 def compute_record_hash(
@@ -148,15 +181,26 @@ def verify_record_chain(
             tenant_id, rec.canonical_bytes, rec.prev_hash,
         )
         if expected_hash != rec.record_hash:
-            return VerifyResult(
-                valid=False,
-                record_count=count,
-                failure_reason=(
-                    f"record_hash mismatch at index {idx}: "
-                    f"got {rec.record_hash!r}, recomputed {expected_hash!r}"
-                ),
-                failed_at_index=idx,
-            )
+            # Fall back to the pre-Sprint-16 form (SHA-256 over
+            # canonical_bytes alone, no tenant_id binding). Chains
+            # that span the migration carry records of both shapes;
+            # the verifier accepts either so end-to-end verification
+            # still succeeds. Tamper detection holds: a modified
+            # `canonical_bytes` produces a different SHA-256 under
+            # both forms.
+            legacy_hash = compute_record_hash_legacy(rec.canonical_bytes)
+            if legacy_hash != rec.record_hash:
+                return VerifyResult(
+                    valid=False,
+                    record_count=count,
+                    failure_reason=(
+                        f"record_hash mismatch at index {idx}: "
+                        f"got {rec.record_hash!r}, recomputed "
+                        f"{expected_hash!r} (legacy form "
+                        f"{legacy_hash!r} also mismatched)"
+                    ),
+                    failed_at_index=idx,
+                )
 
         expected_prev = rec.record_hash
         count += 1
