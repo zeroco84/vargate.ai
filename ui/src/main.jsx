@@ -238,7 +238,7 @@ function AuthGate({ children }) {
               icon in incognito. */}
           <img src="/dashboard/vargate-wordmark-white.png" alt="Vargate" style={{ height: '72px', width: 'auto', display: 'inline-block' }} />
         </a>
-        <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Audit Dashboard</div>
+        <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Login to Tyr</div>
 
         {error && <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', padding: '8px', background: 'rgba(239,68,68,0.1)', borderRadius: '8px' }}>{error}</div>}
         {success && <div style={{ color: '#10b981', fontSize: '13px', marginBottom: '12px', padding: '8px', background: 'rgba(16,185,129,0.1)', borderRadius: '8px' }}>{success}</div>}
