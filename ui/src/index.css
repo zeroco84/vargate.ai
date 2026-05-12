@@ -50,6 +50,11 @@
   --space-xl: 24px;
   --space-2xl: 32px;
 
+  /* ── Layout ──────────────────────────────────────────────────────── */
+  /* Header is sticky; everything below offsets by this. Changing it
+     in one place flows through to the five page-padding-top sites. */
+  --header-height: 72px;
+
   /* ── Radii ───────────────────────────────────────────────────────── */
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -87,7 +92,7 @@ body {
   grid-template-columns: 280px 1fr 300px;
   gap: var(--space-lg);
   padding: var(--space-lg);
-  padding-top: calc(56px + var(--space-lg));
+  padding-top: calc(var(--header-height) + var(--space-lg));
   max-width: 1800px;
   margin: 0 auto;
   width: 100%;
@@ -103,7 +108,7 @@ body {
   position: fixed;
   top: 0; left: 0; right: 0;
   z-index: 100;
-  height: 56px;
+  height: var(--header-height);
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
@@ -128,8 +133,9 @@ body {
 }
 
 .header-logo-img {
-  height: 48px;
+  height: 56px;
   width: auto;
+  display: block;
 }
 
 .header-subtitle {
@@ -578,7 +584,7 @@ body {
   .main-content {
     grid-template-columns: 1fr;
     padding: var(--space-md);
-    padding-top: calc(56px + var(--space-md));
+    padding-top: calc(var(--header-height) + var(--space-md));
   }
   .col-left, .col-right {
     display: grid;
@@ -590,7 +596,7 @@ body {
 @media (max-width: 640px) {
   .main-content {
     padding: var(--space-sm);
-    padding-top: calc(56px + var(--space-sm));
+    padding-top: calc(var(--header-height) + var(--space-sm));
     gap: var(--space-sm);
   }
   .col-left, .col-right {
@@ -604,7 +610,7 @@ body {
 
 .settings-layout {
   padding: var(--space-xl);
-  padding-top: calc(56px + var(--space-xl));
+  padding-top: calc(var(--header-height) + var(--space-xl));
   max-width: 960px;
   margin: 0 auto;
   display: flex;
