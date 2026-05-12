@@ -223,8 +223,14 @@ function AuthGate({ children }) {
         backdropFilter: 'blur(20px)',
         width: '380px',
       }}>
-        <a href="/" aria-label="Vargate home" style={{ display: 'block', textAlign: 'center', marginBottom: '12px' }}>
-          <img src="/vargate-logo.svg" alt="Vargate" style={{ height: '64px', width: 'auto', display: 'inline-block' }} />
+        <a href="/" aria-label="Vargate home" style={{ display: 'block', textAlign: 'center', marginBottom: '16px' }}>
+          {/* 96px so the visible "Vargate.ai" wordmark inside the SVG's
+              `770 800 1480 420` viewBox renders large enough to dominate
+              the auth card. The viewBox has ~10% vertical padding around
+              the wordmark glyphs, so at 96px tall the visible mark
+              renders ~65-70px tall — ~3x the "Audit Dashboard" headline
+              below, which matches what a "logo" should feel like. */}
+          <img src="/vargate-logo.svg" alt="Vargate" style={{ height: '96px', width: 'auto', display: 'inline-block' }} />
         </a>
         <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Audit Dashboard</div>
 
