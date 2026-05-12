@@ -72,7 +72,7 @@ export default function Header({ chain, liveMode, setLiveMode, anchorStatus, pol
     <header className="header">
       <div className="header-left">
         <a href="/" aria-label="Vargate home" style={{ display: 'flex', alignItems: 'center', lineHeight: 0 }}>
-          <img src="/vargate-logo.svg" alt="Vargate" className="header-logo-img" />
+          <img src="/vargate-wordmark-white.png" alt="Vargate" className="header-logo-img" />
         </a>
         <span className="header-subtitle">{isPublic ? 'Public Audit Dashboard' : 'Supervision Gateway'}</span>
         {isPublic && session?.tenantName && (
