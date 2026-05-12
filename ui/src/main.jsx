@@ -229,7 +229,14 @@ function AuthGate({ children }) {
               At 72px tall × 3.96:1 aspect = 285px wide, which fits the
               380px auth card's 300px content area with 7-8px margin
               either side. Bigger than this overflows the card. */}
-          <img src="/vargate-wordmark-white.png" alt="Vargate" style={{ height: '72px', width: 'auto', display: 'inline-block' }} />
+          {/* Path is /dashboard/... not /... because the React app
+              loads at vargate.ai/dashboard/, but the browser resolves
+              absolute paths against the apex. Without the explicit
+              prefix the request goes to /var/www/vargate-marketing/
+              (marketing nginx) and falls through to a 404 / SPA-
+              fallback HTML — exactly what produced the broken-image
+              icon in incognito. */}
+          <img src="/dashboard/vargate-wordmark-white.png" alt="Vargate" style={{ height: '72px', width: 'auto', display: 'inline-block' }} />
         </a>
         <div style={{ fontSize: '22px', fontWeight: 600, color: '#e2e8f0', marginBottom: '8px' }}>Audit Dashboard</div>
 
