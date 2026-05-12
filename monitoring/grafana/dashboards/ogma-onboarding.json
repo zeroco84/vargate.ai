@@ -12,9 +12,8 @@
       "id": 1,
       "title": "Onboarding step duration (P95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "description": "p95 wall-clock duration of each onboarding step. Buckets configured per T4.7: 0.5/1/2/5/10/30/60/120s. Only successful step completions are observed.",
+      "description": "p95 wall-clock duration of each onboarding step. Buckets configured per T4.7: 0.5/1/2/5/10/30/60/120s. Only successful step completions are observed. Empty until first onboarding completes.",
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum(rate(vargate_onboarding_step_seconds_bucket{job=\"ogma-gateway\"}[5m])) by (le, step))",
@@ -37,9 +36,8 @@
       "id": 2,
       "title": "Time to first pull (P50 / P95)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "description": "Wall-clock from SSO sign-in to the first telemetry_records row landing for the tenant. Once-per-tenant observation. Threshold line marks the marketing claim of 60s.",
+      "description": "Wall-clock from SSO sign-in to the first telemetry_records row landing for the tenant. Once-per-tenant observation. Threshold line marks the marketing claim of 60s. Empty until the first tenant's first backfill row lands.",
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum(rate(vargate_onboarding_time_to_first_pull_seconds_bucket{job=\"ogma-gateway\"}[1h])) by (le))",
@@ -75,9 +73,8 @@
       "id": 3,
       "title": "Onboarding funnel (last 24h)",
       "type": "barchart",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
-      "description": "Counts per outcome label over the last 24h. `completed` is the desired terminal; the four `abandoned_at_*` labels are populated by a future background sweep (T4.7 reserved the slots but the sweep is unbuilt).",
+      "description": "Counts per outcome label over the last 24h. `completed` is the desired terminal; the four `abandoned_at_*` labels are populated by a future background sweep (T4.7 reserved the slots but the sweep is unbuilt). All five labels are pre-touched at zero so the chart axis renders the full funnel even before the first onboarding completes.",
       "targets": [
         {
           "expr": "sum by (outcome) (increase(vargate_onboarding_completion_total{job=\"ogma-gateway\"}[24h]))",

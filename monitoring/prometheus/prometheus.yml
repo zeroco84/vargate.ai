@@ -11,9 +11,20 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 scrape_configs:
+  # Target by container hostname (`vargate-gateway-1`), not by the
+  # bare service alias `gateway`. Ogma's gateway also joins
+  # `vargate_default` (T4.7.1) and Compose auto-registers its
+  # service name `gateway` as a network alias too. Docker's
+  # embedded DNS resolves duplicate aliases to whichever container
+  # joined the network last — so `gateway:8000` was silently
+  # resolving to Ogma's gateway after the T4.7.1 deploy, and Tyr's
+  # `gateway_*` metrics stopped flowing into Prom. `vargate-gateway-1`
+  # is the unique container hostname for Tyr's gateway; Ogma's
+  # container has its own unique `ogma-gateway` alias (see the
+  # second scrape_config below).
   - job_name: vargate-gateway
     static_configs:
-      - targets: ["gateway:8000"]
+      - targets: ["vargate-gateway-1:8000"]
     metrics_path: /metrics
 
   # T4.7.1: Ogma's gateway joins this network via the Telemetry compose's
