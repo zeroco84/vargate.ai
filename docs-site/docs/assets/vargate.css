@@ -1,0 +1,146 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   vargate.css — match developer.vargate.ai (MkDocs Material) to the
+   vargate.ai marketing site. Light, editorial: Inter Tight + JetBrains Mono,
+   warm paper palette, indigo accent, clay (--stamp) mono eyebrows, thin
+   --line borders. Tokens ported from vargate-frontend/styles.css.
+   CSS-only (no theme partial overrides). ═══════════════════════════════════ */
+
+:root {
+  --vg-ink:     #1f1f1e;
+  --vg-ink-2:   #57534e;
+  --vg-ink-3:   #8c8780;
+  --vg-ink-4:   #b8b3ac;
+  --vg-paper:   #ffffff;
+  --vg-paper-2: #faf9f7;
+  --vg-paper-3: #f0eee6;
+  --vg-line:    #ebe8df;
+  --vg-line-2:  #dad9d4;
+  --vg-indigo:  #5c5ce6;
+  --vg-indigo-2:#4747c7;
+  --vg-stamp:   #a8784f;   /* clay — the generic editorial accent (eyebrows, rules) */
+  --vg-ogma:    #5d6f5a;   /* sage */
+  --vg-anomaly: #b03a2e;
+}
+
+/* ---- Map Material's design tokens to the marketing palette (light scheme) ---- */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color:        var(--vg-paper-2);
+  --md-default-fg-color:        var(--vg-ink);
+  --md-default-fg-color--light: var(--vg-ink-2);
+  --md-default-fg-color--lighter: var(--vg-ink-3);
+  --md-default-fg-color--lightest: var(--vg-line);
+  --md-primary-fg-color:        var(--vg-paper-2);
+  --md-primary-bg-color:        var(--vg-ink);
+  --md-accent-fg-color:         var(--vg-indigo-2);
+  --md-typeset-a-color:         var(--vg-indigo);
+  --md-code-bg-color:           var(--vg-paper-3);
+  --md-code-fg-color:           var(--vg-ink);
+  --md-typeset-mark-color:      var(--vg-indigo-tint, #eeedfb);
+  --md-footer-bg-color:         var(--vg-paper);
+  --md-footer-bg-color--dark:   var(--vg-paper-3);
+  --md-footer-fg-color:         var(--vg-ink-2);
+}
+
+body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
+
+/* ---- Header: paper bar + ink text + line border (the marketing nav feel) ---- */
+.md-header {
+  background: rgba(250, 249, 247, 0.92);
+  color: var(--vg-ink);
+  border-bottom: 1px solid var(--vg-line);
+  box-shadow: none;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.md-header[data-md-state="shadow"], .md-header--shadow { box-shadow: none; }
+.md-header__title { font-weight: 500; letter-spacing: -0.01em; }
+.md-header__topic { color: var(--vg-ink); }
+
+/* Header search → paper-3 pill so it reads on the light bar */
+.md-search__form { background: var(--vg-paper-3); border: 1px solid var(--vg-line-2); border-radius: 6px; }
+.md-search__form:hover { background: #eceadf; }
+.md-search__input { color: var(--vg-ink); }
+.md-search__input::placeholder { color: var(--vg-ink-3); }
+[data-md-color-scheme="default"] .md-search__icon { color: var(--vg-ink-3); }
+
+/* ---- Product tabs ---- */
+.md-tabs {
+  background: var(--vg-paper-2);
+  color: var(--vg-ink-2);
+  border-bottom: 1px solid var(--vg-line);
+}
+.md-tabs__link { opacity: 1; color: var(--vg-ink-2); font-size: 0.72rem; letter-spacing: -0.005em; }
+.md-tabs__link:hover { color: var(--vg-ink); }
+.md-tabs__link--active { color: var(--vg-ink); font-weight: 500; }
+
+/* ---- Sidebar nav ---- */
+.md-nav { font-size: 0.72rem; }
+.md-nav__title { color: var(--vg-ink-3); font-family: var(--md-code-font, monospace); font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase; }
+.md-nav__link { color: var(--vg-ink-2); }
+.md-nav__link:hover, .md-nav__link:focus { color: var(--vg-indigo-2); }
+.md-nav__link--active, .md-nav__item--active > .md-nav__link {
+  color: var(--vg-ink); font-weight: 500;
+  border-left: 2px solid var(--vg-indigo); padding-left: 0.5rem; margin-left: -0.55rem;
+}
+
+/* ---- Typography (Inter Tight, editorial weights + tight tracking) ---- */
+.md-typeset { color: var(--vg-ink-2); font-size: 0.82rem; line-height: 1.65; }
+.md-typeset h1 { color: var(--vg-ink); font-weight: 500; letter-spacing: -0.028em; font-size: 2.1rem; line-height: 1.08; }
+.md-typeset h2 { color: var(--vg-ink); font-weight: 500; letter-spacing: -0.022em; margin-top: 2.2em; padding-top: 0.6em; border-top: 1px solid var(--vg-line); }
+.md-typeset h3 { color: var(--vg-ink); font-weight: 500; letter-spacing: -0.015em; }
+.md-typeset h4, .md-typeset h5 { color: var(--vg-ink); font-weight: 500; }
+.md-typeset a { color: var(--vg-indigo); text-decoration-color: var(--vg-line-2); }
+.md-typeset a:hover { color: var(--vg-indigo-2); }
+
+/* ---- Code ---- */
+.md-typeset code, .md-typeset pre { font-feature-settings: normal; }
+.md-typeset pre > code { border: 1px solid var(--vg-line); border-radius: 8px; }
+.md-typeset code { background: var(--vg-paper-3); border-radius: 3px; }
+.md-typeset .highlight { border-radius: 8px; }
+
+/* ---- Tables ---- */
+.md-typeset table:not([class]) { border: 1px solid var(--vg-line); border-radius: 8px; overflow: hidden; font-size: 0.74rem; }
+.md-typeset table:not([class]) th { background: var(--vg-paper-2); color: var(--vg-ink); font-weight: 500; border-bottom: 1px solid var(--vg-line); }
+.md-typeset table:not([class]) td { border-top: 1px solid var(--vg-line); }
+
+/* ---- Admonitions → editorial cards (paper, thin border, clay/indigo accents) ---- */
+.md-typeset .admonition, .md-typeset details {
+  border: 1px solid var(--vg-line); border-left-width: 3px;
+  border-radius: 8px; background: var(--vg-paper);
+  box-shadow: none; font-size: 0.76rem;
+}
+.md-typeset .admonition-title, .md-typeset summary {
+  background: var(--vg-paper-2);
+  font-family: var(--md-code-font, monospace); font-size: 0.66rem;
+  letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500;
+}
+.md-typeset .admonition.note, .md-typeset .admonition.info, .md-typeset .admonition.abstract { border-left-color: var(--vg-indigo); }
+.md-typeset .note > .admonition-title, .md-typeset .info > .admonition-title, .md-typeset .abstract > .admonition-title { background: #eeedfb; color: var(--vg-indigo-2); }
+.md-typeset .admonition.tip, .md-typeset .admonition.success { border-left-color: var(--vg-ogma); }
+.md-typeset .tip > .admonition-title, .md-typeset .success > .admonition-title { background: #ebeee6; color: var(--vg-ogma); }
+.md-typeset .admonition.warning, .md-typeset .admonition.danger { border-left-color: var(--vg-anomaly); }
+.md-typeset .warning > .admonition-title, .md-typeset .danger > .admonition-title { background: #f6e6e3; color: var(--vg-anomaly); }
+
+/* ---- Grid cards (the docs home uses .grid.cards) ---- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--vg-line); border-radius: 10px;
+  background: var(--vg-paper); transition: border-color 0.18s;
+}
+.md-typeset .grid.cards > ul > li:hover { border-color: var(--vg-indigo); }
+
+/* ---- Buttons (md-button) → marketing button ---- */
+.md-typeset .md-button { border-radius: 5px; border-color: var(--vg-line-2); color: var(--vg-ink); font-weight: 500; }
+.md-typeset .md-button--primary { background: var(--vg-indigo); border-color: var(--vg-indigo); color: #fff; }
+.md-typeset .md-button--primary:hover { background: var(--vg-indigo-2); border-color: var(--vg-indigo-2); }
+
+/* ---- Footer ---- */
+.md-footer { border-top: 1px solid var(--vg-line); }
+.md-footer-meta { background: var(--vg-paper-3); }
+.md-footer__inner { color: var(--vg-ink-2); }
+
+/* ---- Mono eyebrow utility (for hand-rolled section labels in pages) ---- */
+.vg-eyebrow {
+  font-family: var(--md-code-font, monospace); font-size: 0.66rem;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--vg-stamp);
+}

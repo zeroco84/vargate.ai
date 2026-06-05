@@ -35,7 +35,7 @@ theme:
   icon:
     repo: fontawesome/brands/github
   font:
-    text: Inter
+    text: Inter Tight
     code: JetBrains Mono
 
 plugins:
@@ -62,39 +62,51 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Quick Start: quickstart.md
-    - Authentication: auth.md
-    - Your First Governed Action: first-action.md
-  - Managed Agents:
-    - Overview: managed-agents/overview.md
-    - Setup Guide: managed-agents/setup.md
-    - Policy Templates: managed-agents/policies.md
-  - Integrations:
-    - Twitter / X: integrations/twitter.md
-  - API Reference:
-    - Overview: api/overview.md
-    - Tool Calls: api/tool-calls.md
-    - Managed Agents: api/managed-agents.md
-    - Audit Trail: api/audit.md
-    - Blockchain & Merkle: api/blockchain.md
-    - Approval Queue: api/approvals.md
-    - Credentials Vault: api/credentials.md
-    - Webhooks: api/webhooks.md
-  - CLI:
-    - Installation: cli/install.md
-    - Commands: cli/commands.md
-  - Policy Templates:
-    - Overview: policies/overview.md
-    - Financial: policies/financial.md
-    - Email & Outreach: policies/email.md
-    - CRM & Sales: policies/crm.md
-    - Data Access: policies/data-access.md
-    - General Purpose: policies/general.md
-  - Integration Examples:
-    - Python: examples/python.md
-    - Node.js: examples/nodejs.md
-    - cURL: examples/curl.md
+  - Tyr:
+    - Getting Started:
+      - Quick Start: quickstart.md
+      - Authentication: auth.md
+      - Your First Governed Action: first-action.md
+    - Managed Agents:
+      - Overview: managed-agents/overview.md
+      - Setup Guide: managed-agents/setup.md
+      - Policy Templates: managed-agents/policies.md
+    - Integrations:
+      - Twitter / X: integrations/twitter.md
+    - API Reference:
+      - Overview: api/overview.md
+      - Tool Calls: api/tool-calls.md
+      - Managed Agents: api/managed-agents.md
+      - Audit Trail: api/audit.md
+      - Blockchain & Merkle: api/blockchain.md
+      - Approval Queue: api/approvals.md
+      - Credentials Vault: api/credentials.md
+      - Webhooks: api/webhooks.md
+    - CLI:
+      - Installation: cli/install.md
+      - Commands: cli/commands.md
+    - Policy Templates:
+      - Overview: policies/overview.md
+      - Financial: policies/financial.md
+      - Email & Outreach: policies/email.md
+      - CRM & Sales: policies/crm.md
+      - Data Access: policies/data-access.md
+      - General Purpose: policies/general.md
+    - Integration Examples:
+      - Python: examples/python.md
+      - Node.js: examples/nodejs.md
+      - cURL: examples/curl.md
+  - Ogma:
+    - Overview: ogma/index.md
+    - Getting Started:
+      - Connect Anthropic (Admin key): ogma/connect-anthropic.md
+      - Connect OpenAI (Admin key): ogma/connect-openai.md
+      - Connect Claude (MCP): ogma/connect-mcp.md
+      - Compliance Access Key: ogma/compliance-key.md
+    - Surfaces: ogma/surfaces.md
+
+extra_css:
+  - assets/vargate.css
 
 extra:
   social:
