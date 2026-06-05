@@ -56,6 +56,11 @@ body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiase
 .md-header__title { font-weight: 500; letter-spacing: -0.01em; }
 .md-header__topic { color: var(--vg-ink); }
 
+/* Header logo — the colored front-page lockup. Material's 1.2rem default is tiny;
+   bump to ~marketing-nav scale (the header grows to fit). */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg { height: 2.4rem; width: auto; }
+
 /* Header search → paper-3 pill so it reads on the light bar */
 .md-search__form { background: var(--vg-paper-3); border: 1px solid var(--vg-line-2); border-radius: 6px; }
 .md-search__form:hover { background: #eceadf; }
