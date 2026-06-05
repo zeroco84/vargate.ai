@@ -6,7 +6,7 @@ repo_name: zeroco84/vargate.ai
 
 theme:
   name: material
-  logo: assets/vargate-logo-color.svg
+  logo: assets/vargate-wordmark.png
   favicon: assets/favicon.png
   palette:
     - media: "(prefers-color-scheme: light)"
