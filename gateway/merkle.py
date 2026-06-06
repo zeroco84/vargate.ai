@@ -26,7 +26,6 @@ from typing import Optional
 # (notably gateway/main.py) keep working without edits.
 from vargate_audit_chain.merkle import GENESIS_ROOT, MerkleTree  # noqa: F401
 
-
 # ── Hourly Tenant-Scoped Trees (Sprint 5, AG-2.2) ──────────────────────────
 
 

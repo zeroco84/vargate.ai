@@ -10,7 +10,6 @@ Sprint 2: Multi-tenancy — per-tenant hash chains, API key auth, rate limiting.
 """
 
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -33,7 +32,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from vargate_audit_chain import GENESIS_HASH
+from vargate_audit_chain import (
+    GENESIS_HASH,
+)
 from vargate_audit_chain import compute_record_hash as _audit_chain_compute_record_hash
 from vargate_audit_chain import (
     compute_record_hash_legacy as _audit_chain_compute_record_hash_legacy,
