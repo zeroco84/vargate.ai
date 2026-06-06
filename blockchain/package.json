@@ -6,6 +6,20 @@
     "@nomicfoundation/hardhat-toolbox": "5.0.0"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "5.0.0"
+    "@openzeppelin/contracts": "5.0.2"
+  },
+  "overrides": {
+    "undici": "6.24.0",
+    "ws": "8.20.1",
+    "uuid": "11.1.1",
+    "axios": "1.16.0",
+    "lodash": "4.18.1",
+    "serialize-javascript": "7.0.5",
+    "tmp": "0.2.6",
+    "fast-uri": "3.1.2",
+    "follow-redirects": "1.16.0",
+    "qs": "6.15.2",
+    "cookie": "0.7.2",
+    "bn.js": "4.12.3"
   }
 }
