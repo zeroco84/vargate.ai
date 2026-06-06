@@ -18,7 +18,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install linters
-        run: pip install black isort flake8
+        run: pip install black==26.5.1 isort==8.0.1 flake8==7.3.0
 
       - name: Check formatting (Black)
         run: black --check gateway/ bundle-server/ hsm/ mock-tools/
