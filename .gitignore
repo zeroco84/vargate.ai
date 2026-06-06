@@ -22,6 +22,7 @@ secrets.yaml
 
 # Sprint plans and internal docs — never commit
 *.docx
+docs/sprints/
 
 # Claude Code working directory
 .claude/
