@@ -176,9 +176,9 @@ def main():
     assert "erasure_certificate" in erase_resp, f"Erasure failed: {erase_resp}"
     print(f"  Subject:      {erase_resp['subject_id']}")
     print(f"  Records:      {erase_resp['records_affected']} marked erased")
-    print(f"  Certificate:  {erase_resp['erasure_certificate']}")
+    print("  Certificate:  (returned — redacted from logs)")
     print(f"  Erased at:    {erase_resp['erased_at']}")
-    print(f"  ✓ Key deleted. Erasure certificate: {erase_resp['erasure_certificate'][:16]}...")
+    print("  ✓ Key deleted. Erasure certificate returned (redacted).")
     print(f"  {erase_resp['records_affected']} records marked erased. Ciphertext irrecoverable.")
 
     # ── Step 6: Verify erasure — show irrecoverability ─────────────────
@@ -229,7 +229,7 @@ def main():
     print(f"  Records encrypted:   {len(pii_records)}")
     print(f"  Records erased:      {erase_resp['records_affected']}")
     print(f"  Chain integrity:     VALID ({chain['record_count']} records)")
-    print(f"  Erasure certificate: {erase_resp['erasure_certificate'][:32]}...")
+    print("  Erasure certificate: returned (redacted).")
     print()
     print(f"  🎉 CRYPTO-SHREDDING DEMO COMPLETE")
     print(f"  GDPR compliance achieved. Audit trail preserved.")

@@ -350,7 +350,7 @@ def main():
 
     wait_for_gateway()
     api_key = get_api_key()
-    print(f"{DIM}Using API key: {api_key[:20]}...{RESET}")
+    print(f"{DIM}Using API key (loaded from VARGATE_API_KEY){RESET}")
 
     test_health()
     test_auth_rejection()
