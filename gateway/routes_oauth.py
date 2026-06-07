@@ -21,6 +21,7 @@ this needs to go through Redis exclusively).
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import time
@@ -116,8 +117,8 @@ async def twitter_oauth_callback(
     if error:
         return _render_page(
             "Twitter connection failed",
-            f"Twitter returned an error: <code>{error}</code>"
-            + (f" — {error_description}" if error_description else ""),
+            f"Twitter returned an error: <code>{html.escape(error)}</code>"
+            + (f" — {html.escape(error_description)}" if error_description else ""),
             ok=False,
         )
 

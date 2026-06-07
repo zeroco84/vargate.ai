@@ -269,8 +269,17 @@ async def archive_list():
 @app.get("/bundles/vargate/archive/{revision}")
 async def archive_get(revision: str):
     """Retrieve an archived bundle by revision string."""
-    archive_path = os.path.join(bundle.archive_dir, f"{revision}.tar.gz")
-    if not os.path.exists(archive_path):
+    # Sanitize: revision strings are always "v1.0.0-<unixts>" (no path separators).
+    # Strip any directory components to neutralize "../" / absolute-path traversal,
+    # then confirm the resolved path stays inside the archive directory.
+    safe_revision = os.path.basename(revision)
+    archive_dir = os.path.realpath(bundle.archive_dir)
+    archive_path = os.path.realpath(
+        os.path.join(archive_dir, f"{safe_revision}.tar.gz")
+    )
+    if os.path.commonpath([archive_dir, archive_path]) != archive_dir:
+        raise HTTPException(400, "Invalid bundle revision")
+    if not os.path.isfile(archive_path):
         raise HTTPException(404, f"Bundle revision {revision} not found in archive")
     with open(archive_path, "rb") as f:
         content = f.read()

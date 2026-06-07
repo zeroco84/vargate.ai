@@ -574,7 +574,7 @@ def init_db():
             ),
         )
         print(
-            f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (key={default_api_key[:20]}...)",
+            f"[VARGATE] Default tenant created: {DEFAULT_TENANT_ID} (api key generated — redacted from logs)",
             flush=True,
         )
     conn.commit()
@@ -612,7 +612,7 @@ def _seed_gtm_tenant(conn: sqlite3.Connection):
         )
         conn.commit()
         print(
-            f"[VARGATE] GTM tenant created: {GTM_TENANT_ID} (key={gtm_api_key[:20]}...)",
+            f"[VARGATE] GTM tenant created: {GTM_TENANT_ID} (api key generated; retrieve from secret store)",
             flush=True,
         )
         print(
@@ -1810,6 +1810,12 @@ def detect_pii_fields(params: dict) -> list[str]:
         # Check name fields
         if key.lower() in _PII_NAME_FIELDS:
             pii_fields.append(key)
+            continue
+        # Bound content-regex input: legitimate PII tokens (email ≤254 per
+        # RFC 5321, sort code/NI number ≤9) are short, but params values can be
+        # up to ~64KB. Skip the regex scans for oversized values to avoid
+        # polynomial-time backtracking (ReDoS) on adversarial input.
+        if len(value) > 512:
             continue
         # Check email
         if _PII_EMAIL_RE.search(value):
